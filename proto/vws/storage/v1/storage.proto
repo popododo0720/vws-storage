@@ -1,0 +1,218 @@
+syntax = "proto3";
+
+package vws.storage.v1;
+
+option go_package = "github.com/popododo0720/vws-storage/internal/gen/vws/storage/v1;storagev1";
+
+// TODO(vws): move to the shared VWS proto repository; keep package vws.storage.v1 stable so the move only changes go_package.
+
+service BlockService {
+  rpc CreateVolume(CreateVolumeRequest) returns (Operation);
+  rpc DeleteVolume(DeleteVolumeRequest) returns (Operation);
+  rpc GetVolume(GetVolumeRequest) returns (Volume);
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (Operation);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (Operation);
+  rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+}
+
+service ObjectService {
+  rpc CreateBucket(CreateBucketRequest) returns (Operation);
+  rpc DeleteBucket(DeleteBucketRequest) returns (Operation);
+  rpc HeadBucket(HeadBucketRequest) returns (Bucket);
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+  rpc PutObject(PutObjectRequest) returns (Operation);
+  rpc DeleteObject(DeleteObjectRequest) returns (Operation);
+  rpc HeadObject(HeadObjectRequest) returns (Object);
+  rpc GetObject(GetObjectRequest) returns (GetObjectResponse);
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+}
+
+service OperationService {
+  rpc GetOperation(GetOperationRequest) returns (Operation);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+}
+
+message Operation {
+  string id = 1;
+  string kind = 2;
+  // target is volumes/{id}, snapshots/{id}, buckets/{name}, or {bucket}/{url-escaped key}.
+  string target = 3;
+  string phase = 4;
+  bool done = 5;
+  Status error = 6;
+  Locator upload = 7;
+}
+
+message Status {
+  int32 code = 1;
+  string message = 2;
+}
+
+message Locator {
+  string method = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  int64 expires_unix_micro = 4;
+}
+
+message Volume {
+  string id = 1;
+  int64 size_bytes = 2;
+  string zone = 3;
+  string type = 4;
+  string source_snapshot_id = 5;
+  string state = 6;
+}
+
+message Snapshot {
+  string id = 1;
+  string source_volume_id = 2;
+  int64 size_bytes = 3;
+  string state = 4;
+}
+
+message Bucket {
+  string name = 1;
+  string state = 2;
+}
+
+message Object {
+  string bucket = 1;
+  string key = 2;
+  int64 size_bytes = 3;
+  string etag = 4;
+  string generation = 5;
+}
+
+message CreateVolumeRequest {
+  string client_token = 1;
+  int64 size_bytes = 2;
+  string zone = 3;
+  string type = 4;
+  string source_snapshot_id = 5;
+}
+
+message DeleteVolumeRequest {
+  string client_token = 1;
+  string id = 2;
+}
+
+message GetVolumeRequest {
+  string id = 1;
+}
+
+message ListVolumesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+  string next_page_token = 2;
+}
+
+message CreateSnapshotRequest {
+  string client_token = 1;
+  string source_volume_id = 2;
+}
+
+message DeleteSnapshotRequest {
+  string client_token = 1;
+  string id = 2;
+}
+
+message GetSnapshotRequest {
+  string id = 1;
+}
+
+message ListSnapshotsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+  string next_page_token = 2;
+}
+
+message CreateBucketRequest {
+  string client_token = 1;
+  string name = 2;
+}
+
+message DeleteBucketRequest {
+  string client_token = 1;
+  string name = 2;
+}
+
+message HeadBucketRequest {
+  string name = 1;
+}
+
+message ListBucketsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListBucketsResponse {
+  repeated Bucket buckets = 1;
+  string next_page_token = 2;
+}
+
+message PutObjectRequest {
+  string client_token = 1;
+  string bucket = 2;
+  string key = 3;
+  int64 size_bytes = 4;
+  string sha256_hex = 5;
+  string content_type = 6;
+}
+
+message DeleteObjectRequest {
+  string client_token = 1;
+  string bucket = 2;
+  string key = 3;
+}
+
+message HeadObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetObjectResponse {
+  Object object = 1;
+  Locator download = 2;
+}
+
+message ListObjectsRequest {
+  string bucket = 1;
+  string prefix = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListObjectsResponse {
+  repeated Object objects = 1;
+  string next_page_token = 2;
+}
+
+message GetOperationRequest {
+  string id = 1;
+}
+
+message ListOperationsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  bool non_terminal = 3;
+}
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+  string next_page_token = 2;
+}
