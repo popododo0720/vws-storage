@@ -30,13 +30,15 @@ func TestRepoPolicy(t *testing.T) {
 		relPath := rel(t, root, path)
 		lower := strings.ToLower(name)
 		switch {
-		case name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile."):
+		case isContainer(name):
 			t.Errorf("container file %s", relPath)
 		case name == "Chart.yaml" || name == "Chart.lock":
 			t.Errorf("helm file %s", relPath)
-		case name == "NOTICE" || name == "NOTICE.md":
+		case name == "kustomization.yaml" || name == "kustomization.yml":
+			t.Errorf("kustomize file %s", relPath)
+		case name == "NOTICE" || strings.HasPrefix(name, "NOTICE."):
 			t.Errorf("notice file %s", relPath)
-		case strings.Contains(lower, "logo"):
+		case isLogo(lower):
 			t.Errorf("logo file %s", relPath)
 		case strings.HasSuffix(name, ".proto"):
 			protos++
@@ -56,6 +58,19 @@ func TestRepoPolicy(t *testing.T) {
 	if protos == 0 {
 		t.Fatal("no proto files")
 	}
+}
+
+func isContainer(name string) bool {
+	switch name {
+	case "Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml":
+		return true
+	default:
+		return strings.HasPrefix(name, "Dockerfile.")
+	}
+}
+
+func isLogo(lower string) bool {
+	return lower == "logo" || strings.HasPrefix(lower, "logo.") || strings.HasSuffix(lower, ".logo")
 }
 
 func repoRoot(t *testing.T) string {

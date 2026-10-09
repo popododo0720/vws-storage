@@ -28,12 +28,13 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	inflight := map[model.OperationID]struct{}{}
-	done := make(chan model.OperationID, s.workers)
+	hold := map[model.OperationID]time.Time{}
+	done := make(chan drove, s.workers)
 	ticker := time.NewTicker(s.scanInterval)
 	defer ticker.Stop()
 	for {
 		if ctx.Err() == nil {
-			s.fill(ctx, inflight, done)
+			s.fill(ctx, inflight, hold, done)
 		}
 		if ctx.Err() != nil && len(inflight) == 0 {
 			return nil
@@ -49,15 +50,18 @@ func (s *Service) Run(ctx context.Context) error {
 		select {
 		case <-cancel:
 		case id := <-wake:
-			s.start(ctx, id, inflight, done)
-		case id := <-done:
-			delete(inflight, id)
+			s.start(ctx, id, inflight, hold, done)
+		case d := <-done:
+			delete(inflight, d.id)
+			if d.err != nil && ctx.Err() == nil {
+				hold[d.id] = s.now().Add(s.policy.base)
+			}
 		case <-tick:
 		}
 	}
 }
 
-func (s *Service) fill(ctx context.Context, inflight map[model.OperationID]struct{}, done chan model.OperationID) {
+func (s *Service) fill(ctx context.Context, inflight map[model.OperationID]struct{}, hold map[model.OperationID]time.Time, done chan drove) {
 	ops, err := s.st.Runnable(ctx, s.now(), s.workers+len(inflight))
 	if err != nil {
 		log.Printf("vws-storage: runnable: %v", err)
@@ -67,23 +71,33 @@ func (s *Service) fill(ctx context.Context, inflight map[model.OperationID]struc
 		if len(inflight) >= s.workers {
 			return
 		}
-		s.start(ctx, op.ID, inflight, done)
+		s.start(ctx, op.ID, inflight, hold, done)
 	}
 }
 
-func (s *Service) start(ctx context.Context, id model.OperationID, inflight map[model.OperationID]struct{}, done chan model.OperationID) {
+type drove struct {
+	id  model.OperationID
+	err error
+}
+
+func (s *Service) start(ctx context.Context, id model.OperationID, inflight map[model.OperationID]struct{}, hold map[model.OperationID]time.Time, done chan drove) {
 	if ctx.Err() != nil {
 		return
 	}
 	if _, ok := inflight[id]; ok || len(inflight) >= s.workers {
 		return
 	}
+	if until, ok := hold[id]; ok && s.now().Before(until) {
+		return
+	}
+	delete(hold, id)
 	inflight[id] = struct{}{}
 	go func() {
-		if err := s.drive(ctx, id); err != nil && ctx.Err() == nil {
+		err := s.drive(ctx, id)
+		if err != nil && ctx.Err() == nil {
 			log.Printf("vws-storage: operation %s: %v", id, err)
 		}
-		done <- id
+		done <- drove{id: id, err: err}
 	}()
 }
 
@@ -236,9 +250,8 @@ func undo[W model.Creation](
 		if undoErr != nil && !backend.IsPermanent(undoErr) {
 			return comp.Retry(statusOf(undoErr), s.policy.next(comp.Attempts(), now), now), nil
 		}
-		if undoErr != nil && backend.IsPermanent(undoErr) {
-			return comp.FinishFailed(now), nil
-		}
+		// A permanent cleanup error still drops the creating row. Leaving it
+		// would pin the name to an operation that will never run again.
 		return abandon(r, comp, now)
 	})
 }

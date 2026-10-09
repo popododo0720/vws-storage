@@ -95,6 +95,9 @@ func (s *Service) runVolumeDeletion(ctx context.Context, op model.Operation, w m
 	return finish(ctx, s, op.ID, callErr,
 		func(run model.RunningOp[model.VolumeDeletion], r store.Reader, now time.Time) (model.Change, error) {
 			vol, err := r.Volume(ctx, w.Volume)
+			if errors.Is(err, model.ErrNotFound) {
+				return run.Fail(model.Status{Code: model.CodeInternal, Message: "volume row missing"}, now), nil
+			}
 			if err != nil {
 				return model.Change{}, err
 			}
@@ -106,6 +109,9 @@ func (s *Service) runVolumeDeletion(ctx context.Context, op model.Operation, w m
 		},
 		func(run model.RunningOp[model.VolumeDeletion], r store.Reader, st model.Status, now time.Time) (model.Change, error) {
 			vol, err := r.Volume(ctx, w.Volume)
+			if errors.Is(err, model.ErrNotFound) {
+				return run.Fail(st, now), nil
+			}
 			if err != nil {
 				return model.Change{}, err
 			}

@@ -317,6 +317,11 @@ func (s *Service) status(ctx context.Context, op model.Operation) (OperationStat
 	if _, ok := model.AsRunning[model.ObjectUpload](op); !ok || !s.now().Before(w.Deadline) {
 		return out, nil
 	}
+	if _, err := s.object.Stat(ctx, w.Object); err == nil {
+		return out, nil
+	} else if !errors.Is(err, backend.ErrNotFound) {
+		return OperationStatus{}, err
+	}
 	loc, err := s.signer.PresignPut(ctx, w.Object, w.Size, w.SHA256, w.Deadline)
 	if err != nil {
 		return OperationStatus{}, err

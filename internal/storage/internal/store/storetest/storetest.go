@@ -79,9 +79,31 @@ func roundTrip(t *testing.T, open OpenFunc) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	keptVol, err := st.Volume(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptOp, err := st.Operation(ctx, admitted.Op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = st.Update(ctx, func(store.Reader) (model.Change, error) { return created, nil })
 	if !errors.Is(err, model.ErrStale) {
 		t.Fatalf("edited-record err = %v", err)
+	}
+	got, err = st.Volume(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !model.SameRecord(got, keptVol) {
+		t.Fatal("stale change mutated the volume")
+	}
+	op, err = st.Operation(ctx, admitted.Op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !model.SameRecord(op, keptOp) {
+		t.Fatal("stale change mutated the operation")
 	}
 }
 

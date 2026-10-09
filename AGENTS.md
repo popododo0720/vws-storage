@@ -37,3 +37,9 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 같은 토큰과 같은 요청은 같은 operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |
 | 같은 토큰과 다른 요청은 충돌 | `ErrTokenReused` → gRPC `ALREADY_EXISTS` + `CLIENT_TOKEN_REUSED` |
 | 재시작 복구는 새 경로가 아니다 | `TestCreateVolumeResumesAfterCrash` |
+| 거절된 `Change`는 저장소를 바꾸지 않는다 | 메모리 `Update`는 사본에 적용한 뒤 바꾼다. `storetest`가 `ErrStale` 이후 행을 다시 읽는다 |
+| 실패한 생성은 `Creating` 행을 남기지 않는다 | 영구적인 정리는 행을 지운다. `TestPermanentUndoDropsVolume` |
+| 리소스 이름은 `Parse(String())`로 돌아온다 | `ParseBucketName`이 `buckets/`를 벗긴다. `TestResourceNamesRoundTrip` |
+| SQLite 파일은 프로세스 하나 | `BEGIN IMMEDIATE`와 `locking_mode=EXCLUSIVE`. `TestSecondOpenFails` |
+| 한 세대의 바이트는 한 번만 쓴다 | `Signer` 계약. fake `Accept`가 다시 쓰기를 거절한다. `TestGenerationIsWrittenOnce` |
+| 같은 오브젝트 경로의 변경은 겹치지 않는다 | 업로드와 삭제는 경로를 `Ref`로 걸고, `InFlight`면 거절한다 |

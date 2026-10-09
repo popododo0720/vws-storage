@@ -435,6 +435,10 @@ func toStatus(err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
 	case errors.Is(err, model.ErrTokenReused):
 		st := status.New(codes.AlreadyExists, err.Error())
 		with, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: "CLIENT_TOKEN_REUSED", Domain: "vws.storage"})

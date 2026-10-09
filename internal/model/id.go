@@ -123,8 +123,9 @@ func (g Generation) IsZero() bool { return g.s == "" }
 // BucketName is a DNS-style bucket name.
 type BucketName struct{ s string }
 
-// ParseBucketName validates s.
+// ParseBucketName validates s. s may be the raw name or "buckets/" plus the name.
 func ParseBucketName(s string) (BucketName, error) {
+	s = strings.TrimPrefix(s, "buckets/")
 	if len(s) < 3 || len(s) > 63 || net.ParseIP(s) != nil || strings.Contains(s, "..") {
 		return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
 	}

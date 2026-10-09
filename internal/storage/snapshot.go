@@ -94,6 +94,9 @@ func (s *Service) runSnapshotDeletion(ctx context.Context, op model.Operation, w
 	return finish(ctx, s, op.ID, callErr,
 		func(run model.RunningOp[model.SnapshotDeletion], r store.Reader, now time.Time) (model.Change, error) {
 			snap, err := r.Snapshot(ctx, w.Snapshot)
+			if errors.Is(err, model.ErrNotFound) {
+				return run.Fail(model.Status{Code: model.CodeInternal, Message: "snapshot row missing"}, now), nil
+			}
 			if err != nil {
 				return model.Change{}, err
 			}
@@ -105,6 +108,9 @@ func (s *Service) runSnapshotDeletion(ctx context.Context, op model.Operation, w
 		},
 		func(run model.RunningOp[model.SnapshotDeletion], r store.Reader, st model.Status, now time.Time) (model.Change, error) {
 			snap, err := r.Snapshot(ctx, w.Snapshot)
+			if errors.Is(err, model.ErrNotFound) {
+				return run.Fail(st, now), nil
+			}
 			if err != nil {
 				return model.Change{}, err
 			}

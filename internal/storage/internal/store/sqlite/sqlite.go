@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -39,25 +40,25 @@ CREATE TABLE op_refs (
 // The connection is exclusive so a second process fails instead of driving
 // the same operations.
 func Open(ctx context.Context, path string) (store.Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	s := &dbStore{sql: db}
-	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA locking_mode=EXCLUSIVE`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+func sqliteDSN(path string) string {
+	// Pragmas travel with the connection. EXCLUSIVE is taken by the write in migrate.
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(250)")
+	q.Add("_pragma", "locking_mode(EXCLUSIVE)")
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
 }
 
 type dbStore struct {
@@ -69,21 +70,38 @@ type dbStore struct {
 func (s *dbStore) Close() error { return s.sql.Close() }
 
 func (s *dbStore) migrate(ctx context.Context) error {
+	// BEGIN IMMEDIATE takes the write lock. locking_mode=EXCLUSIVE keeps it
+	// until the connection closes, so a second process fails here.
+	if _, err := s.sql.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = s.sql.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
 	var v int
 	if err := s.sql.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
 		return err
 	}
-	if v == 1 {
-		return nil
-	}
-	if v != 0 {
+	switch v {
+	case 1:
+	case 0:
+		if _, err := s.sql.ExecContext(ctx, schema); err != nil {
+			return err
+		}
+		if _, err := s.sql.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+			return err
+		}
+	default:
 		return errSchema(v)
 	}
-	if _, err := s.sql.ExecContext(ctx, schema); err != nil {
+	if _, err := s.sql.ExecContext(ctx, `COMMIT`); err != nil {
 		return err
 	}
-	_, err := s.sql.ExecContext(ctx, `PRAGMA user_version = 1`)
-	return err
+	committed = true
+	return nil
 }
 
 type schemaError int
@@ -570,8 +588,10 @@ type querier interface {
 }
 
 func kindID(key model.Key) (string, string, error) {
-	type stringer interface{ String() string }
-	id := key.(stringer).String()
+	if key == nil {
+		return "", "", model.ErrInvalidArgument
+	}
+	id := key.String()
 	switch key.(type) {
 	case model.VolumeID:
 		return "volume", id, nil

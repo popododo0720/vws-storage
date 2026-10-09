@@ -12,6 +12,13 @@ import (
 )
 
 func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest) (model.Admitted, error) {
+	busy, err := r.InFlight(ctx, req.Path)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if busy {
+		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+	}
 	b, err := r.Bucket(ctx, req.Path.Bucket)
 	if err != nil {
 		return model.Admitted{}, err
@@ -24,6 +31,13 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 }
 
 func (s *Service) admitDeleteObject(ctx context.Context, r store.Reader, st model.Start, req model.DeleteObjectRequest) (model.Admitted, error) {
+	busy, err := r.InFlight(ctx, req.Path)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if busy {
+		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+	}
 	obj, err := r.Object(ctx, req.Path)
 	if err != nil {
 		return model.Admitted{}, err

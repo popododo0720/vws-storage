@@ -33,8 +33,9 @@ type Object interface {
 }
 
 // Signer derives short-lived locators. It does not publish bytes.
-// PresignPut must reject a body whose length differs from size, and the
-// target must stop working at expires.
+// A generation is written at most once. PresignPut must reject a body whose
+// length differs from size, and the target must stop working at expires.
+// A locator is not valid past the expires value this call stored.
 type Signer interface {
 	PresignPut(ctx context.Context, ref model.ObjectRef, size model.Bytes, sha model.Digest, expires time.Time) (model.Locator, error)
 	PresignGet(ctx context.Context, ref model.ObjectRef, expires time.Time) (model.Locator, error)

@@ -14,10 +14,14 @@ type Ref interface {
 func (VolumeID) isRef()   {}
 func (SnapshotID) isRef() {}
 func (BucketName) isRef() {}
+func (ObjectPath) isRef() {}
 func (ObjectRef) isRef()  {}
 
-// Key identifies one stored row.
-type Key interface{ isKey() }
+// Key identifies one stored row. String is the store key.
+type Key interface {
+	String() string
+	isKey()
+}
 
 func (VolumeID) isKey()    {}
 func (SnapshotID) isKey()  {}
@@ -284,10 +288,14 @@ func (w BucketCreation) Refs() []Ref { return []Ref{w.Bucket} }
 func (w BucketDeletion) Refs() []Ref { return []Ref{w.Bucket} }
 
 // Refs implements Work.
-func (w ObjectUpload) Refs() []Ref { return []Ref{w.Object, w.Object.Path.Bucket} }
+func (w ObjectUpload) Refs() []Ref {
+	return []Ref{w.Object, w.Object.Path, w.Object.Path.Bucket}
+}
 
 // Refs implements Work.
-func (w ObjectPurge) Refs() []Ref { return []Ref{w.Object, w.Object.Path.Bucket} }
+func (w ObjectPurge) Refs() []Ref {
+	return []Ref{w.Object, w.Object.Path, w.Object.Path.Bucket}
+}
 
 func (VolumeCreation) isWork()   {}
 func (VolumeDeletion) isWork()   {}

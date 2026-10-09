@@ -88,9 +88,8 @@ func applyPut(ctx context.Context, t Table, w model.Put) error {
 }
 
 func keyString(k model.Key) string {
-	type stringer interface{ String() string }
-	if s, ok := k.(stringer); ok {
-		return s.String()
+	if k == nil {
+		return ""
 	}
-	return ""
+	return k.String()
 }

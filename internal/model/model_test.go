@@ -308,6 +308,28 @@ func sampleRecords(t *testing.T, now time.Time) []Record {
 	return out
 }
 
+func TestResourceNamesRoundTrip(t *testing.T) {
+	vol := NewVolumeID()
+	if got, err := ParseVolumeID(vol.String()); err != nil || got != vol {
+		t.Fatalf("volume %v %v", got, err)
+	}
+	snap := NewSnapshotID()
+	if got, err := ParseSnapshotID(snap.String()); err != nil || got != snap {
+		t.Fatalf("snapshot %v %v", got, err)
+	}
+	op := NewOperationID()
+	if got, err := ParseOperationID(op.String()); err != nil || got != op {
+		t.Fatalf("operation %v %v", got, err)
+	}
+	bucket, err := ParseBucketName("logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ParseBucketName(bucket.String()); err != nil || got != bucket {
+		t.Fatalf("bucket %v %v", got, err)
+	}
+}
+
 func sampleWork(t *testing.T, k Kind, vol Volume, snap Snapshot, bucket Bucket, obj Object) Work {
 	t.Helper()
 	switch k {

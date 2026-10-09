@@ -168,6 +168,7 @@ type Objects struct {
 	bucket map[model.BucketName]struct{}
 	gens   map[string]stored
 	expect map[string]expect
+	gets   map[string]time.Time
 }
 
 type stored struct {
@@ -204,6 +205,7 @@ func NewObjects(opts ObjectOptions) *Objects {
 		bucket: map[model.BucketName]struct{}{},
 		gens:   map[string]stored{},
 		expect: map[string]expect{},
+		gets:   map[string]time.Time{},
 	}
 }
 
@@ -267,18 +269,22 @@ func (o *Objects) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 // PresignPut implements backend.Signer.
 func (o *Objects) PresignPut(_ context.Context, ref model.ObjectRef, size model.Bytes, sha model.Digest, expires time.Time) (model.Locator, error) {
 	o.mu.Lock()
-	o.expect[refKey(ref)] = expect{size: size, sha: sha, expires: expires}
-	base := o.base
-	o.mu.Unlock()
-	return model.Locator{Method: http.MethodPut, URL: o.url(base, "put", ref, expires), ExpiresAt: expires}, nil
+	defer o.mu.Unlock()
+	if _, ok := o.gens[refKey(ref)]; ok {
+		return model.Locator{}, fmt.Errorf("%w: generation", backend.ErrConflict)
+	}
+	exp := time.UnixMicro(expires.UTC().UnixMicro()).UTC()
+	o.expect[refKey(ref)] = expect{size: size, sha: sha, expires: exp}
+	return model.Locator{Method: http.MethodPut, URL: o.url(o.base, "put", ref, exp), ExpiresAt: exp}, nil
 }
 
 // PresignGet implements backend.Signer.
 func (o *Objects) PresignGet(_ context.Context, ref model.ObjectRef, expires time.Time) (model.Locator, error) {
 	o.mu.Lock()
-	base := o.base
-	o.mu.Unlock()
-	return model.Locator{Method: http.MethodGet, URL: o.url(base, "get", ref, expires), ExpiresAt: expires}, nil
+	defer o.mu.Unlock()
+	exp := time.UnixMicro(expires.UTC().UnixMicro()).UTC()
+	o.gets[refKey(ref)] = exp
+	return model.Locator{Method: http.MethodGet, URL: o.url(o.base, "get", ref, exp), ExpiresAt: exp}, nil
 }
 
 // Accept stores body at the locator from PresignPut.
@@ -287,14 +293,18 @@ func (o *Objects) Accept(loc model.Locator, body []byte) error {
 	if err != nil {
 		return err
 	}
+	key := refKey(ref)
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.now().After(exp) {
-		return fmt.Errorf("%w: expired", backend.ErrNotFound)
+	if _, ok := o.gens[key]; ok {
+		return fmt.Errorf("%w: generation", backend.ErrConflict)
 	}
-	want, ok := o.expect[refKey(ref)]
+	want, ok := o.expect[key]
 	if !ok {
 		return fmt.Errorf("%w: upload", backend.ErrNotFound)
+	}
+	if o.now().After(want.expires) || !exp.Equal(want.expires) {
+		return fmt.Errorf("%w: expired", backend.ErrNotFound)
 	}
 	if model.Bytes(len(body)) != want.size {
 		return fmt.Errorf("%w: size", backend.ErrConflict)
@@ -303,7 +313,8 @@ func (o *Objects) Accept(loc model.Locator, body []byte) error {
 	if !want.sha.IsZero() && sum != want.sha {
 		return fmt.Errorf("%w: checksum", backend.ErrConflict)
 	}
-	o.gens[refKey(ref)] = stored{body: append([]byte(nil), body...), at: o.now(), etag: hex.EncodeToString(sum[:8]), sum: sum}
+	o.gens[key] = stored{body: append([]byte(nil), body...), at: o.now(), etag: hex.EncodeToString(sum[:8]), sum: sum}
+	delete(o.expect, key)
 	return nil
 }
 
@@ -311,12 +322,17 @@ func (o *Objects) Accept(loc model.Locator, body []byte) error {
 func (o *Objects) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/put", func(w http.ResponseWriter, r *http.Request) {
+		loc := model.Locator{URL: "http://fake" + r.URL.RequestURI()}
+		if _, _, err := parseURL(loc.URL); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, int64(model.MaxObjectBytes)+1))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := o.Accept(model.Locator{URL: "http://fake" + r.URL.RequestURI()}, body); err != nil {
+		if err := o.Accept(loc, body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -328,8 +344,12 @@ func (o *Objects) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if !o.getAllowed(ref, exp) {
+			http.NotFound(w, r)
+			return
+		}
 		obs, err := o.Stat(r.Context(), ref)
-		if err != nil || o.now().After(exp) {
+		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
@@ -373,6 +393,13 @@ func parseURL(raw string) (model.ObjectRef, time.Time, error) {
 		return model.ObjectRef{}, time.Time{}, err
 	}
 	return model.ObjectRef{Path: model.ObjectPath{Bucket: b, Key: k}, Generation: g}, time.UnixMicro(us).UTC(), nil
+}
+
+func (o *Objects) getAllowed(ref model.ObjectRef, exp time.Time) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	until, ok := o.gets[refKey(ref)]
+	return ok && exp.Equal(until) && !o.now().After(until)
 }
 
 func refKey(ref model.ObjectRef) string {

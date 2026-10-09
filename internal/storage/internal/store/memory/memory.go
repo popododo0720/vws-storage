@@ -32,7 +32,35 @@ func (m *mem) Update(ctx context.Context, fn func(store.Reader) (model.Change, e
 	if err != nil {
 		return err
 	}
-	return store.Apply(ctx, m, ch)
+	// Apply mutates its table as it goes. A rejected write must leave the
+	// published maps untouched, so the change lands on a copy.
+	next := m.clone()
+	if err := store.Apply(ctx, next, ch); err != nil {
+		return err
+	}
+	m.rows = next.rows
+	m.refs = next.refs
+	return nil
+}
+
+func (m *mem) clone() *mem {
+	rows := make(map[string]map[string]model.Record, len(m.rows))
+	for kind, tab := range m.rows {
+		cp := make(map[string]model.Record, len(tab))
+		for k, rec := range tab {
+			cp[k] = rec
+		}
+		rows[kind] = cp
+	}
+	refs := make(map[string]map[string]struct{}, len(m.refs))
+	for ref, set := range m.refs {
+		cp := make(map[string]struct{}, len(set))
+		for id := range set {
+			cp[id] = struct{}{}
+		}
+		refs[ref] = cp
+	}
+	return &mem{rows: rows, refs: refs}
 }
 
 func (m *mem) Volume(ctx context.Context, id model.VolumeID) (model.Volume, error) {
@@ -352,10 +380,7 @@ func (m *mem) clearRef(id model.OperationID) {
 	}
 }
 
-func idOf(key model.Key) string {
-	type stringer interface{ String() string }
-	return key.(stringer).String()
-}
+func idOf(key model.Key) string { return key.String() }
 
 func kindOf(key model.Key) (string, error) {
 	switch key.(type) {

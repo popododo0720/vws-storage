@@ -377,7 +377,7 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 		return writes(putNew(obj), putUpdate(op.Operation(), done)), nil
 	case head.Generation == w.Object.Generation:
 		return writes(guardRec(*head), putUpdate(op.Operation(), done)), nil
-	case head.UploadedAt.Before(obs.UploadedAt):
+	case !head.UploadedAt.After(obs.UploadedAt):
 		next := *head
 		next.Generation = w.Object.Generation
 		next.Size = obs.Size

@@ -129,6 +129,57 @@ func TestFailedCreateLeavesNoVolume(t *testing.T) {
 	}
 }
 
+func TestPermanentUndoDropsVolume(t *testing.T) {
+	blk := fake.NewBlock()
+	blk.FailNext("CreateVolume", backend.Permanent(errors.New("pool full")))
+	blk.FailNext("DeleteVolume", backend.Permanent(errors.New("cleanup failed")))
+	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	op, err := svc.Submit(context.Background(), token(t, "undo-1"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitDone(t, svc, op.ID)
+	if got.Phase() != model.PhaseFailed {
+		t.Fatalf("phase %s %+v", got.Phase(), got.Err())
+	}
+	if _, err := svc.Volume(context.Background(), got.Target().(model.VolumeID)); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("volume err %v", err)
+	}
+}
+
+func TestListBucketsSecondPage(t *testing.T) {
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	for _, name := range []string{"bkt-a", "bkt-b", "bkt-c"} {
+		bucket, err := model.ParseBucketName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		op, err := svc.Submit(context.Background(), token(t, name), model.CreateBucketRequest{Bucket: bucket})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitDone(t, svc, op.ID); got.Phase() != model.PhaseSucceeded {
+			t.Fatal(got.Err())
+		}
+	}
+	page, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.NextToken == "" {
+		t.Fatalf("page %+v", page)
+	}
+	next, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2, Token: page.NextToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Items) != 1 || next.NextToken != "" {
+		t.Fatalf("next %+v", next)
+	}
+}
+
 func TestSnapshotBlocksVolumeDelete(t *testing.T) {
 	svc, stop := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
 	volOp, err := svc.Submit(context.Background(), token(t, "vol"), volumeReq(t))
