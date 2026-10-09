@@ -58,6 +58,34 @@ linters-settings:
             desc: the engine has no generated API
           - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
             desc: fakes are wired by the process, not the engine
+      store:
+        list-mode: lax
+        files:
+          - "**/internal/storage/internal/store/**/*.go"
+          - "!**/*_test.go"
+        deny:
+          - pkg: google.golang.org/grpc
+            desc: the store has no gRPC
+          - pkg: github.com/popododo0720/vws-storage/internal/gen
+            desc: the store has no generated API
+          - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
+            desc: the store has no fake backend
+          - pkg: github.com/popododo0720/vws-storage/internal/server
+            desc: the store has no gRPC server
+      backend:
+        list-mode: lax
+        files:
+          - "**/internal/backend/**/*.go"
+          - "!**/*_test.go"
+        deny:
+          - pkg: google.golang.org/grpc
+            desc: a backend has no gRPC
+          - pkg: github.com/popododo0720/vws-storage/internal/gen
+            desc: a backend has no generated API
+          - pkg: github.com/popododo0720/vws-storage/internal/server
+            desc: a backend has no gRPC server
+          - pkg: github.com/popododo0720/vws-storage/internal/storage
+            desc: a backend has no engine
 
 issues:
   exclude-files:

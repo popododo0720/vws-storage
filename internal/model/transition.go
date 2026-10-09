@@ -400,20 +400,26 @@ func AbandonUpload(op CompensatingOp[ObjectUpload], now time.Time) (Change, erro
 	return writes(putUpdate(op.Operation(), failOp(op.Operation(), op.Cause(), now))), nil
 }
 
-// Delete removes the head at once and admits a purge of its generation.
+// Delete admits a purge and guards the head. The row stays until Purged,
+// so a failed purge does not drop the only record of the generation.
 func (o Object) Delete(st Start) (Admitted, error) {
 	if st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
 	work := ObjectPurge{Object: ObjectRef{Path: o.Path, Generation: o.Generation}}
 	op := newOp(st, work)
-	ws := withToken(st, []Write{removeRec(o), putNew(op)})
+	ws := withToken(st, []Write{guardRec(o), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
 
-// Purged succeeds a purge.
-func Purged(op RunningOp[ObjectPurge], now time.Time) (Change, error) {
-	return writes(putUpdate(op.Operation(), succeedOp(op.Operation(), now))), nil
+// Purged succeeds a purge. head is the current row, or nil when the path
+// has none. The row is removed only when it is still this generation.
+func Purged(op RunningOp[ObjectPurge], head *Object, now time.Time) (Change, error) {
+	done := putUpdate(op.Operation(), succeedOp(op.Operation(), now))
+	if head == nil || head.Generation != op.Work().Object.Generation || head.Path != op.Work().Object.Path {
+		return writes(done), nil
+	}
+	return writes(removeRec(*head), done), nil
 }
 
 // PurgeFailed fails a purge. The bytes may remain; the operation records why.

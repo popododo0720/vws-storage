@@ -407,7 +407,7 @@ func toBucket(b model.Bucket) *storagev1.Bucket {
 func toObject(o model.Object) *storagev1.Object {
 	return &storagev1.Object{
 		Bucket: o.Path.Bucket.Name(), Key: o.Path.Key.String(), SizeBytes: int64(o.Size),
-		Etag: string(o.ETag), Generation: o.Generation.String(),
+		Etag: string(o.ETag), Generation: o.Generation.String(), ContentType: o.ContentType,
 	}
 }
 
@@ -454,6 +454,8 @@ func toStatus(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, model.ErrFailedPrecondition):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, model.ErrStale):
+		return status.Error(codes.Aborted, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

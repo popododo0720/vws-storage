@@ -31,7 +31,7 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 진행은 `Service.Run` | `Run`이 이미 돌면 거절한다. `internal/storage` |
 | 모델은 전송, SQL, 백엔드를 모른다 | depguard `model` |
 | 서버는 백엔드를 모른다 | depguard `server` |
-| 엔진은 gRPC, 생성 코드, fake를 모른다 | depguard `engine`. 테스트 파일은 제외 |
+| 엔진은 gRPC, 생성 코드, fake를 모른다 | depguard `engine`, `store`, `backend`. 테스트 파일은 제외 |
 | proto는 임시이며 공유 저장소로 옮긴다 | 각 `.proto`의 `TODO(vws): move to the shared VWS proto repository`. `internal/policycheck` |
 | 배포 매니페스트, 로고, NOTICE를 두지 않는다 | `internal/policycheck` |
 | 같은 토큰과 같은 요청은 같은 operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |
@@ -43,3 +43,5 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | SQLite 파일은 프로세스 하나 | `BEGIN IMMEDIATE`와 `locking_mode=EXCLUSIVE`. `TestSecondOpenFails` |
 | 한 세대의 바이트는 한 번만 쓴다 | `Signer` 계약. fake `Accept`가 다시 쓰기를 거절한다. `TestGenerationIsWrittenOnce` |
 | 같은 오브젝트 경로의 변경은 겹치지 않는다 | 업로드와 삭제는 경로를 `Ref`로 걸고, `InFlight`면 거절한다 |
+| 오브젝트 행은 퍼지가 끝난 뒤에 지운다 | `Object.Delete`는 행을 가드만 한다. `Purged`가 같은 세대일 때만 지운다 |
+| 없는 버킷의 오브젝트 목록은 빈 목록이 아니다 | `ListObjects`가 버킷 행을 먼저 읽는다 |

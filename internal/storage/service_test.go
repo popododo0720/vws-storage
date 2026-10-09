@@ -255,6 +255,19 @@ func TestPutAndGetObject(t *testing.T) {
 	}
 }
 
+func TestListMissingBucket(t *testing.T) {
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	bucket, err := model.ParseBucketName("missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.ListObjects(context.Background(), bucket, "", model.PageRequest{})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("err %v", err)
+	}
+}
+
 func TestUploadDeadlineFails(t *testing.T) {
 	obj := fake.NewObjects(fake.ObjectOptions{})
 	opt := opts(storage.Memory(), fake.NewBlock(), obj)

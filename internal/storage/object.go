@@ -97,8 +97,15 @@ func (s *Service) runObjectUpload(ctx context.Context, op model.Operation, w mod
 func (s *Service) runObjectPurge(ctx context.Context, op model.Operation, w model.ObjectPurge) error {
 	callErr := s.object.DeleteObject(ctx, w.Object)
 	return finish(ctx, s, op.ID, callErr,
-		func(run model.RunningOp[model.ObjectPurge], _ store.Reader, now time.Time) (model.Change, error) {
-			return model.Purged(run, now)
+		func(run model.RunningOp[model.ObjectPurge], r store.Reader, now time.Time) (model.Change, error) {
+			var head *model.Object
+			switch h, err := r.Object(ctx, w.Object.Path); {
+			case err == nil:
+				head = &h
+			case !errors.Is(err, model.ErrNotFound):
+				return model.Change{}, err
+			}
+			return model.Purged(run, head, now)
 		},
 		func(run model.RunningOp[model.ObjectPurge], _ store.Reader, st model.Status, now time.Time) (model.Change, error) {
 			return model.PurgeFailed(run, st, now)

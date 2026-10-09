@@ -84,6 +84,7 @@ message Object {
   int64 size_bytes = 3;
   string etag = 4;
   string generation = 5;
+  string content_type = 6;
 }
 
 message CreateVolumeRequest {

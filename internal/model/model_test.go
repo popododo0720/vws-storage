@@ -161,6 +161,52 @@ func TestCommitUploadReplacesOlderHead(t *testing.T) {
 	}
 }
 
+func TestDeleteKeepsHeadUntilPurge(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	obj := Object{
+		Path: ObjectPath{Bucket: mustBucket(t), Key: mustKey(t, "a.bin")}, Generation: NewGeneration(),
+		Size: 1, Meta: fresh(now),
+	}
+	admitted, err := obj.Delete(Start{Op: NewOperationID(), Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range admitted.Change.Writes() {
+		if _, ok := w.(Remove); ok {
+			t.Fatal("delete removed the head")
+		}
+	}
+	run, ok := AsRunning[ObjectPurge](admitted.Op)
+	if !ok {
+		t.Fatal("not running")
+	}
+	ch, err := Purged(run, &obj, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	for _, w := range ch.Writes() {
+		rm, ok := w.(Remove)
+		if ok {
+			removed = rm.Prev.(Object).Generation == obj.Generation
+		}
+	}
+	if !removed {
+		t.Fatal("purge left the head")
+	}
+	other := obj
+	other.Generation = NewGeneration()
+	ch, err = Purged(run, &other, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range ch.Writes() {
+		if _, ok := w.(Remove); ok {
+			t.Fatal("purge removed a newer head")
+		}
+	}
+}
+
 func TestRoundTripEveryKind(t *testing.T) {
 	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
 	records := sampleRecords(t, now)

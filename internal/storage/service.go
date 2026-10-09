@@ -292,6 +292,9 @@ func (s *Service) LocateObject(ctx context.Context, p model.ObjectPath) (model.O
 
 // ListObjects lists committed heads in key order.
 func (s *Service) ListObjects(ctx context.Context, b model.BucketName, prefix string, p model.PageRequest) (model.Page[model.Object], error) {
+	if _, err := s.st.Bucket(ctx, b); err != nil {
+		return model.Page[model.Object]{}, err
+	}
 	n, err := model.NormalizePage(p)
 	if err != nil {
 		return model.Page[model.Object]{}, err
