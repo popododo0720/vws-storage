@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,10 +39,19 @@ CREATE TABLE op_refs (
 `
 
 // Open opens path and migrates it to schema version 1.
-// The connection is exclusive so a second process fails instead of driving
-// the same operations.
+// path may be relative. The parent directory is created. The connection is
+// exclusive so a second process fails instead of driving the same operations.
 func Open(ctx context.Context, path string) (store.Store, error) {
-	db, err := sql.Open("sqlite", sqliteDSN(path))
+	// A relative Path in a file URI becomes the authority (file://data/storage.db).
+	// SQLite rejects that, and the driver reports it as "SQL logic error: out of memory".
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", sqliteDSN(abs))
 	if err != nil {
 		return nil, err
 	}
