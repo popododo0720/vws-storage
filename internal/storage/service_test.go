@@ -85,16 +85,16 @@ func assertImageVolume(t *testing.T, store storage.StoreConfig) {
 	if !errors.Is(err, model.ErrAlreadyExists) {
 		t.Fatalf("exists err %v", err)
 	}
-	replay, err := svc.Submit(context.Background(), token(t, "image-3"), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replay.ID != first.ID {
-		t.Fatalf("replay %s want %s", replay.ID, first.ID)
-	}
 	got := waitDone(t, svc, first.ID)
 	if got.Phase() != model.PhaseSucceeded {
 		t.Fatalf("phase %s %+v", got.Phase(), got.Err())
+	}
+	again, err := svc.Submit(context.Background(), token(t, "image-3"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Phase() != model.PhaseSucceeded {
+		t.Fatalf("replay phase %s", again.Phase())
 	}
 	vol, err := svc.Volume(context.Background(), req.ID)
 	if err != nil {

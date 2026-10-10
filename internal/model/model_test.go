@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -464,6 +465,10 @@ func TestImageSourceSurvivesCodec(t *testing.T) {
 		if got.(Volume).Spec.Source != want {
 			t.Fatalf("source %q decoded %v", source, got.(Volume).Spec.Source)
 		}
+	}
+	bad := bytesReplaceSource(t, raw, "projects/shared/regions/vws-1/images/Bad")
+	if _, err := UnmarshalRecord(bad); err == nil || !strings.Contains(err.Error(), "image name") {
+		t.Fatalf("bad image %v", err)
 	}
 }
 

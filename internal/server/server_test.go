@@ -188,6 +188,19 @@ func TestCreateVolumeFromImage(t *testing.T) {
 	if vol.GetSpec().GetImage() != image {
 		t.Fatalf("image %q", vol.GetSpec().GetImage())
 	}
+	listed, err := vols.ListVolumes(ctx, &storagev1.ListVolumesRequest{Parent: "projects/a123/zones/az-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, item := range listed.GetVolumes() {
+		if item.GetName() == vol.GetName() && item.GetSpec().GetImage() == image {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("list %+v", listed.GetVolumes())
+	}
 	req.Volume.Spec.Source = &storagev1.VolumeSpec_Image{Image: "projects/shared/regions/vws-1/images/ubuntu-22-04"}
 	_, err = vols.CreateVolume(ctx, req)
 	st, ok := status.FromError(err)

@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -187,7 +188,8 @@ func (s Source) canonical() string {
 // the full image name for an image. An image name is six segments and a
 // snapshot wire value is one segment or projects/{project}/snapshots/{id},
 // so sourceFrom can tell them apart. A binary that predates images fails to
-// decode an image row instead of reading it as blank.
+// decode an image row instead of reading it as blank. SQLite reads one kind
+// in a single scan, so that failure stops the list.
 func (s Source) wire() string {
 	switch {
 	case !s.image.IsZero():
@@ -203,14 +205,23 @@ func sourceFrom(w string) (Source, error) {
 	if w == "" {
 		return NoSource(), nil
 	}
-	if img, err := ParseImageName(w); err == nil {
+	img, ierr := ParseImageName(w)
+	if ierr == nil {
 		return FromImage(img)
+	}
+	if imageWire(w) {
+		return Source{}, ierr
 	}
 	id, err := ParseSnapshotID(w)
 	if err != nil {
 		return Source{}, err
 	}
 	return FromSnapshot(id)
+}
+
+func imageWire(w string) bool {
+	parts := strings.Split(w, "/")
+	return len(parts) == 6 && parts[0] == "projects" && parts[2] == "regions" && parts[4] == "images"
 }
 
 // VolumeSpec is the desired shape of a volume.

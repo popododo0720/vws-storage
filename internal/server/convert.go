@@ -321,6 +321,8 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 			return model.CreateVolumeRequest{}, "", invalidSpec("image")
 		}
 	case *storagev1.VolumeSpec_Snapshot:
+		// An empty snapshot arm stays a blank volume, as GetSnapshot() == "" did.
+		// An empty image arm is a name that does not parse.
 		if snapName := source.Snapshot; snapName != "" {
 			snap, _, err := s.parseSnapshotName(snapName)
 			if err != nil {
