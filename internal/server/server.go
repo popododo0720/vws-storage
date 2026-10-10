@@ -302,30 +302,28 @@ func (s *Server) CreateObject(ctx context.Context, in *storagev1.CreateObjectReq
 		}
 		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	tok, err := tokenFor(in.GetRequestId())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	op, err := s.svc.Submit(ctx, tok, req)
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	if op.Upload != nil {
-		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		err := putBytes(putCtx, *op.Upload, contents)
-		cancel()
-		if err != nil {
-			if _, gerr := s.svc.Object(ctx, path); gerr != nil {
-				return nil, status.Error(codes.Unavailable, err.Error())
-			}
-		}
-	}
-	return s.operation(ctx, op)
+	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
-// UpdateObject is not a storage transition.
-func (s *Server) UpdateObject(context.Context, *storagev1.UpdateObjectRequest) (*longrunningpb.Operation, error) {
-	return nil, status.Error(codes.Unimplemented, "object update is not a storage transition")
+// UpdateObject implements ObjectService.
+// A payload replaces the object. An empty payload keeps the stored bytes and
+// applies content type and labels. Proto3 bytes have no presence, so a
+// zero-length replacement is expressed as an empty payload and keeps the bytes.
+func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectRequest) (*longrunningpb.Operation, error) {
+	if !objectMaskOK(in.GetUpdateMask().GetPaths()) {
+		return nil, status.Error(codes.Unimplemented, "object field mask")
+	}
+	req, contents, err := s.objectUpdate(in)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(s.objectName(req.Path), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
+	}
+	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
 // DeleteObject implements ObjectService.
@@ -433,6 +431,51 @@ func (s *Server) CancelOperation(context.Context, *longrunningpb.CancelOperation
 	return nil, status.Error(codes.Unimplemented, "operation cancel is not a storage transition")
 }
 
+func (s *Server) submitUpload(ctx context.Context, requestID string, req model.Request, body []byte) (*longrunningpb.Operation, error) {
+	if req.Project().IsZero() {
+		return nil, toStatus(invalidID("project"))
+	}
+	tok, err := tokenFor(requestID)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	op, err := s.svc.Submit(ctx, tok, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if op.Upload != nil {
+		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		err := putBytes(putCtx, *op.Upload, body)
+		cancel()
+		if err != nil {
+			again, gerr := s.svc.Operation(ctx, op.ID)
+			if gerr != nil || !again.Terminal() || !again.Err().IsZero() {
+				return nil, status.Error(codes.Unavailable, err.Error())
+			}
+			op = again
+		}
+	}
+	return s.operation(ctx, op)
+}
+
+func objectMaskOK(paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	var spec, labels bool
+	for _, p := range paths {
+		switch p {
+		case "spec":
+			spec = true
+		case "labels":
+			labels = true
+		default:
+			return false
+		}
+	}
+	return spec && labels
+}
+
 func (s *Server) submit(ctx context.Context, requestID string, req model.Request) (*longrunningpb.Operation, error) {
 	if req.Project().IsZero() {
 		return nil, toStatus(invalidID("project"))
@@ -488,6 +531,53 @@ func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjec
 		Path: path, Size: model.Bytes(len(body)), SHA256: sum, ContentType: spec.GetContentType(),
 		Labels: labels,
 	}, path, body, nil
+}
+
+func (s *Server) objectUpdate(in *storagev1.UpdateObjectRequest) (model.UpdateObjectRequest, []byte, error) {
+	obj := in.GetObject()
+	if obj == nil || obj.GetSpec() == nil {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("object")
+	}
+	path, err := s.parseObjectName(obj.GetName())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, err
+	}
+	spec := obj.GetSpec()
+	if spec.GetCacheControl() != "" || len(spec.GetMetadata()) > 0 {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("object")
+	}
+	labels, err := model.ParseLabels(obj.GetLabels())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("labels")
+	}
+	ver, err := expectedVersion(obj.GetEtag())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, err
+	}
+	body := in.GetContents()
+	if len(body) > maxInlineObject {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("contents")
+	}
+	req := model.UpdateObjectRequest{
+		Path: path, ContentType: spec.GetContentType(), Labels: labels,
+		Expected: ver, AllowMissing: in.GetAllowMissing(), HasContents: len(body) > 0,
+	}
+	if !req.HasContents {
+		if req.AllowMissing {
+			return model.UpdateObjectRequest{}, nil, invalidSpec("contents")
+		}
+		return req, nil, nil
+	}
+	sum := sha256.Sum256(body)
+	if spec.GetSha256() != "" {
+		parsed, err := model.ParseDigest(spec.GetSha256())
+		if err != nil || parsed != sum {
+			return model.UpdateObjectRequest{}, nil, invalidSpec("sha256")
+		}
+	}
+	req.Size = model.Bytes(len(body))
+	req.SHA256 = sum
+	return req, body, nil
 }
 
 func listPage[T any](ctx context.Context, size int32, token string, list func(context.Context, model.PageRequest) (model.Page[T], error)) (model.Page[T], error) {

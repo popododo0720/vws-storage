@@ -462,7 +462,7 @@ func (s *Server) operation(ctx context.Context, st storage.OperationStatus) (*lo
 	op := st.Operation
 	md := &commonv1.OperationMetadata{
 		Resource:   s.resourceName(ctx, op),
-		Verb:       verbOf(op.Kind()),
+		Verb:       verbOf(op),
 		Generation: 1,
 		CreateTime: stamp(op.Meta.CreateTime),
 	}
@@ -669,8 +669,11 @@ func observed(state model.Lifecycle, version model.Version) *commonv1.ObservedSt
 	return out
 }
 
-func verbOf(k model.Kind) commonv1.OperationVerb {
-	switch k {
+func verbOf(op model.Operation) commonv1.OperationVerb {
+	if up, ok := op.Work.(model.ObjectUpload); ok && !up.Replaces.IsZero() {
+		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
+	}
+	switch op.Kind() {
 	case model.KindCreateVolume, model.KindCreateSnapshot, model.KindCreateBucket, model.KindPutObject:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case model.KindDeleteVolume, model.KindDeleteSnapshot, model.KindDeleteBucket, model.KindDeleteObject:

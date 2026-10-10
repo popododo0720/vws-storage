@@ -199,6 +199,7 @@ type workWire struct {
 	SHA256      string            `json:"sha256"`
 	ContentType string            `json:"content_type"`
 	Labels      map[string]string `json:"labels,omitempty"`
+	Replaces    string            `json:"replaces,omitempty"`
 	Deadline    int64             `json:"deadline"`
 }
 
@@ -221,7 +222,8 @@ func workTo(w Work) (workWire, error) {
 		return workWire{
 			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.wire(), Key: w.Object.Path.Key.String(),
 			Generation: w.Object.Generation.String(), Size: int64(w.Size), SHA256: w.SHA256.String(),
-			ContentType: w.ContentType, Labels: w.Labels.Map(), Deadline: int64(timeTo(w.Deadline)),
+			ContentType: w.ContentType, Labels: w.Labels.Map(), Replaces: w.Replaces.String(),
+			Deadline: int64(timeTo(w.Deadline)),
 		}, nil
 	case ObjectPurge:
 		return workWire{
@@ -313,9 +315,13 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
+		replaces, err := generationOrZero(w.Replaces)
+		if err != nil {
+			return nil, err
+		}
 		return ObjectUpload{
 			Object: ref, Size: Bytes(w.Size), SHA256: sum, ContentType: w.ContentType,
-			Labels: labels, Deadline: timeFrom(timeWire(w.Deadline)),
+			Labels: labels, Replaces: replaces, Deadline: timeFrom(timeWire(w.Deadline)),
 		}, nil
 	case KindDeleteObject.String():
 		ref, err := objectRefFrom(w)
@@ -342,6 +348,13 @@ func objectRefFrom(w workWire) (ObjectRef, error) {
 		return ObjectRef{}, err
 	}
 	return ObjectRef{Path: ObjectPath{Bucket: b, Key: k}, Generation: g}, nil
+}
+
+func generationOrZero(s string) (Generation, error) {
+	if s == "" {
+		return Generation{}, nil
+	}
+	return ParseGeneration(s)
 }
 
 func digestOrZero(s string) (Digest, error) {

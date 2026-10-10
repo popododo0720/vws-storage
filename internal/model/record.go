@@ -220,14 +220,36 @@ type BucketCreation struct{ Bucket BucketName }
 // BucketDeletion deletes Bucket.
 type BucketDeletion struct{ Bucket BucketName }
 
+// ObjectContent is the comparable identity of an object's bytes and metadata.
+// Two uploads are the same contents when their ObjectContent values are equal.
+type ObjectContent struct {
+	Size        Bytes
+	SHA256      Digest
+	ContentType string
+	Labels      Labels
+}
+
+// Matches reports whether c is the stored head.
+func (c ObjectContent) Matches(o Object) bool {
+	return c.Size == o.Size && c.SHA256 == o.SHA256 && c.ContentType == o.ContentType && c.Labels == o.Labels
+}
+
 // ObjectUpload waits until Size bytes exist at Object, then commits them.
+// Replaces is the head generation this upload supersedes. Zero means the path
+// has no head. Replaces equal to Object.Generation is not a byte replacement.
 type ObjectUpload struct {
 	Object      ObjectRef
+	Replaces    Generation
 	Size        Bytes
 	SHA256      Digest
 	ContentType string
 	Labels      Labels
 	Deadline    time.Time
+}
+
+// Content returns the comparable contents of the upload.
+func (w ObjectUpload) Content() ObjectContent {
+	return ObjectContent{Size: w.Size, SHA256: w.SHA256, ContentType: w.ContentType, Labels: w.Labels}
 }
 
 // ObjectPurge deletes one generation of object bytes.

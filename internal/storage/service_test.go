@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -252,6 +253,89 @@ func TestPutAndGetObject(t *testing.T) {
 	_, err = svc.Submit(context.Background(), token(t, "del-bkt"), model.DeleteBucketRequest{Bucket: bucket})
 	if !errors.Is(err, model.ErrFailedPrecondition) {
 		t.Fatalf("delete bucket %v", err)
+	}
+}
+
+func TestUpdateObjectReplacesGeneration(t *testing.T) {
+	obj := fake.NewObjects(fake.ObjectOptions{Now: time.Now})
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), obj)
+	defer cancel()
+	bucket, err := model.ParseBucketName("logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bop, err := svc.Submit(context.Background(), token(t, "bkt"), model.CreateBucketRequest{Bucket: bucket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, bop.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	key, err := model.ParseObjectKey("day.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := model.ObjectPath{Bucket: bucket, Key: key}
+	first, err := svc.Submit(context.Background(), token(t, "put"), model.PutObjectRequest{Path: path, Size: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*first.Upload, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, first.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	head, err := svc.Object(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("world!!")
+	sum := sha256.Sum256(body)
+	upd, err := svc.Submit(context.Background(), token(t, "upd"), model.UpdateObjectRequest{
+		Path: path, Size: model.Bytes(len(body)), SHA256: sum, HasContents: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upd.Upload == nil {
+		t.Fatal("missing upload locator")
+	}
+	if err := obj.Accept(*upd.Upload, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*upd.Upload, body); err == nil {
+		t.Fatal("generation was written twice")
+	}
+	if got := waitDone(t, svc, upd.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("%s %+v", got.Phase(), got.Err())
+	}
+	up, ok := upd.Work.(model.ObjectUpload)
+	if !ok || up.Replaces != head.Generation {
+		t.Fatalf("work %+v", upd.Work)
+	}
+	next, err := svc.Object(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Generation == head.Generation || next.Size != model.Bytes(len(body)) || next.Meta.Version == head.Meta.Version {
+		t.Fatalf("head %+v", next)
+	}
+	_, err = svc.Submit(context.Background(), token(t, "again"), model.PutObjectRequest{Path: path, Size: 1})
+	if !errors.Is(err, model.ErrAlreadyExists) {
+		t.Fatalf("create %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	old := model.ObjectRef{Path: path, Generation: head.Generation}
+	for {
+		_, err := obj.Stat(context.Background(), old)
+		if errors.Is(err, backend.ErrNotFound) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("old generation %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

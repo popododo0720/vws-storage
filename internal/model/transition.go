@@ -322,6 +322,51 @@ func (a AvailableBucket) Upload(st Start, gen Generation, req PutObjectRequest, 
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
 
+// Replace admits an upload that supersedes head.
+// gen is the new generation. It must differ from head.Generation.
+func (a AvailableBucket) Replace(st Start, head Object, gen Generation, req UpdateObjectRequest, deadline time.Time) (Admitted, error) {
+	if gen.IsZero() || gen == head.Generation || st.Op.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	if !req.HasContents || req.Path != head.Path || head.Path.Bucket != a.b.Name {
+		return Admitted{}, fmt.Errorf("%w: object", ErrInvalidArgument)
+	}
+	work := ObjectUpload{
+		Object: ObjectRef{Path: req.Path, Generation: gen}, Replaces: head.Generation,
+		Size: req.Size, SHA256: req.SHA256, ContentType: req.ContentType, Labels: req.Labels,
+		Deadline: norm(deadline),
+	}
+	op := newOp(st, work)
+	ws := withToken(st, []Write{guardRec(a.b), guardRec(head), putNew(op)})
+	return Admitted{Change: writes(ws...), Op: op}, nil
+}
+
+// ApplyMeta changes content type and labels without a new generation.
+// Equal metadata finishes immediately and leaves the etag unchanged.
+func ApplyMeta(st Start, head Object, contentType string, labels Labels) (Admitted, error) {
+	if st.Op.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	work := ObjectUpload{
+		Object:      ObjectRef{Path: head.Path, Generation: head.Generation},
+		Size:        head.Size,
+		SHA256:      head.SHA256,
+		ContentType: contentType,
+		Labels:      labels,
+	}
+	if head.ContentType == contentType && head.Labels == labels {
+		return FinishNow(st, work, head)
+	}
+	next := head
+	next.ContentType = contentType
+	next.Labels = labels
+	next.Meta = bump(head.Meta, st.Now)
+	op := newOp(st, work)
+	op.State = OpSucceeded{}
+	ws := withToken(st, []Write{putUpdate(head, next), putNew(op)})
+	return Admitted{Change: writes(ws...), Op: op}, nil
+}
+
 // DeletingBucket proves a bucket was read in Deleting.
 type DeletingBucket struct {
 	b  Bucket
@@ -368,25 +413,26 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 	}
 	done := succeedOp(op.Operation(), now)
 	switch {
-	case head == nil:
+	case head == nil && w.Replaces.IsZero():
 		obj := Object{
 			Path: w.Object.Path, Generation: w.Object.Generation, Size: obs.Size,
 			ETag: obs.ETag, SHA256: obs.SHA256, ContentType: w.ContentType, Labels: w.Labels,
 			UploadedAt: norm(obs.UploadedAt), Meta: fresh(now),
 		}
 		return writes(putNew(obj), putUpdate(op.Operation(), done)), nil
+	case head == nil:
+		return abandonReplaced(op, purge, nil, now)
+	case !w.Replaces.IsZero() && head.Generation == w.Replaces && head.Generation != w.Object.Generation:
+		next := replacedHead(*head, w, obs, now)
+		old := ObjectRef{Path: head.Path, Generation: head.Generation}
+		reclaim := internalOp(purge, ObjectPurge{Object: old}, now)
+		return writes(putUpdate(*head, next), putNew(reclaim), putUpdate(op.Operation(), done)), nil
 	case head.Generation == w.Object.Generation:
 		return writes(guardRec(*head), putUpdate(op.Operation(), done)), nil
+	case !w.Replaces.IsZero():
+		return abandonReplaced(op, purge, head, now)
 	case !head.UploadedAt.After(obs.UploadedAt):
-		next := *head
-		next.Generation = w.Object.Generation
-		next.Size = obs.Size
-		next.ETag = obs.ETag
-		next.SHA256 = obs.SHA256
-		next.ContentType = w.ContentType
-		next.Labels = w.Labels
-		next.UploadedAt = norm(obs.UploadedAt)
-		next.Meta = bump(head.Meta, now)
+		next := replacedHead(*head, w, obs, now)
 		old := ObjectRef{Path: head.Path, Generation: head.Generation}
 		reclaim := internalOp(purge, ObjectPurge{Object: old}, now)
 		return writes(putUpdate(*head, next), putNew(reclaim), putUpdate(op.Operation(), done)), nil
@@ -394,6 +440,32 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 		reclaim := internalOp(purge, ObjectPurge{Object: w.Object}, now)
 		return writes(guardRec(*head), putNew(reclaim), putUpdate(op.Operation(), done)), nil
 	}
+}
+
+func replacedHead(head Object, w ObjectUpload, obs ObservedObject, now time.Time) Object {
+	next := head
+	next.Generation = w.Object.Generation
+	next.Size = obs.Size
+	next.ETag = obs.ETag
+	next.SHA256 = obs.SHA256
+	next.ContentType = w.ContentType
+	next.Labels = w.Labels
+	next.UploadedAt = norm(obs.UploadedAt)
+	next.Meta = bump(head.Meta, now)
+	return next
+}
+
+func abandonReplaced(op RunningOp[ObjectUpload], purge OperationID, head *Object, now time.Time) (Change, error) {
+	if purge.IsZero() {
+		return Change{}, fmt.Errorf("%w: purge", ErrInvalidArgument)
+	}
+	reclaim := internalOp(purge, ObjectPurge{Object: op.Work().Object}, now)
+	failed := failOp(op.Operation(), Status{Code: CodeFailedPrecondition, Message: "object generation changed"}, now)
+	ws := []Write{putNew(reclaim), putUpdate(op.Operation(), failed)}
+	if head != nil {
+		ws = append([]Write{guardRec(*head)}, ws...)
+	}
+	return writes(ws...), nil
 }
 
 // AbandonUpload fails an upload after its bytes were deleted.

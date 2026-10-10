@@ -231,6 +231,22 @@ type PutObjectRequest struct {
 	Labels      Labels
 }
 
+// UpdateObjectRequest overwrites an existing object, or creates one when
+// AllowMissing is set. HasContents is false when the caller omitted the
+// payload; the stored bytes stay and only ContentType and Labels change.
+// An empty payload cannot be told from an omitted one, so a zero-length
+// replacement is not a request this type can express.
+type UpdateObjectRequest struct {
+	Path         ObjectPath
+	Size         Bytes
+	SHA256       Digest
+	ContentType  string
+	Labels       Labels
+	HasContents  bool
+	Expected     Version
+	AllowMissing bool
+}
+
 // DeleteObjectRequest removes an object from reads and reclaims its bytes.
 type DeleteObjectRequest struct {
 	Path         ObjectPath
@@ -246,6 +262,7 @@ func (r DeleteSnapshotRequest) Project() Project { return r.Snapshot.Project() }
 func (r CreateBucketRequest) Project() Project   { return r.Bucket.Project() }
 func (r DeleteBucketRequest) Project() Project   { return r.Bucket.Project() }
 func (r PutObjectRequest) Project() Project      { return r.Path.Project() }
+func (r UpdateObjectRequest) Project() Project   { return r.Path.Project() }
 func (r DeleteObjectRequest) Project() Project   { return r.Path.Project() }
 
 func (r CreateVolumeRequest) Validate() error {
@@ -309,11 +326,35 @@ func (r PutObjectRequest) Validate() error {
 	if r.Size < 0 || r.Size > MaxObjectBytes {
 		return fmt.Errorf("%w: object size", ErrInvalidArgument)
 	}
-	if len(r.ContentType) > 128 {
+	return validateContentType(r.ContentType)
+}
+
+// Validate implements Request.
+func (r UpdateObjectRequest) Validate() error {
+	if r.Path.Bucket.IsZero() || r.Path.Key.IsZero() {
+		return fmt.Errorf("%w: object path", ErrInvalidArgument)
+	}
+	if r.AllowMissing && !r.HasContents {
+		return fmt.Errorf("%w: contents", ErrInvalidArgument)
+	}
+	if !r.HasContents {
+		if r.Size != 0 || !r.SHA256.IsZero() {
+			return fmt.Errorf("%w: contents", ErrInvalidArgument)
+		}
+		return validateContentType(r.ContentType)
+	}
+	if r.Size < 0 || r.Size > MaxObjectBytes {
+		return fmt.Errorf("%w: object size", ErrInvalidArgument)
+	}
+	return validateContentType(r.ContentType)
+}
+
+func validateContentType(s string) error {
+	if len(s) > 128 {
 		return fmt.Errorf("%w: content type", ErrInvalidArgument)
 	}
-	for i := 0; i < len(r.ContentType); i++ {
-		if r.ContentType[i] < 0x20 || r.ContentType[i] == 0x7f {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
 			return fmt.Errorf("%w: content type", ErrInvalidArgument)
 		}
 	}
@@ -360,6 +401,10 @@ func (r PutObjectRequest) fingerprint() string {
 	return fmt.Sprintf("put-object\n%s\n%s\n%d\n%s\n%s\n%s", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.ContentType, r.Labels.canonical())
 }
 
+func (r UpdateObjectRequest) fingerprint() string {
+	return fmt.Sprintf("update-object\n%s\n%s\n%d\n%s\n%s\n%s\n%t\n%d\n%t", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.ContentType, r.Labels.canonical(), r.HasContents, r.Expected, r.AllowMissing)
+}
+
 func (r DeleteObjectRequest) fingerprint() string {
 	return fmt.Sprintf("delete-object\n%s\n%d\n%t", r.Path.String(), r.Expected, r.AllowMissing)
 }
@@ -371,7 +416,23 @@ func (DeleteSnapshotRequest) isRequest() {}
 func (CreateBucketRequest) isRequest()   {}
 func (DeleteBucketRequest) isRequest()   {}
 func (PutObjectRequest) isRequest()      {}
+func (UpdateObjectRequest) isRequest()   {}
 func (DeleteObjectRequest) isRequest()   {}
+
+// Content returns the comparable contents of the upload.
+func (r PutObjectRequest) Content() ObjectContent {
+	return ObjectContent{Size: r.Size, SHA256: r.SHA256, ContentType: r.ContentType, Labels: r.Labels}
+}
+
+// Content returns the comparable contents of the update.
+func (r UpdateObjectRequest) Content() ObjectContent {
+	return ObjectContent{Size: r.Size, SHA256: r.SHA256, ContentType: r.ContentType, Labels: r.Labels}
+}
+
+// AsPut returns the create-shaped request for an allow-missing update.
+func (r UpdateObjectRequest) AsPut() PutObjectRequest {
+	return PutObjectRequest{Path: r.Path, Size: r.Size, SHA256: r.SHA256, ContentType: r.ContentType, Labels: r.Labels}
+}
 
 // Fingerprint is the canonical hash of a Request.
 type Fingerprint [32]byte

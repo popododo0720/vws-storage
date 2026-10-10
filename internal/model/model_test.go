@@ -161,6 +161,71 @@ func TestCommitUploadReplacesOlderHead(t *testing.T) {
 	}
 }
 
+func TestCommitUploadReplacesNamedGeneration(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	path := ObjectPath{Bucket: mustBucket(t), Key: mustKey(t, "a.bin")}
+	headGen := NewGeneration()
+	head := &Object{
+		Path: path, Generation: headGen, Size: 4, ETag: "old",
+		UploadedAt: now.Add(time.Hour), Meta: fresh(now),
+	}
+	upGen := NewGeneration()
+	work := ObjectUpload{
+		Object: ObjectRef{Path: path, Generation: upGen}, Replaces: headGen, Size: 4,
+		Deadline: now.Add(2 * time.Hour),
+	}
+	op := Operation{ID: NewOperationID(), Work: work, State: OpRunning{}, Meta: fresh(now)}
+	run, ok := AsRunning[ObjectUpload](op)
+	if !ok {
+		t.Fatal("not running")
+	}
+	obs := ObservedObject{Size: 4, ETag: "new", UploadedAt: now}
+	ch, err := CommitUpload(run, head, obs, NewOperationID(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := putNext(t, ch, "object").(Object)
+	if next.Generation != upGen || next.ETag != "new" {
+		t.Fatalf("head %+v", next)
+	}
+	var sawPurge bool
+	for _, w := range ch.Writes() {
+		put, ok := w.(Put)
+		if !ok || put.Prev != nil {
+			continue
+		}
+		nop, ok := put.Next.(Operation)
+		if !ok {
+			continue
+		}
+		purge, ok := nop.Work.(ObjectPurge)
+		if ok && purge.Object.Generation == headGen {
+			sawPurge = true
+		}
+	}
+	if !sawPurge {
+		t.Fatal("old generation was not purged")
+	}
+}
+
+func TestReplaceRejectsSameGeneration(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	bucket := Bucket{Name: mustBucket(t), State: Available{}, Meta: fresh(now)}
+	avail, ok := bucket.AsAvailable()
+	if !ok {
+		t.Fatal("bucket")
+	}
+	head := Object{
+		Path: ObjectPath{Bucket: bucket.Name, Key: mustKey(t, "a.bin")}, Generation: NewGeneration(), Meta: fresh(now),
+	}
+	_, err := avail.Replace(Start{Op: NewOperationID(), Now: now}, head, head.Generation, UpdateObjectRequest{
+		Path: head.Path, HasContents: true, Size: 1,
+	}, now.Add(time.Hour))
+	if err == nil {
+		t.Fatal("same generation")
+	}
+}
+
 func TestDeleteKeepsHeadUntilPurge(t *testing.T) {
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	obj := Object{
