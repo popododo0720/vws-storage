@@ -14,7 +14,7 @@ go run ./cmd/vws-storage
 | --- | --- | --- |
 | `-listen` | `127.0.0.1:7400` | gRPC address |
 | `-db` | empty | SQLite file. A relative path is resolved and its parent directory is created. Empty uses memory, which disappears on exit |
-| `-zones` | `az-1` | Comma-separated zone names |
+| `-zones` | `vws-1a` | Comma-separated zone names |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
 
 One process may open a given SQLite file.

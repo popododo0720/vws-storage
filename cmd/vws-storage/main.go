@@ -35,7 +35,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("vws-storage", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:7400", "gRPC listen address")
 	db := fs.String("db", "", "SQLite file; empty keeps state in memory")
-	zonesFlag := fs.String("zones", "az-1", "comma-separated zone names")
+	zonesFlag := fs.String("zones", defaultZones, "comma-separated zone names")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -107,6 +107,8 @@ func run(args []string) error {
 	}
 	return serveErr
 }
+
+const defaultZones = "vws-1a"
 
 func parseZones(s string) ([]model.Zone, error) {
 	var zones []model.Zone
