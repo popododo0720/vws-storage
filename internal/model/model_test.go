@@ -69,6 +69,47 @@ func TestVolumeCreateThenReady(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeFingerprintIsStable(t *testing.T) {
+	zone, err := ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ParseVolumeID("data-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = id.WithProject(project)
+	blank := CreateVolumeRequest{ID: id, Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD, Source: NoSource()}}
+	fp, err := HashRequest(blank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fp.String(); got != "a018b471493fa31bacf0ea333722c6743a0d92142c373119af6cd082af13f2c1" {
+		t.Fatalf("blank %s", got)
+	}
+	snapID, err := ParseSnapshotID("snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := FromSnapshot(snapID.WithProject(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapReq := blank
+	snapReq.Spec.Source = src
+	fp, err = HashRequest(snapReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fp.String(); got != "f308b1170e48ba7854e3290dd5f98fd3a27bf89482ca34c3b72c8041388a838e" {
+		t.Fatalf("snapshot %s", got)
+	}
+}
+
 func TestBlankSourceIsNotASnapshot(t *testing.T) {
 	if _, ok := NoSource().Snapshot(); ok {
 		t.Fatal("empty source looked like a snapshot")
