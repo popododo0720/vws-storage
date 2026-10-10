@@ -33,16 +33,20 @@ func (s *Service) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.scanInterval)
 	defer ticker.Stop()
 	for {
-		if ctx.Err() == nil {
+		// Sample the context once. A second Err call can observe a cancel that
+		// the exit check missed and then drop ctx.Done from the select, which
+		// waits forever when no worker is left to send.
+		stopping := ctx.Err() != nil
+		if !stopping {
 			s.fill(ctx, inflight, hold, done)
 		}
-		if ctx.Err() != nil && len(inflight) == 0 {
+		if stopping && len(inflight) == 0 {
 			return nil
 		}
 		var wake <-chan model.OperationID
 		var tick <-chan time.Time
 		var cancel <-chan struct{}
-		if ctx.Err() == nil {
+		if !stopping {
 			wake = s.wake
 			tick = ticker.C
 			cancel = ctx.Done()
