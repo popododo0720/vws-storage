@@ -170,8 +170,9 @@ type Request interface {
 // CreateVolumeRequest creates a blank volume, or restores one when Source is set.
 // ID is the client-chosen volume id. The zero ID asks the engine to mint one.
 type CreateVolumeRequest struct {
-	ID   VolumeID
-	Spec VolumeSpec
+	ID     VolumeID
+	Spec   VolumeSpec
+	Labels Labels
 }
 
 // DeleteVolumeRequest deletes an available volume.
@@ -190,10 +191,12 @@ type DeleteVolumeRequest struct {
 // Region is the region in the snapshot parent. Zero is accepted by the engine
 // and rejected by the server.
 type CreateSnapshotRequest struct {
-	ID     SnapshotID
-	Source VolumeID
-	Zone   Zone
-	Region Region
+	ID          SnapshotID
+	Source      VolumeID
+	Zone        Zone
+	Region      Region
+	Labels      Labels
+	Description string
 }
 
 // DeleteSnapshotRequest deletes an available snapshot.
@@ -209,6 +212,7 @@ type DeleteSnapshotRequest struct {
 type CreateBucketRequest struct {
 	Bucket BucketName
 	Region Region
+	Labels Labels
 }
 
 // DeleteBucketRequest deletes an empty bucket.
@@ -224,6 +228,7 @@ type PutObjectRequest struct {
 	Size        Bytes
 	SHA256      Digest
 	ContentType string
+	Labels      Labels
 }
 
 // DeleteObjectRequest removes an object from reads and reclaims its bytes.
@@ -328,7 +333,7 @@ func (r CreateVolumeRequest) fingerprint() string {
 	if id, ok := r.Spec.Source.Snapshot(); ok {
 		src = id.String()
 	}
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src)
+	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src, r.Labels.canonical())
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {
@@ -336,7 +341,7 @@ func (r DeleteVolumeRequest) fingerprint() string {
 }
 
 func (r CreateSnapshotRequest) fingerprint() string {
-	return "create-snapshot\n" + r.ID.String() + "\n" + r.Source.String() + "\n" + r.Zone.String() + "\n" + r.Region.String()
+	return "create-snapshot\n" + r.ID.String() + "\n" + r.Source.String() + "\n" + r.Zone.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical() + "\n" + r.Description
 }
 
 func (r DeleteSnapshotRequest) fingerprint() string {
@@ -344,7 +349,7 @@ func (r DeleteSnapshotRequest) fingerprint() string {
 }
 
 func (r CreateBucketRequest) fingerprint() string {
-	return "create-bucket\n" + r.Bucket.String() + "\n" + r.Region.String()
+	return "create-bucket\n" + r.Bucket.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical()
 }
 
 func (r DeleteBucketRequest) fingerprint() string {
@@ -352,7 +357,7 @@ func (r DeleteBucketRequest) fingerprint() string {
 }
 
 func (r PutObjectRequest) fingerprint() string {
-	return fmt.Sprintf("put-object\n%s\n%s\n%d\n%s\n%s", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.ContentType)
+	return fmt.Sprintf("put-object\n%s\n%s\n%d\n%s\n%s\n%s", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.ContentType, r.Labels.canonical())
 }
 
 func (r DeleteObjectRequest) fingerprint() string {

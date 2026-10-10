@@ -13,7 +13,7 @@ func NewVolume(st Start, id VolumeID, req CreateVolumeRequest) (Admitted, error)
 	if id.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
-	vol := Volume{ID: id, Spec: req.Spec, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
+	vol := Volume{ID: id, Spec: req.Spec, Labels: req.Labels, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
 	op := newOp(st, VolumeCreation{Volume: id, Spec: req.Spec})
 	ws := withToken(st, []Write{putNew(vol), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -78,12 +78,12 @@ func (a AvailableVolume) Delete(st Start) (Admitted, error) {
 }
 
 // Snapshot admits a snapshot of the volume and guards the volume row.
-func (a AvailableVolume) Snapshot(st Start, id SnapshotID, region Region) (Admitted, error) {
+func (a AvailableVolume) Snapshot(st Start, id SnapshotID, region Region, labels Labels, description string) (Admitted, error) {
 	if id.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
 	snap := Snapshot{
-		ID: id, Source: a.v.ID, Region: region, Size: a.v.Spec.Size,
+		ID: id, Source: a.v.ID, Region: region, Labels: labels, Description: description, Size: a.v.Spec.Size,
 		State: Creating{Op: st.Op}, Meta: fresh(st.Now),
 	}
 	op := newOp(st, SnapshotCreation{Snapshot: id, Source: a.v.ID, Region: region})
@@ -195,7 +195,7 @@ func (a AvailableSnapshot) RestoreVolume(st Start, id VolumeID, req CreateVolume
 	if id.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
-	vol := Volume{ID: id, Spec: req.Spec, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
+	vol := Volume{ID: id, Spec: req.Spec, Labels: req.Labels, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
 	op := newOp(st, VolumeCreation{Volume: id, Spec: req.Spec})
 	ws := withToken(st, []Write{guardRec(a.s), putNew(vol), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -240,7 +240,7 @@ func NewBucket(st Start, req CreateBucketRequest) (Admitted, error) {
 	if req.Bucket.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: bucket", ErrInvalidArgument)
 	}
-	b := Bucket{Name: req.Bucket, Region: req.Region, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
+	b := Bucket{Name: req.Bucket, Region: req.Region, Labels: req.Labels, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
 	op := newOp(st, BucketCreation{Bucket: req.Bucket})
 	ws := withToken(st, []Write{putNew(b), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -315,7 +315,7 @@ func (a AvailableBucket) Upload(st Start, gen Generation, req PutObjectRequest, 
 	ref := ObjectRef{Path: req.Path, Generation: gen}
 	work := ObjectUpload{
 		Object: ref, Size: req.Size, SHA256: req.SHA256,
-		ContentType: req.ContentType, Deadline: norm(deadline),
+		ContentType: req.ContentType, Labels: req.Labels, Deadline: norm(deadline),
 	}
 	op := newOp(st, work)
 	ws := withToken(st, []Write{guardRec(a.b), putNew(op)})
@@ -371,7 +371,7 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 	case head == nil:
 		obj := Object{
 			Path: w.Object.Path, Generation: w.Object.Generation, Size: obs.Size,
-			ETag: obs.ETag, SHA256: obs.SHA256, ContentType: w.ContentType,
+			ETag: obs.ETag, SHA256: obs.SHA256, ContentType: w.ContentType, Labels: w.Labels,
 			UploadedAt: norm(obs.UploadedAt), Meta: fresh(now),
 		}
 		return writes(putNew(obj), putUpdate(op.Operation(), done)), nil
@@ -384,6 +384,7 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 		next.ETag = obs.ETag
 		next.SHA256 = obs.SHA256
 		next.ContentType = w.ContentType
+		next.Labels = w.Labels
 		next.UploadedAt = norm(obs.UploadedAt)
 		next.Meta = bump(head.Meta, now)
 		old := ObjectRef{Path: head.Path, Generation: head.Generation}

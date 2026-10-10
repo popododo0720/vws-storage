@@ -333,6 +333,113 @@ func TestObjectNameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLabelsRoundTrip(t *testing.T) {
+	vols, snaps, buckets, objects, ops := dial(t, "http://127.0.0.1")
+	ctx := context.Background()
+	_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{
+			Labels: map[string]string{"Bad": "x"},
+			Spec:   &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD},
+		},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("bad label code %v err %v", st.Code(), err)
+	}
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/local/zones/az-1/volumes/data-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetLabels()["env"] != "prod" || len(vol.GetLabels()) != 1 {
+		t.Fatalf("volume labels %v", vol.GetLabels())
+	}
+	_, err = snaps.CreateSnapshot(ctx, &storagev1.CreateSnapshotRequest{
+		Parent: "projects/local/regions/local", SnapshotId: "snap-1",
+		Snapshot: &storagev1.Snapshot{
+			Spec: &storagev1.SnapshotSpec{Volume: vol.GetName(), Description: "bad\n"},
+		},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("bad description code %v err %v", st.Code(), err)
+	}
+	sop, err := snaps.CreateSnapshot(ctx, &storagev1.CreateSnapshotRequest{
+		Parent: "projects/local/regions/local", SnapshotId: "snap-1",
+		Snapshot: &storagev1.Snapshot{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.SnapshotSpec{Volume: vol.GetName(), Description: "nightly copy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, sop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	snap, err := snaps.GetSnapshot(ctx, &storagev1.GetSnapshotRequest{Name: "projects/local/regions/local/snapshots/snap-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GetSpec().GetDescription() != "nightly copy" || snap.GetLabels()["env"] != "prod" {
+		t.Fatalf("snapshot %+v", snap)
+	}
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/local", BucketId: "logs",
+		Bucket: &storagev1.Bucket{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.BucketSpec{Region: "local"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	bucket, err := buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/local/buckets/logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bucket.GetLabels()["env"] != "prod" {
+		t.Fatalf("bucket labels %v", bucket.GetLabels())
+	}
+	oop, err := objects.CreateObject(ctx, &storagev1.CreateObjectRequest{
+		Parent: "projects/local/buckets/logs", ObjectId: "day.bin",
+		Object: &storagev1.Object{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.ObjectSpec{ContentType: "text/plain"},
+		},
+		Contents: []byte("hello"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, oop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	obj, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: "projects/local/buckets/logs/objects/day.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.GetLabels()["env"] != "prod" {
+		t.Fatalf("object labels %v", obj.GetLabels())
+	}
+}
+
 func reasonOf(st *status.Status) string {
 	for _, d := range st.Details() {
 		info, ok := d.(*errdetails.ErrorInfo)

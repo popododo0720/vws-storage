@@ -49,26 +49,30 @@ func (Deleting) isLifecycle()  {}
 
 // Volume is an EBS-like block volume.
 type Volume struct {
-	ID    VolumeID
-	Spec  VolumeSpec
-	State Lifecycle
-	Meta  Meta
+	ID     VolumeID
+	Spec   VolumeSpec
+	Labels Labels
+	State  Lifecycle
+	Meta   Meta
 }
 
 // Snapshot is a point-in-time copy of a volume.
 type Snapshot struct {
-	ID     SnapshotID
-	Source VolumeID
-	Region Region
-	Size   Bytes
-	State  Lifecycle
-	Meta   Meta
+	ID          SnapshotID
+	Source      VolumeID
+	Region      Region
+	Labels      Labels
+	Description string
+	Size        Bytes
+	State       Lifecycle
+	Meta        Meta
 }
 
 // Bucket is an S3-compatible bucket.
 type Bucket struct {
 	Name   BucketName
 	Region Region
+	Labels Labels
 	State  Lifecycle
 	Meta   Meta
 }
@@ -82,6 +86,7 @@ type Object struct {
 	ETag        ETag
 	SHA256      Digest
 	ContentType string
+	Labels      Labels
 	UploadedAt  time.Time
 	Meta        Meta
 }
@@ -221,6 +226,7 @@ type ObjectUpload struct {
 	Size        Bytes
 	SHA256      Digest
 	ContentType string
+	Labels      Labels
 	Deadline    time.Time
 }
 

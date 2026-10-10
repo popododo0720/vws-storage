@@ -305,8 +305,9 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	if in.GetVolume() == nil || specIn == nil {
 		return model.CreateVolumeRequest{}, "", invalidSpec("volume")
 	}
-	if err := rejectLabels(in.GetVolume().GetLabels()); err != nil {
-		return model.CreateVolumeRequest{}, "", err
+	labels, err := model.ParseLabels(in.GetVolume().GetLabels())
+	if err != nil {
+		return model.CreateVolumeRequest{}, "", invalidSpec("labels")
 	}
 	if specIn.GetImage() != "" {
 		return model.CreateVolumeRequest{}, "", invalidSpec("image")
@@ -339,7 +340,7 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	}
 	return model.CreateVolumeRequest{ID: id, Spec: model.VolumeSpec{
 		Size: size, Zone: zone, Type: typ, Source: src,
-	}}, name, nil
+	}, Labels: labels}, name, nil
 }
 
 func (s *Server) snapshotCreate(in *storagev1.CreateSnapshotRequest) (model.CreateSnapshotRequest, string, error) {
@@ -356,10 +357,12 @@ func (s *Server) snapshotCreate(in *storagev1.CreateSnapshotRequest) (model.Crea
 	if snap == nil || snap.GetSpec() == nil {
 		return model.CreateSnapshotRequest{}, "", invalidSpec("snapshot")
 	}
-	if err := rejectLabels(snap.GetLabels()); err != nil {
-		return model.CreateSnapshotRequest{}, "", err
+	labels, err := model.ParseLabels(snap.GetLabels())
+	if err != nil {
+		return model.CreateSnapshotRequest{}, "", invalidSpec("labels")
 	}
-	if snap.GetSpec().GetDescription() != "" {
+	desc, err := model.ParseDescription(snap.GetSpec().GetDescription())
+	if err != nil {
 		return model.CreateSnapshotRequest{}, "", invalidSpec("description")
 	}
 	vol, zone, err := s.parseVolumeName(snap.GetSpec().GetVolume())
@@ -373,7 +376,9 @@ func (s *Server) snapshotCreate(in *storagev1.CreateSnapshotRequest) (model.Crea
 	if got := snap.GetName(); got != "" && got != name {
 		return model.CreateSnapshotRequest{}, "", invalidID("snapshot name")
 	}
-	return model.CreateSnapshotRequest{ID: id, Source: vol, Zone: zone, Region: region}, name, nil
+	return model.CreateSnapshotRequest{
+		ID: id, Source: vol, Zone: zone, Region: region, Labels: labels, Description: desc,
+	}, name, nil
 }
 
 func (s *Server) bucketCreate(in *storagev1.CreateBucketRequest) (model.CreateBucketRequest, string, error) {
@@ -390,8 +395,9 @@ func (s *Server) bucketCreate(in *storagev1.CreateBucketRequest) (model.CreateBu
 	if b == nil || b.GetSpec() == nil {
 		return model.CreateBucketRequest{}, "", invalidSpec("bucket")
 	}
-	if err := rejectLabels(b.GetLabels()); err != nil {
-		return model.CreateBucketRequest{}, "", err
+	labels, err := model.ParseLabels(b.GetLabels())
+	if err != nil {
+		return model.CreateBucketRequest{}, "", invalidSpec("labels")
 	}
 	if b.GetSpec().GetVersioning() {
 		return model.CreateBucketRequest{}, "", invalidSpec("versioning")
@@ -404,7 +410,7 @@ func (s *Server) bucketCreate(in *storagev1.CreateBucketRequest) (model.CreateBu
 	if got := b.GetName(); got != "" && got != name {
 		return model.CreateBucketRequest{}, "", invalidID("bucket name")
 	}
-	return model.CreateBucketRequest{Bucket: id, Region: region}, name, nil
+	return model.CreateBucketRequest{Bucket: id, Region: region, Labels: labels}, name, nil
 }
 
 func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
@@ -416,13 +422,6 @@ func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
 	default:
 		return 0, invalidSpec("volume type")
 	}
-}
-
-func rejectLabels(labels map[string]string) error {
-	if len(labels) > 0 {
-		return invalidSpec("labels")
-	}
-	return nil
 }
 
 func tokenFor(requestID string) (model.ClientToken, error) {
@@ -574,6 +573,7 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volume {
 	out := &storagev1.Volume{
 		Name: s.volumeName(v.Spec.Zone, v.ID), Generation: int64(v.Meta.Version), Etag: etagOf(v.Meta),
+		Labels: v.Labels.Map(),
 		Spec: &storagev1.VolumeSpec{
 			SizeGib: int64(v.Spec.Size / model.GiB), Type: protoVolumeType(v.Spec.Type),
 		},
@@ -600,7 +600,8 @@ func (s *Server) snapshotMsg(ctx context.Context, sn model.Snapshot) *storagev1.
 	}
 	out := &storagev1.Snapshot{
 		Name: s.snapshotName(sn.ID, sn.Region), Generation: int64(sn.Meta.Version), Etag: etagOf(sn.Meta),
-		Spec:       &storagev1.SnapshotSpec{Volume: volume},
+		Labels:     sn.Labels.Map(),
+		Spec:       &storagev1.SnapshotSpec{Volume: volume, Description: sn.Description},
 		Status:     &storagev1.SnapshotStatus{Observed: observed(sn.State, sn.Meta.Version), SizeGib: int64(sn.Size / model.GiB)},
 		CreateTime: stamp(sn.Meta.CreateTime), UpdateTime: stamp(sn.Meta.UpdateTime),
 	}
@@ -613,6 +614,7 @@ func (s *Server) snapshotMsg(ctx context.Context, sn model.Snapshot) *storagev1.
 func (s *Server) bucketMsg(b model.Bucket) *storagev1.Bucket {
 	out := &storagev1.Bucket{
 		Name: s.bucketName(b.Name), Generation: int64(b.Meta.Version), Etag: etagOf(b.Meta),
+		Labels:     b.Labels.Map(),
 		Spec:       &storagev1.BucketSpec{Region: b.Region.String()},
 		Status:     &storagev1.BucketStatus{Observed: observed(b.State, b.Meta.Version)},
 		CreateTime: stamp(b.Meta.CreateTime), UpdateTime: stamp(b.Meta.UpdateTime),
@@ -626,7 +628,8 @@ func (s *Server) bucketMsg(b model.Bucket) *storagev1.Bucket {
 func (s *Server) objectMsg(o model.Object) *storagev1.Object {
 	return &storagev1.Object{
 		Name: s.objectName(o.Path), Generation: int64(o.Meta.Version), Etag: etagOf(o.Meta),
-		Spec: &storagev1.ObjectSpec{ContentType: o.ContentType, Sha256: o.SHA256.String()},
+		Labels: o.Labels.Map(),
+		Spec:   &storagev1.ObjectSpec{ContentType: o.ContentType, Sha256: o.SHA256.String()},
 		Status: &storagev1.ObjectStatus{
 			Observed: observed(model.Available{}, o.Meta.Version), SizeBytes: int64(o.Size),
 		},

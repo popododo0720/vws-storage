@@ -456,8 +456,9 @@ func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjec
 	if in.GetObject() == nil || in.GetObject().GetSpec() == nil {
 		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("object")
 	}
-	if err := rejectLabels(in.GetObject().GetLabels()); err != nil {
-		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
+	labels, err := model.ParseLabels(in.GetObject().GetLabels())
+	if err != nil {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("labels")
 	}
 	spec := in.GetObject().GetSpec()
 	if spec.GetCacheControl() != "" || len(spec.GetMetadata()) > 0 {
@@ -485,6 +486,7 @@ func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjec
 	}
 	return model.PutObjectRequest{
 		Path: path, Size: model.Bytes(len(body)), SHA256: sum, ContentType: spec.GetContentType(),
+		Labels: labels,
 	}, path, body, nil
 }
 

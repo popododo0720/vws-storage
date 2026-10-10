@@ -14,7 +14,7 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 	b, err := r.Bucket(ctx, req.Bucket)
 	switch {
 	case err == nil:
-		if _, del := b.State.(model.Deleting); del || b.Region != req.Region {
+		if _, del := b.State.(model.Deleting); del || b.Region != req.Region || b.Labels != req.Labels {
 			return model.Admitted{}, fmt.Errorf("%w: bucket", model.ErrAlreadyExists)
 		}
 		var creating model.OperationID

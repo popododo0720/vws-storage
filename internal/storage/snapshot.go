@@ -22,7 +22,7 @@ func (s *Service) admitCreateSnapshot(ctx context.Context, r store.Reader, st mo
 			if c, ok := snap.State.(model.Creating); ok {
 				creating = c.Op
 			}
-			if snap.Region != req.Region {
+			if snap.Region != req.Region || snap.Labels != req.Labels || snap.Description != req.Description {
 				return model.Admitted{}, fmt.Errorf("%w: snapshot", model.ErrAlreadyExists)
 			}
 			return replay(ctx, r, st, creating, model.SnapshotCreation{Snapshot: snap.ID, Source: snap.Source, Region: snap.Region}, snap)
@@ -55,7 +55,7 @@ func (s *Service) admitCreateSnapshot(ctx context.Context, r store.Reader, st mo
 	if !id.Project().IsZero() && id.Project() != req.Source.Project() {
 		return model.Admitted{}, fmt.Errorf("%w: project", model.ErrInvalidArgument)
 	}
-	return avail.Snapshot(st, id, req.Region)
+	return avail.Snapshot(st, id, req.Region, req.Labels, req.Description)
 }
 
 func (s *Service) admitDeleteSnapshot(ctx context.Context, r store.Reader, st model.Start, req model.DeleteSnapshotRequest) (model.Admitted, error) {

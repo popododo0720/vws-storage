@@ -15,7 +15,7 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 	head, err := r.Object(ctx, req.Path)
 	switch {
 	case err == nil:
-		if head.SHA256 != req.SHA256 || head.ContentType != req.ContentType || head.Size != req.Size {
+		if head.SHA256 != req.SHA256 || head.ContentType != req.ContentType || head.Size != req.Size || head.Labels != req.Labels {
 			return model.Admitted{}, fmt.Errorf("%w: object", model.ErrAlreadyExists)
 		}
 		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
@@ -40,6 +40,7 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 			Size:        head.Size,
 			SHA256:      head.SHA256,
 			ContentType: head.ContentType,
+			Labels:      head.Labels,
 		}
 		return model.FinishNow(st, work, head)
 	case !errors.Is(err, model.ErrNotFound):
@@ -52,7 +53,7 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 	if busy {
 		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
 			up, is := op.Work.(model.ObjectUpload)
-			return is && up.Object.Path == req.Path && up.SHA256 == req.SHA256 && up.ContentType == req.ContentType && up.Size == req.Size
+			return is && up.Object.Path == req.Path && up.SHA256 == req.SHA256 && up.ContentType == req.ContentType && up.Size == req.Size && up.Labels == req.Labels
 		})
 		if err != nil {
 			return model.Admitted{}, err
