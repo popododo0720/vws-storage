@@ -230,7 +230,7 @@ func (o *Objects) DeleteBucket(ctx context.Context, name model.BucketName) error
 	if _, ok := o.bucket[name]; !ok {
 		return nil
 	}
-	prefix := name.Name() + "\t"
+	prefix := name.String() + "\t"
 	for k := range o.gens {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			return backend.ErrBusy
@@ -364,7 +364,7 @@ func (o *Objects) Handler() http.Handler {
 
 func (o *Objects) url(base, op string, ref model.ObjectRef, exp time.Time) string {
 	q := url.Values{}
-	q.Set("bucket", ref.Path.Bucket.Name())
+	q.Set("bucket", ref.Path.Bucket.String())
 	q.Set("key", ref.Path.Key.String())
 	q.Set("gen", ref.Generation.String())
 	q.Set("exp", strconv.FormatInt(exp.UnixMicro(), 10))
@@ -403,5 +403,5 @@ func (o *Objects) getAllowed(ref model.ObjectRef, exp time.Time) bool {
 }
 
 func refKey(ref model.ObjectRef) string {
-	return ref.Path.Bucket.Name() + "\t" + ref.Path.Key.String() + "\t" + ref.Generation.String()
+	return ref.Path.Bucket.String() + "\t" + ref.Path.Key.String() + "\t" + ref.Generation.String()
 }

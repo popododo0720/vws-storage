@@ -34,7 +34,7 @@ type Reader interface {
 	ListOperations(ctx context.Context, f OperationFilter, after model.OperationID, limit int) ([]model.Operation, error)
 	Runnable(ctx context.Context, now time.Time, limit int) ([]model.Operation, error)
 	InFlight(ctx context.Context, ref model.Ref) (bool, error)
-	Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error)
+	Token(ctx context.Context, key model.TokenKey) (model.TokenRecord, error)
 }
 
 // OperationFilter narrows ListOperations. The zero value matches everything.

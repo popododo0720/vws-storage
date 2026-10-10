@@ -28,7 +28,6 @@ func (SnapshotID) isKey()  {}
 func (BucketName) isKey()  {}
 func (ObjectPath) isKey()  {}
 func (OperationID) isKey() {}
-func (ClientToken) isKey() {}
 
 // Lifecycle is Creating, Available, or Deleting.
 // In-flight states name the one operation driving them.
@@ -60,6 +59,7 @@ type Volume struct {
 type Snapshot struct {
 	ID     SnapshotID
 	Source VolumeID
+	Region Region
 	Size   Bytes
 	State  Lifecycle
 	Meta   Meta
@@ -67,9 +67,10 @@ type Snapshot struct {
 
 // Bucket is an S3-compatible bucket.
 type Bucket struct {
-	Name  BucketName
-	State Lifecycle
-	Meta  Meta
+	Name   BucketName
+	Region Region
+	State  Lifecycle
+	Meta   Meta
 }
 
 // Object is the committed head of an object path.
@@ -92,12 +93,14 @@ type Record interface {
 	isRecord()
 }
 
-func (v Volume) RecordKey() Key      { return v.ID }
-func (s Snapshot) RecordKey() Key    { return s.ID }
-func (b Bucket) RecordKey() Key      { return b.Name }
-func (o Object) RecordKey() Key      { return o.Path }
-func (o Operation) RecordKey() Key   { return o.ID }
-func (t TokenRecord) RecordKey() Key { return t.Claim.Token }
+func (v Volume) RecordKey() Key    { return v.ID }
+func (s Snapshot) RecordKey() Key  { return s.ID }
+func (b Bucket) RecordKey() Key    { return b.Name }
+func (o Object) RecordKey() Key    { return o.Path }
+func (o Operation) RecordKey() Key { return o.ID }
+func (t TokenRecord) RecordKey() Key {
+	return TokenKey{Project: t.Project, Token: t.Claim.Token}
+}
 
 func (v Volume) RecordMeta() Meta      { return v.Meta }
 func (s Snapshot) RecordMeta() Meta    { return s.Meta }
@@ -196,10 +199,15 @@ type VolumeDeletion struct {
 type SnapshotCreation struct {
 	Snapshot SnapshotID
 	Source   VolumeID
+	Region   Region
 }
 
-// SnapshotDeletion deletes Snapshot.
-type SnapshotDeletion struct{ Snapshot SnapshotID }
+// SnapshotDeletion deletes Snapshot. Region is copied at admission so the
+// name can be rendered after the row is gone.
+type SnapshotDeletion struct {
+	Snapshot SnapshotID
+	Region   Region
+}
 
 // BucketCreation creates Bucket.
 type BucketCreation struct{ Bucket BucketName }

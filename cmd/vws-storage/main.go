@@ -36,11 +36,16 @@ func run(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:7400", "gRPC listen address")
 	db := fs.String("db", "", "SQLite file; empty keeps state in memory")
 	zonesFlag := fs.String("zones", defaultZones, "comma-separated zone names")
+	projectsFlag := fs.String("projects", "", "comma-separated project ids; empty accepts any valid project")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	zones, err := parseZones(*zonesFlag)
+	if err != nil {
+		return err
+	}
+	projects, err := parseProjects(*projectsFlag)
 	if err != nil {
 		return err
 	}
@@ -84,7 +89,7 @@ func run(args []string) error {
 		return errors.Join(err, closeErr)
 	}
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
-	server.Register(gs, svc)
+	server.Register(gs, svc, server.Config{Projects: projects})
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
 	log.Printf("grpc %s object %s", grpcLn.Addr(), httpLn.Addr())
@@ -127,4 +132,23 @@ func parseZones(s string) ([]model.Zone, error) {
 		return nil, fmt.Errorf("%w: zones", model.ErrInvalidArgument)
 	}
 	return zones, nil
+}
+
+func parseProjects(s string) ([]model.Project, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var projects []model.Project
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		p, err := model.ParseProject(part)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, nil
 }

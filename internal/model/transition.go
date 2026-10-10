@@ -78,15 +78,15 @@ func (a AvailableVolume) Delete(st Start) (Admitted, error) {
 }
 
 // Snapshot admits a snapshot of the volume and guards the volume row.
-func (a AvailableVolume) Snapshot(st Start, id SnapshotID) (Admitted, error) {
+func (a AvailableVolume) Snapshot(st Start, id SnapshotID, region Region) (Admitted, error) {
 	if id.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
 	snap := Snapshot{
-		ID: id, Source: a.v.ID, Size: a.v.Spec.Size,
+		ID: id, Source: a.v.ID, Region: region, Size: a.v.Spec.Size,
 		State: Creating{Op: st.Op}, Meta: fresh(st.Now),
 	}
-	op := newOp(st, SnapshotCreation{Snapshot: id, Source: a.v.ID})
+	op := newOp(st, SnapshotCreation{Snapshot: id, Source: a.v.ID, Region: region})
 	ws := withToken(st, []Write{guardRec(a.v), putNew(snap), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
@@ -178,7 +178,7 @@ func (a AvailableSnapshot) Delete(st Start) (Admitted, error) {
 	next := a.s
 	next.State = Deleting{Op: st.Op}
 	next.Meta = bump(a.s.Meta, st.Now)
-	op := newOp(st, SnapshotDeletion{Snapshot: a.s.ID})
+	op := newOp(st, SnapshotDeletion{Snapshot: a.s.ID, Region: a.s.Region})
 	ws := withToken(st, []Write{putUpdate(a.s, next), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
@@ -240,8 +240,8 @@ func NewBucket(st Start, req CreateBucketRequest) (Admitted, error) {
 	if req.Bucket.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: bucket", ErrInvalidArgument)
 	}
-	b := Bucket{Name: req.Bucket, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
-	op := newOp(st, BucketCreation(req))
+	b := Bucket{Name: req.Bucket, Region: req.Region, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
+	op := newOp(st, BucketCreation{Bucket: req.Bucket})
 	ws := withToken(st, []Write{putNew(b), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }

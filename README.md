@@ -15,6 +15,7 @@ go run ./cmd/vws-storage
 | `-listen` | `127.0.0.1:7400` | gRPC address |
 | `-db` | empty | SQLite file. A relative path is resolved and its parent directory is created. Empty uses memory, which disappears on exit |
 | `-zones` | `vws-1a` | Comma-separated zone names |
+| `-projects` | empty | Comma-separated project ids. Empty accepts any valid project id |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
 
 One process may open a given SQLite file.
@@ -34,7 +35,7 @@ Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is privat
 
 vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
-The process serves project `local` and region `local`. Volume zones come from `-zones`.
+Project comes from each request name. `-projects` restricts which projects this process serves; empty accepts any valid id. The same volume id under two projects is two rows. Bucket and snapshot regions come from the request and are stored. Volume zones come from `-zones`.
 
 ## Test
 

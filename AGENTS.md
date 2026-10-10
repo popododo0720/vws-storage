@@ -45,3 +45,5 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 같은 오브젝트 경로의 변경은 겹치지 않는다 | 업로드와 삭제는 경로를 `Ref`로 걸고, `InFlight`면 거절한다 |
 | 오브젝트 행은 퍼지가 끝난 뒤에 지운다 | `Object.Delete`는 행을 가드만 한다. `Purged`가 같은 세대일 때만 지운다 |
 | 없는 버킷의 오브젝트 목록은 빈 목록이 아니다 | `ListObjects`가 버킷 행을 먼저 읽는다 |
+| 프로젝트는 저장 키다. 요청의 project가 행을 가른다 | `VolumeID.String`이 `projects/{project}/volumes/{id}`. `TestProjectScopedVolumeAndBucket` |
+| 허용 목록에 없는 프로젝트는 그 프로세스의 리소스가 아니다 | `Server.allowProject` → `RESOURCE_NOT_FOUND`. `TestProjectAllowListRejected` |

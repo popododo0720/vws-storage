@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,74 @@ func TestCreateObjectStoresBytes(t *testing.T) {
 	}
 }
 
+func TestProjectScopedVolumeAndBucket(t *testing.T) {
+	vols, _, buckets, _, ops := dial(t, "")
+	ctx := context.Background()
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/a123/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	if created.GetName() == "" || !strings.HasPrefix(created.GetName(), "projects/a123/operations/") {
+		t.Fatalf("operation %s", created.GetName())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a123/zones/az-1/volumes/data-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetName() != "projects/a123/zones/az-1/volumes/data-1" {
+		t.Fatalf("name %s", vol.GetName())
+	}
+	_, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a999/zones/az-1/volumes/data-1"})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("other project code %v err %v", st.Code(), err)
+	}
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/a123", BucketId: "logs",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "vws-1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	got, err := buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/a123/buckets/logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSpec().GetRegion() != "vws-1" {
+		t.Fatalf("region %s", got.GetSpec().GetRegion())
+	}
+	_, err = buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/a999/buckets/logs"})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("other bucket code %v err %v", st.Code(), err)
+	}
+}
+
+func TestProjectAllowListRejected(t *testing.T) {
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vols, _, _, _, _ := dialConfig(t, "", server.Config{Projects: []model.Project{project}})
+	_, err = vols.CreateVolume(context.Background(), &storagev1.CreateVolumeRequest{
+		Parent: "projects/a999/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound || reasonOf(st) != "RESOURCE_NOT_FOUND" {
+		t.Fatalf("code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+}
+
 func TestListVolumesPages(t *testing.T) {
 	vols, _, _, _, _ := dial(t, "")
 	ctx := context.Background()
@@ -190,7 +259,7 @@ func TestDeleteReplayAndRecreate(t *testing.T) {
 	if !got.GetDone() || got.GetError() != nil {
 		t.Fatalf("create after delete %+v", got)
 	}
-	page, err := ops.ListOperations(ctx, &longrunningpb.ListOperationsRequest{})
+	page, err := ops.ListOperations(ctx, &longrunningpb.ListOperationsRequest{Name: "projects/local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +369,17 @@ func dial(t *testing.T, objectBase string) (
 	longrunningpb.OperationsClient,
 ) {
 	t.Helper()
+	return dialConfig(t, objectBase, server.Config{})
+}
+
+func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
+	storagev1.VolumeServiceClient,
+	storagev1.SnapshotServiceClient,
+	storagev1.BucketServiceClient,
+	storagev1.ObjectServiceClient,
+	longrunningpb.OperationsClient,
+) {
+	t.Helper()
 	zone, err := model.ParseZone("az-1")
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +411,7 @@ func dial(t *testing.T, objectBase string) (
 	}()
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
-	server.Register(gs, svc)
+	server.Register(gs, svc, cfg)
 	go func() { _ = gs.Serve(lis) }()
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {

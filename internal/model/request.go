@@ -162,6 +162,7 @@ type VolumeSpec struct {
 // token hash cannot silently drop a field.
 type Request interface {
 	Validate() error
+	Project() Project
 	fingerprint() string
 	isRequest()
 }
@@ -186,21 +187,29 @@ type DeleteVolumeRequest struct {
 // CreateSnapshotRequest snapshots an available volume.
 // ID is the client-chosen snapshot id. The zero ID asks the engine to mint one.
 // Zone is the zone in the source volume name. Zero skips that check.
+// Region is the region in the snapshot parent. Zero is accepted by the engine
+// and rejected by the server.
 type CreateSnapshotRequest struct {
 	ID     SnapshotID
 	Source VolumeID
 	Zone   Zone
+	Region Region
 }
 
 // DeleteSnapshotRequest deletes an available snapshot.
+// Region is the region in the resource name. Zero skips that check.
 type DeleteSnapshotRequest struct {
 	Snapshot     SnapshotID
+	Region       Region
 	Expected     Version
 	AllowMissing bool
 }
 
 // CreateBucketRequest creates a bucket.
-type CreateBucketRequest struct{ Bucket BucketName }
+type CreateBucketRequest struct {
+	Bucket BucketName
+	Region Region
+}
 
 // DeleteBucketRequest deletes an empty bucket.
 type DeleteBucketRequest struct {
@@ -225,6 +234,15 @@ type DeleteObjectRequest struct {
 }
 
 // Validate implements Request.
+func (r CreateVolumeRequest) Project() Project   { return r.ID.Project() }
+func (r DeleteVolumeRequest) Project() Project   { return r.Volume.Project() }
+func (r CreateSnapshotRequest) Project() Project { return r.ID.Project() }
+func (r DeleteSnapshotRequest) Project() Project { return r.Snapshot.Project() }
+func (r CreateBucketRequest) Project() Project   { return r.Bucket.Project() }
+func (r DeleteBucketRequest) Project() Project   { return r.Bucket.Project() }
+func (r PutObjectRequest) Project() Project      { return r.Path.Project() }
+func (r DeleteObjectRequest) Project() Project   { return r.Path.Project() }
+
 func (r CreateVolumeRequest) Validate() error {
 	if r.Spec.Size < GiB || r.Spec.Size > maxVolume || r.Spec.Size%GiB != 0 {
 		return fmt.Errorf("%w: volume size", ErrInvalidArgument)
@@ -310,7 +328,7 @@ func (r CreateVolumeRequest) fingerprint() string {
 	if id, ok := r.Spec.Source.Snapshot(); ok {
 		src = id.String()
 	}
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s", r.ID.ID(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src)
+	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src)
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {
@@ -318,15 +336,15 @@ func (r DeleteVolumeRequest) fingerprint() string {
 }
 
 func (r CreateSnapshotRequest) fingerprint() string {
-	return "create-snapshot\n" + r.ID.ID() + "\n" + r.Source.String() + "\n" + r.Zone.String()
+	return "create-snapshot\n" + r.ID.String() + "\n" + r.Source.String() + "\n" + r.Zone.String() + "\n" + r.Region.String()
 }
 
 func (r DeleteSnapshotRequest) fingerprint() string {
-	return fmt.Sprintf("delete-snapshot\n%s\n%d\n%t", r.Snapshot.String(), r.Expected, r.AllowMissing)
+	return fmt.Sprintf("delete-snapshot\n%s\n%s\n%d\n%t", r.Snapshot.String(), r.Region.String(), r.Expected, r.AllowMissing)
 }
 
 func (r CreateBucketRequest) fingerprint() string {
-	return "create-bucket\n" + r.Bucket.String()
+	return "create-bucket\n" + r.Bucket.String() + "\n" + r.Region.String()
 }
 
 func (r DeleteBucketRequest) fingerprint() string {
@@ -385,9 +403,10 @@ func (c TokenClaim) IsZero() bool { return c.Token.IsZero() }
 
 // TokenRecord is the persisted binding from token to operation.
 type TokenRecord struct {
-	Claim TokenClaim
-	Op    OperationID
-	Meta  Meta
+	Project Project
+	Claim   TokenClaim
+	Op      OperationID
+	Meta    Meta
 }
 
 // Match returns the bound operation when c is the same request.

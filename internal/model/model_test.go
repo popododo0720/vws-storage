@@ -375,8 +375,20 @@ func TestResourceNamesRoundTrip(t *testing.T) {
 		t.Fatalf("bucket %v %v", got, err)
 	}
 	id, err := ParseVolumeID("data-1")
-	if err != nil || id.ID() != "data-1" {
+	if err != nil || id.ID() != "data-1" || id.String() != "volumes/data-1" {
 		t.Fatalf("resource id %v %v", id, err)
+	}
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := id.WithProject(project)
+	if got, err := ParseVolumeID(scoped.String()); err != nil || got != scoped {
+		t.Fatalf("scoped volume %v %v", got, err)
+	}
+	legacy, err := ParseVolumeID("data-1")
+	if err != nil || legacy.Project() != (Project{}) || legacy.String() != "volumes/data-1" {
+		t.Fatalf("legacy %v %v", legacy, err)
 	}
 	if _, err := ParseVolumeID("Vol"); err == nil {
 		t.Fatal("uppercase volume id")

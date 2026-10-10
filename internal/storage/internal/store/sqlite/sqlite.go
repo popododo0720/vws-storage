@@ -278,7 +278,7 @@ func (s *dbStore) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 	return out, err
 }
 
-func (s *dbStore) Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (s *dbStore) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	var out model.TokenRecord
 	err := s.lock(func() error {
 		var err error
@@ -463,7 +463,7 @@ func (v view) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 	return n > 0, err
 }
 
-func (v view) Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (v view) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	rec, err := v.s.Get(ctx, tok)
 	if err != nil {
 		return model.TokenRecord{}, err
@@ -614,7 +614,7 @@ func kindID(key model.Key) (string, string, error) {
 		return "object", id, nil
 	case model.OperationID:
 		return "operation", id, nil
-	case model.ClientToken:
+	case model.TokenKey:
 		return "token", id, nil
 	default:
 		return "", "", model.ErrInvalidArgument

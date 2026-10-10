@@ -31,7 +31,7 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 			return model.Admitted{}, err
 		}
 	} else {
-		id = model.NewVolumeID()
+		id = model.NewVolumeID().WithProject(req.Project())
 	}
 	if _, ok := req.Spec.Source.Snapshot(); !ok {
 		return model.NewVolume(st, id, req)

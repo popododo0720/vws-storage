@@ -205,26 +205,26 @@ func workTo(w Work) (workWire, error) {
 	switch w := w.(type) {
 	case VolumeCreation:
 		spec := specTo(w.Spec)
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.ID(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type, Source: spec.Source}, nil
+		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type, Source: spec.Source}, nil
 	case VolumeDeletion:
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.ID(), Zone: w.Zone.String()}, nil
+		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Zone: w.Zone.String()}, nil
 	case SnapshotCreation:
-		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.ID(), Volume: w.Source.ID()}, nil
+		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Volume: w.Source.wire(), Zone: w.Region.String()}, nil
 	case SnapshotDeletion:
-		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.ID()}, nil
+		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Zone: w.Region.String()}, nil
 	case BucketCreation:
-		return workWire{Kind: w.Kind().String(), Bucket: w.Bucket.Name()}, nil
+		return workWire{Kind: w.Kind().String(), Bucket: w.Bucket.wire()}, nil
 	case BucketDeletion:
-		return workWire{Kind: w.Kind().String(), Bucket: w.Bucket.Name()}, nil
+		return workWire{Kind: w.Kind().String(), Bucket: w.Bucket.wire()}, nil
 	case ObjectUpload:
 		return workWire{
-			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.Name(), Key: w.Object.Path.Key.String(),
+			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.wire(), Key: w.Object.Path.Key.String(),
 			Generation: w.Object.Generation.String(), Size: int64(w.Size), SHA256: w.SHA256.String(),
 			ContentType: w.ContentType, Deadline: int64(timeTo(w.Deadline)),
 		}, nil
 	case ObjectPurge:
 		return workWire{
-			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.Name(), Key: w.Object.Path.Key.String(),
+			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.wire(), Key: w.Object.Path.Key.String(),
 			Generation: w.Object.Generation.String(),
 		}, nil
 	default:
@@ -266,13 +266,27 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		return SnapshotCreation{Snapshot: snap, Source: vol}, nil
+		var region Region
+		if w.Zone != "" {
+			region, err = ParseRegion(w.Zone)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return SnapshotCreation{Snapshot: snap, Source: vol, Region: region}, nil
 	case KindDeleteSnapshot.String():
 		snap, err := ParseSnapshotID(w.Snapshot)
 		if err != nil {
 			return nil, err
 		}
-		return SnapshotDeletion{Snapshot: snap}, nil
+		var region Region
+		if w.Zone != "" {
+			region, err = ParseRegion(w.Zone)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return SnapshotDeletion{Snapshot: snap, Region: region}, nil
 	case KindCreateBucket.String():
 		b, err := ParseBucketName(w.Bucket)
 		if err != nil {
@@ -353,7 +367,7 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Spec specWire `json:"spec"`
 			Life lifeWire `json:"life"`
 			Meta metaWire `json:"meta"`
-		}{ID: r.ID.ID(), Spec: specTo(r.Spec), Life: life, Meta: metaTo(r.Meta)})
+		}{ID: r.ID.wire(), Spec: specTo(r.Spec), Life: life, Meta: metaTo(r.Meta)})
 		return b, "volume", err
 	case Snapshot:
 		life, err := lifeTo(r.State)
@@ -363,10 +377,11 @@ func marshalBody(r Record) ([]byte, string, error) {
 		b, err := json.Marshal(struct {
 			ID     string   `json:"id"`
 			Source string   `json:"source"`
+			Region string   `json:"region,omitempty"`
 			Size   int64    `json:"size"`
 			Life   lifeWire `json:"life"`
 			Meta   metaWire `json:"meta"`
-		}{ID: r.ID.ID(), Source: r.Source.ID(), Size: int64(r.Size), Life: life, Meta: metaTo(r.Meta)})
+		}{ID: r.ID.wire(), Source: r.Source.wire(), Region: r.Region.String(), Size: int64(r.Size), Life: life, Meta: metaTo(r.Meta)})
 		return b, "snapshot", err
 	case Bucket:
 		life, err := lifeTo(r.State)
@@ -374,10 +389,11 @@ func marshalBody(r Record) ([]byte, string, error) {
 			return nil, "", err
 		}
 		b, err := json.Marshal(struct {
-			Name string   `json:"name"`
-			Life lifeWire `json:"life"`
-			Meta metaWire `json:"meta"`
-		}{Name: r.Name.Name(), Life: life, Meta: metaTo(r.Meta)})
+			Name   string   `json:"name"`
+			Region string   `json:"region,omitempty"`
+			Life   lifeWire `json:"life"`
+			Meta   metaWire `json:"meta"`
+		}{Name: r.Name.wire(), Region: r.Region.String(), Life: life, Meta: metaTo(r.Meta)})
 		return b, "bucket", err
 	case Object:
 		b, err := json.Marshal(struct {
@@ -391,7 +407,7 @@ func marshalBody(r Record) ([]byte, string, error) {
 			UploadedAt  timeWire `json:"uploaded_at"`
 			Meta        metaWire `json:"meta"`
 		}{
-			Bucket: r.Path.Bucket.Name(), Key: r.Path.Key.String(), Generation: r.Generation.String(),
+			Bucket: r.Path.Bucket.wire(), Key: r.Path.Key.String(), Generation: r.Generation.String(),
 			Size: int64(r.Size), ETag: string(r.ETag), SHA256: r.SHA256.String(), ContentType: r.ContentType,
 			UploadedAt: timeTo(r.UploadedAt), Meta: metaTo(r.Meta),
 		})
@@ -411,14 +427,15 @@ func marshalBody(r Record) ([]byte, string, error) {
 			State stateWire `json:"state"`
 			Claim claimWire `json:"claim"`
 			Meta  metaWire  `json:"meta"`
-		}{ID: r.ID.ID(), Work: work, State: st, Claim: claimTo(r.Claim), Meta: metaTo(r.Meta)})
+		}{ID: r.ID.wire(), Work: work, State: st, Claim: claimTo(r.Claim), Meta: metaTo(r.Meta)})
 		return b, "operation", err
 	case TokenRecord:
 		b, err := json.Marshal(struct {
-			Claim claimWire `json:"claim"`
-			Op    string    `json:"op"`
-			Meta  metaWire  `json:"meta"`
-		}{Claim: claimTo(r.Claim), Op: r.Op.ID(), Meta: metaTo(r.Meta)})
+			Project string    `json:"project,omitempty"`
+			Claim   claimWire `json:"claim"`
+			Op      string    `json:"op"`
+			Meta    metaWire  `json:"meta"`
+		}{Project: r.Project.String(), Claim: claimTo(r.Claim), Op: r.Op.wire(), Meta: metaTo(r.Meta)})
 		return b, "token", err
 	default:
 		return nil, "", fmt.Errorf("record %T", r)
@@ -459,6 +476,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		var w struct {
 			ID     string   `json:"id"`
 			Source string   `json:"source"`
+			Region string   `json:"region"`
 			Size   int64    `json:"size"`
 			Life   lifeWire `json:"life"`
 			Meta   metaWire `json:"meta"`
@@ -474,16 +492,24 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		var region Region
+		if w.Region != "" {
+			region, err = ParseRegion(w.Region)
+			if err != nil {
+				return nil, err
+			}
+		}
 		life, err := lifeFrom(w.Life)
 		if err != nil {
 			return nil, err
 		}
-		return Snapshot{ID: id, Source: src, Size: Bytes(w.Size), State: life, Meta: metaFrom(w.Meta)}, nil
+		return Snapshot{ID: id, Source: src, Region: region, Size: Bytes(w.Size), State: life, Meta: metaFrom(w.Meta)}, nil
 	case "bucket":
 		var w struct {
-			Name string   `json:"name"`
-			Life lifeWire `json:"life"`
-			Meta metaWire `json:"meta"`
+			Name   string   `json:"name"`
+			Region string   `json:"region"`
+			Life   lifeWire `json:"life"`
+			Meta   metaWire `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
 			return nil, err
@@ -492,11 +518,18 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		var region Region
+		if w.Region != "" {
+			region, err = ParseRegion(w.Region)
+			if err != nil {
+				return nil, err
+			}
+		}
 		life, err := lifeFrom(w.Life)
 		if err != nil {
 			return nil, err
 		}
-		return Bucket{Name: name, State: life, Meta: metaFrom(w.Meta)}, nil
+		return Bucket{Name: name, Region: region, State: life, Meta: metaFrom(w.Meta)}, nil
 	case "object":
 		var w struct {
 			Bucket      string   `json:"bucket"`
@@ -563,9 +596,10 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		return Operation{ID: id, Work: work, State: st, Claim: claim, Meta: metaFrom(w.Meta)}, nil
 	case "token":
 		var w struct {
-			Claim claimWire `json:"claim"`
-			Op    string    `json:"op"`
-			Meta  metaWire  `json:"meta"`
+			Project string    `json:"project"`
+			Claim   claimWire `json:"claim"`
+			Op      string    `json:"op"`
+			Meta    metaWire  `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
 			return nil, err
@@ -578,7 +612,14 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
-		return TokenRecord{Claim: claim, Op: op, Meta: metaFrom(w.Meta)}, nil
+		var project Project
+		if w.Project != "" {
+			project, err = ParseProject(w.Project)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return TokenRecord{Project: project, Claim: claim, Op: op, Meta: metaFrom(w.Meta)}, nil
 	default:
 		return nil, fmt.Errorf("record %q", env.Record)
 	}

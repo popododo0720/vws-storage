@@ -164,14 +164,14 @@ func TestListBucketsSecondPage(t *testing.T) {
 			t.Fatal(got.Err())
 		}
 	}
-	page, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2})
+	page, err := svc.ListBuckets(context.Background(), model.Project{}, model.PageRequest{Size: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Items) != 2 || page.NextToken == "" {
 		t.Fatalf("page %+v", page)
 	}
-	next, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2, Token: page.NextToken})
+	next, err := svc.ListBuckets(context.Background(), model.Project{}, model.PageRequest{Size: 2, Token: page.NextToken})
 	if err != nil {
 		t.Fatal(err)
 	}
