@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Change is an atomic set of compare-and-swap writes.
 // Only transition functions in this package can put writes in a Change.
@@ -84,6 +87,34 @@ type Start struct {
 type Admitted struct {
 	Change Change
 	Op     Operation
+}
+
+// NoteExisting binds the caller's token to an operation that already exists.
+// The operation row is not rewritten. A zero token writes nothing.
+func NoteExisting(st Start, op Operation) (Admitted, error) {
+	if op.ID.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	if st.Claim.Token.IsZero() {
+		return Admitted{Op: op}, nil
+	}
+	rec := TokenRecord{Claim: st.Claim, Op: op.ID, Meta: fresh(st.Now)}
+	return Admitted{Change: writes(putNew(rec)), Op: op}, nil
+}
+
+// FinishNow records a succeeded operation for a fact that is already true.
+// guard, when non-nil, must still match the stored row. Run does not see it.
+func FinishNow(st Start, w Work, guard Record) (Admitted, error) {
+	if st.Op.IsZero() || w == nil {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	op := newOp(st, w)
+	op.State = OpSucceeded{}
+	ws := []Write{putNew(op)}
+	if guard != nil {
+		ws = append([]Write{guardRec(guard)}, ws...)
+	}
+	return Admitted{Change: writes(withToken(st, ws)...), Op: op}, nil
 }
 
 // RunningOp proves an operation was read as OpRunning with work W.

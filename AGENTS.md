@@ -32,10 +32,10 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 모델은 전송, SQL, 백엔드를 모른다 | depguard `model` |
 | 서버는 백엔드를 모른다 | depguard `server` |
 | 엔진은 gRPC, 생성 코드, fake를 모른다 | depguard `engine`, `store`, `backend`. 테스트 파일은 제외 |
-| proto는 임시이며 공유 저장소로 옮긴다 | 각 `.proto`의 `TODO(vws): move to the shared VWS proto repository`. `internal/policycheck` |
+| 이 레포는 proto를 두지 않는다. 생성 코드는 `github.com/popododo0720/vws-proto`이고, 공개 전에는 `replace`가 `./third_party/vws-proto`를 가리킨다 | `internal/policycheck`. lint는 `third_party`를 제외 |
 | 배포 매니페스트, 로고, NOTICE를 두지 않는다 | `internal/policycheck` |
 | 같은 토큰과 같은 요청은 같은 operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |
-| 같은 토큰과 다른 요청은 충돌 | `ErrTokenReused` → gRPC `ALREADY_EXISTS` + `CLIENT_TOKEN_REUSED` |
+| 같은 토큰과 다른 요청은 충돌 | `ErrTokenReused` → gRPC `ABORTED` + `IDEMPOTENCY_CONFLICT` |
 | 재시작 복구는 새 경로가 아니다 | `TestCreateVolumeResumesAfterCrash` |
 | 거절된 `Change`는 저장소를 바꾸지 않는다 | 메모리 `Update`는 사본에 적용한 뒤 바꾼다. `storetest`가 `ErrStale` 이후 행을 다시 읽는다 |
 | 실패한 생성은 `Creating` 행을 남기지 않는다 | 영구적인 정리는 행을 지운다. `TestPermanentUndoDropsVolume` |

@@ -207,7 +207,7 @@ func workTo(w Work) (workWire, error) {
 		spec := specTo(w.Spec)
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.ID(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type, Source: spec.Source}, nil
 	case VolumeDeletion:
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.ID()}, nil
+		return workWire{Kind: w.Kind().String(), Volume: w.Volume.ID(), Zone: w.Zone.String()}, nil
 	case SnapshotCreation:
 		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.ID(), Volume: w.Source.ID()}, nil
 	case SnapshotDeletion:
@@ -249,7 +249,14 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		return VolumeDeletion{Volume: vol}, nil
+		var zone Zone
+		if w.Zone != "" {
+			zone, err = ParseZone(w.Zone)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return VolumeDeletion{Volume: vol, Zone: zone}, nil
 	case KindCreateSnapshot.String():
 		snap, err := ParseSnapshotID(w.Snapshot)
 		if err != nil {

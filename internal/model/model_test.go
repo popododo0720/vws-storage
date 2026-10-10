@@ -374,6 +374,13 @@ func TestResourceNamesRoundTrip(t *testing.T) {
 	if got, err := ParseBucketName(bucket.String()); err != nil || got != bucket {
 		t.Fatalf("bucket %v %v", got, err)
 	}
+	id, err := ParseVolumeID("data-1")
+	if err != nil || id.ID() != "data-1" {
+		t.Fatalf("resource id %v %v", id, err)
+	}
+	if _, err := ParseVolumeID("Vol"); err == nil {
+		t.Fatal("uppercase volume id")
+	}
 }
 
 func sampleWork(t *testing.T, k Kind, vol Volume, snap Snapshot, bucket Bucket, obj Object) Work {

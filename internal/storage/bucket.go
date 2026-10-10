@@ -11,10 +11,17 @@ import (
 )
 
 func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st model.Start, req model.CreateBucketRequest) (model.Admitted, error) {
-	_, err := r.Bucket(ctx, req.Bucket)
+	b, err := r.Bucket(ctx, req.Bucket)
 	switch {
 	case err == nil:
-		return model.Admitted{}, fmt.Errorf("%w: bucket", model.ErrAlreadyExists)
+		if _, del := b.State.(model.Deleting); del {
+			return model.Admitted{}, fmt.Errorf("%w: bucket", model.ErrAlreadyExists)
+		}
+		var creating model.OperationID
+		if c, ok := b.State.(model.Creating); ok {
+			creating = c.Op
+		}
+		return replay(ctx, r, st, creating, model.BucketCreation{Bucket: b.Name}, b)
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
@@ -23,7 +30,20 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 
 func (s *Service) admitDeleteBucket(ctx context.Context, r store.Reader, st model.Start, req model.DeleteBucketRequest) (model.Admitted, error) {
 	b, err := r.Bucket(ctx, req.Bucket)
+	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {
+		return model.FinishNow(st, model.BucketDeletion{Bucket: req.Bucket}, nil)
+	}
 	if err != nil {
+		return model.Admitted{}, err
+	}
+	if del, ok := b.State.(model.Deleting); ok {
+		op, err := r.Operation(ctx, del.Op)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		return model.NoteExisting(st, op)
+	}
+	if err := expectVersion(b.Meta.Version, req.Expected); err != nil {
 		return model.Admitted{}, err
 	}
 	avail, ok := b.AsAvailable()

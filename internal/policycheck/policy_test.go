@@ -10,24 +10,29 @@ import (
 
 func TestRepoPolicy(t *testing.T) {
 	root := repoRoot(t)
-	var protos int
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		relPath := rel(t, root, path)
 		if d.IsDir() {
 			base := d.Name()
 			if base == ".git" || base == "vendor" {
 				return filepath.SkipDir
 			}
+			if strings.HasPrefix(relPath, "third_party/") || relPath == "third_party" {
+				return nil
+			}
 			switch base {
 			case "deploy", "k8s", "kubernetes", "helm", "charts":
-				t.Errorf("deploy tree %s", rel(t, root, path))
+				t.Errorf("deploy tree %s", relPath)
 			}
 			return nil
 		}
+		if strings.HasPrefix(relPath, "third_party/") {
+			return nil
+		}
 		name := d.Name()
-		relPath := rel(t, root, path)
 		lower := strings.ToLower(name)
 		switch {
 		case isContainer(name):
@@ -41,22 +46,33 @@ func TestRepoPolicy(t *testing.T) {
 		case isLogo(lower):
 			t.Errorf("logo file %s", relPath)
 		case strings.HasSuffix(name, ".proto"):
-			protos++
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			if !strings.Contains(string(body), "TODO(vws): move to the shared VWS proto repository") {
-				t.Errorf("proto missing shared-repo TODO: %s", relPath)
-			}
+			t.Errorf("proto outside third_party/vws-proto: %s", relPath)
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if protos == 0 {
-		t.Fatal("no proto files")
+	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mod), "replace github.com/popododo0720/vws-proto => ./third_party/vws-proto") {
+		t.Error("go.mod missing vws-proto replace")
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const note = "vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다"
+	if !strings.Contains(string(readme), note) {
+		t.Error("README missing public-module note")
+	}
+	if _, err := os.Stat(filepath.Join(root, "proto")); !os.IsNotExist(err) {
+		t.Error("proto tree still exists")
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal", "gen")); !os.IsNotExist(err) {
+		t.Error("internal/gen still exists")
 	}
 }
 

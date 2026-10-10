@@ -21,20 +21,20 @@ One process may open a given SQLite file.
 
 ## Operations
 
-Mutations return an operation. Poll `GetOperation` until `done` is set. A client token names the request:
+Mutations return a long-running operation. Poll `GetOperation` until `done` is set. `request_id` is a UUID:
 
-- The same token and the same request return the same operation.
-- The same token and a different request returns `ALREADY_EXISTS` with `ErrorInfo.reason` `CLIENT_TOKEN_REUSED`.
+- The same id and the same request return the same operation.
+- The same id and a different request returns `ABORTED` with `ErrorInfo.reason` `IDEMPOTENCY_CONFLICT`.
 
 `Run` is the only driver. After a restart it scans the same runnable operations and continues them. A failed operation records the error. The volume, snapshot, or bucket does not gain a failed state. An object row exists only after its bytes are committed.
 
 ## Proto
 
-`proto/vws/storage/v1/storage.proto` lives in this repository for now.
+Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `a1c6084`).
 
-TODO(vws): move to the shared VWS proto repository; keep package `vws.storage.v1` stable so the move only changes `go_package`.
+vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
-Generated Go is committed under `internal/gen`.
+The process serves project `local` and region `local`. Volume zones come from `-zones`.
 
 ## Test
 

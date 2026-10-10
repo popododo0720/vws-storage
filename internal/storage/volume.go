@@ -14,7 +14,25 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 	if _, ok := s.zones[req.Spec.Zone]; !ok {
 		return model.Admitted{}, fmt.Errorf("%w: unknown zone", model.ErrInvalidArgument)
 	}
-	id := model.NewVolumeID()
+	id := req.ID
+	if !id.IsZero() {
+		vol, err := r.Volume(ctx, id)
+		switch {
+		case err == nil:
+			if _, del := vol.State.(model.Deleting); del || !sameVolumeSpec(vol.Spec, req.Spec) {
+				return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrAlreadyExists)
+			}
+			var creating model.OperationID
+			if c, ok := vol.State.(model.Creating); ok {
+				creating = c.Op
+			}
+			return replay(ctx, r, st, creating, model.VolumeCreation{Volume: vol.ID, Spec: vol.Spec}, vol)
+		case !errors.Is(err, model.ErrNotFound):
+			return model.Admitted{}, err
+		}
+	} else {
+		id = model.NewVolumeID()
+	}
 	if _, ok := req.Spec.Source.Snapshot(); !ok {
 		return model.NewVolume(st, id, req)
 	}
@@ -30,9 +48,34 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 	return avail.RestoreVolume(st, id, req)
 }
 
+func sameVolumeSpec(a, b model.VolumeSpec) bool {
+	if a.Size != b.Size || a.Zone != b.Zone || a.Type != b.Type {
+		return false
+	}
+	as, aok := a.Source.Snapshot()
+	bs, bok := b.Source.Snapshot()
+	return aok == bok && (!aok || as == bs)
+}
+
 func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st model.Start, req model.DeleteVolumeRequest) (model.Admitted, error) {
 	vol, err := r.Volume(ctx, req.Volume)
+	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {
+		return model.FinishNow(st, model.VolumeDeletion{Volume: req.Volume, Zone: req.Zone}, nil)
+	}
 	if err != nil {
+		return model.Admitted{}, err
+	}
+	if !req.Zone.IsZero() && vol.Spec.Zone != req.Zone {
+		return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrNotFound)
+	}
+	if del, ok := vol.State.(model.Deleting); ok {
+		op, err := r.Operation(ctx, del.Op)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		return model.NoteExisting(st, op)
+	}
+	if err := expectVersion(vol.Meta.Version, req.Expected); err != nil {
 		return model.Admitted{}, err
 	}
 	avail, ok := vol.AsAvailable()

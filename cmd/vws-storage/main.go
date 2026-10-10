@@ -83,7 +83,7 @@ func run(args []string) error {
 		stopHTTP()
 		return errors.Join(err, closeErr)
 	}
-	gs := grpc.NewServer()
+	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
 	server.Register(gs, svc)
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()

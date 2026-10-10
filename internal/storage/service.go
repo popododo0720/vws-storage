@@ -112,9 +112,9 @@ func Open(ctx context.Context, opts Options) (*Service, error) {
 	if base <= 0 {
 		base = 50 * time.Millisecond
 	}
-	max := opts.RetryMax
-	if max <= 0 {
-		max = 5 * time.Second
+	retryMax := opts.RetryMax
+	if retryMax <= 0 {
+		retryMax = 5 * time.Second
 	}
 	poll := opts.UploadPoll
 	if poll <= 0 {
@@ -130,7 +130,7 @@ func Open(ctx context.Context, opts Options) (*Service, error) {
 	}
 	return &Service{
 		st: st, block: opts.Block, object: opts.Object, signer: opts.Signer,
-		zones: zones, now: now, policy: retryPolicy{base: base, max: max, poll: poll},
+		zones: zones, now: now, policy: retryPolicy{base: base, max: retryMax, poll: poll},
 		window: window, ttl: ttl, workers: workers, scanInterval: scan,
 		wake: make(chan model.OperationID, workers),
 	}, nil
@@ -182,6 +182,44 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 		s.poke(op.ID)
 	}
 	return s.status(ctx, op)
+}
+
+// replay returns the in-flight operation, or records a succeeded operation for a fact that is already stored.
+func replay(ctx context.Context, r store.Reader, st model.Start, creating model.OperationID, work model.Work, guard model.Record) (model.Admitted, error) {
+	if !creating.IsZero() {
+		op, err := r.Operation(ctx, creating)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		return model.NoteExisting(st, op)
+	}
+	return model.FinishNow(st, work, guard)
+}
+
+func expectVersion(got, want model.Version) error {
+	if want != 0 && got != want {
+		return fmt.Errorf("%w: etag", model.ErrETagMismatch)
+	}
+	return nil
+}
+
+func findOpen(ctx context.Context, r store.Reader, kind model.Kind, match func(model.Operation) bool) (model.Operation, bool, error) {
+	var after model.OperationID
+	for {
+		ops, err := r.ListOperations(ctx, store.OperationFilter{Kind: kind, NonTerminal: true}, after, 64)
+		if err != nil {
+			return model.Operation{}, false, err
+		}
+		for _, op := range ops {
+			after = op.ID
+			if match(op) {
+				return op, true, nil
+			}
+		}
+		if len(ops) < 64 {
+			return model.Operation{}, false, nil
+		}
+	}
 }
 
 func (s *Service) admit(ctx context.Context, r store.Reader, st model.Start, req model.Request) (model.Admitted, error) {
@@ -247,9 +285,44 @@ func (s *Service) Volume(ctx context.Context, id model.VolumeID) (model.Volume, 
 	return s.st.Volume(ctx, id)
 }
 
-// ListVolumes lists volumes in id order.
-func (s *Service) ListVolumes(ctx context.Context, p model.PageRequest) (model.Page[model.Volume], error) {
-	return page(ctx, p, model.ParseVolumeID, s.st.ListVolumes, func(v model.Volume) string { return v.ID.String() })
+// ListVolumes lists volumes in id order. A non-zero zone keeps only that zone.
+// The page token stays the engine cursor, including across volumes in other zones.
+func (s *Service) ListVolumes(ctx context.Context, zone model.Zone, p model.PageRequest) (model.Page[model.Volume], error) {
+	n, err := model.NormalizePage(p)
+	if err != nil {
+		return model.Page[model.Volume]{}, err
+	}
+	after, err := decodeID(p.Token, model.ParseVolumeID)
+	if err != nil {
+		return model.Page[model.Volume]{}, err
+	}
+	var matched []model.Volume
+	for {
+		batch, err := s.st.ListVolumes(ctx, after, n+1)
+		if err != nil {
+			return model.Page[model.Volume]{}, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		stop := false
+		for _, v := range batch {
+			after = v.ID
+			if !zone.IsZero() && v.Spec.Zone != zone {
+				continue
+			}
+			matched = append(matched, v)
+			if len(matched) == n+1 {
+				stop = true
+				break
+			}
+		}
+		if stop || len(batch) <= n {
+			break
+		}
+	}
+	items, next := trim(matched, n, func(v model.Volume) string { return v.ID.String() })
+	return model.Page[model.Volume]{Items: items, NextToken: next}, nil
 }
 
 // Snapshot returns a snapshot.

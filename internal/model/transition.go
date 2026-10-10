@@ -72,7 +72,7 @@ func (a AvailableVolume) Delete(st Start) (Admitted, error) {
 	next := a.v
 	next.State = Deleting{Op: st.Op}
 	next.Meta = bump(a.v.Meta, st.Now)
-	op := newOp(st, VolumeDeletion{Volume: a.v.ID})
+	op := newOp(st, VolumeDeletion{Volume: a.v.ID, Zone: a.v.Spec.Zone})
 	ws := withToken(st, []Write{putUpdate(a.v, next), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
@@ -241,7 +241,7 @@ func NewBucket(st Start, req CreateBucketRequest) (Admitted, error) {
 		return Admitted{}, fmt.Errorf("%w: bucket", ErrInvalidArgument)
 	}
 	b := Bucket{Name: req.Bucket, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
-	op := newOp(st, BucketCreation{Bucket: req.Bucket})
+	op := newOp(st, BucketCreation(req))
 	ws := withToken(st, []Write{putNew(b), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
