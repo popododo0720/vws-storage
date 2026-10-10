@@ -89,11 +89,7 @@ type specWire struct {
 }
 
 func specTo(s VolumeSpec) specWire {
-	src := ""
-	if id, ok := s.Source.Snapshot(); ok {
-		src = id.wire()
-	}
-	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: src}
+	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire()}
 }
 
 func specFrom(w specWire) (VolumeSpec, error) {
@@ -105,16 +101,9 @@ func specFrom(w specWire) (VolumeSpec, error) {
 	if err != nil {
 		return VolumeSpec{}, err
 	}
-	src := NoSource()
-	if w.Source != "" {
-		id, err := ParseSnapshotID(w.Source)
-		if err != nil {
-			return VolumeSpec{}, err
-		}
-		src, err = FromSnapshot(id)
-		if err != nil {
-			return VolumeSpec{}, err
-		}
+	src, err := sourceFrom(w.Source)
+	if err != nil {
+		return VolumeSpec{}, err
 	}
 	return VolumeSpec{Size: Bytes(w.Size), Zone: z, Type: t, Source: src}, nil
 }

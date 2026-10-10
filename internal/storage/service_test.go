@@ -50,6 +50,93 @@ func TestCreateVolumeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeFromImageIsIdempotent(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		assertImageVolume(t, storage.Memory())
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		assertImageVolume(t, storage.SQLite(filepath.Join(t.TempDir(), "vws.db")))
+	})
+}
+
+func assertImageVolume(t *testing.T, store storage.StoreConfig) {
+	t.Helper()
+	svc, cancel := openRunning(t, store, fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	req := imageVolumeReq(t, "ubuntu-24-04")
+	tok := token(t, "image-1")
+	first, err := svc.Submit(context.Background(), tok, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Submit(context.Background(), tok, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("ids %s %s", first.ID, second.ID)
+	}
+	other := imageVolumeReq(t, "ubuntu-22-04")
+	_, err = svc.Submit(context.Background(), tok, other)
+	if !errors.Is(err, model.ErrTokenReused) {
+		t.Fatalf("token err %v", err)
+	}
+	_, err = svc.Submit(context.Background(), token(t, "image-2"), other)
+	if !errors.Is(err, model.ErrAlreadyExists) {
+		t.Fatalf("exists err %v", err)
+	}
+	got := waitDone(t, svc, first.ID)
+	if got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("phase %s %+v", got.Phase(), got.Err())
+	}
+	again, err := svc.Submit(context.Background(), token(t, "image-3"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Phase() != model.PhaseSucceeded {
+		t.Fatalf("replay phase %s", again.Phase())
+	}
+	vol, err := svc.Volume(context.Background(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, ok := vol.Spec.Source.Image()
+	if !ok || img.String() != "projects/shared/regions/vws-1/images/ubuntu-24-04" {
+		t.Fatalf("image %v %v", img, ok)
+	}
+	if _, ok := vol.AsAvailable(); !ok {
+		t.Fatalf("state %v", vol.State)
+	}
+}
+
+func imageVolumeReq(t *testing.T, imageID string) model.CreateVolumeRequest {
+	t.Helper()
+	zone, err := model.ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := model.ParseVolumeID("boot-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := model.ParseImageName("projects/shared/regions/vws-1/images/" + imageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := model.FromImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.CreateVolumeRequest{
+		ID:   id.WithProject(project),
+		Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeSSD, Source: src},
+	}
+}
+
 func TestCreateVolumeResumesAfterCrash(t *testing.T) {
 	blk := fake.NewBlock()
 	obj := fake.NewObjects(fake.ObjectOptions{})

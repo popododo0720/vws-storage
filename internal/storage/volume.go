@@ -33,6 +33,7 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 	} else {
 		id = model.NewVolumeID().WithProject(req.Project())
 	}
+	// A blank volume and an image name need no local row. A snapshot does.
 	if _, ok := req.Spec.Source.Snapshot(); !ok {
 		return model.NewVolume(st, id, req)
 	}
@@ -48,14 +49,10 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 	return avail.RestoreVolume(st, id, req)
 }
 
-func sameVolumeSpec(a, b model.VolumeSpec) bool {
-	if a.Size != b.Size || a.Zone != b.Zone || a.Type != b.Type {
-		return false
-	}
-	as, aok := a.Source.Snapshot()
-	bs, bok := b.Source.Snapshot()
-	return aok == bok && (!aok || as == bs)
-}
+// sameVolumeSpec reports whether a replay asks for the stored spec.
+// VolumeSpec is comparable, so a new field or source kind is compared here
+// without another edit.
+func sameVolumeSpec(a, b model.VolumeSpec) bool { return a == b }
 
 func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st model.Start, req model.DeleteVolumeRequest) (model.Admitted, error) {
 	vol, err := r.Volume(ctx, req.Volume)

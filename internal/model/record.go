@@ -308,7 +308,8 @@ func (w ObjectUpload) Target() Ref { return w.Object }
 // Target implements Work.
 func (w ObjectPurge) Target() Ref { return w.Object }
 
-// Refs implements Work.
+// Refs implements Work. A snapshot source is held while creating.
+// An image source adds nothing: ImageName is not a Ref.
 func (w VolumeCreation) Refs() []Ref {
 	if _, ok := w.Spec.Source.Snapshot(); !ok {
 		return []Ref{w.Volume}

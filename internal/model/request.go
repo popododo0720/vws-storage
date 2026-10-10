@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -124,30 +125,103 @@ func (t VolumeType) String() string {
 	}
 }
 
-// Source is either absent or exactly one snapshot.
-// A zero SnapshotID is not a valid source. Use NoSource.
+// Source is absent, one local snapshot, or one compute image.
+// Only the constructors set a field, and each sets at most one.
+// The zero Source is NoSource. Source is comparable.
 type Source struct {
-	id SnapshotID
-	ok bool
+	snap  SnapshotID
+	image ImageName
 }
 
 // NoSource is a blank volume.
 func NoSource() Source { return Source{} }
 
-// FromSnapshot returns a source. id must be non-zero.
+// FromSnapshot returns a snapshot source. id must be non-zero.
 func FromSnapshot(id SnapshotID) (Source, error) {
 	if id.IsZero() {
 		return Source{}, fmt.Errorf("%w: snapshot id", ErrInvalidArgument)
 	}
-	return Source{id: id, ok: true}, nil
+	return Source{snap: id}, nil
+}
+
+// FromImage returns an image source. name must be non-zero.
+// The image size is not visible here, so nothing in this process checks
+// size_gib against it.
+func FromImage(name ImageName) (Source, error) {
+	if name.IsZero() {
+		return Source{}, fmt.Errorf("%w: image name", ErrInvalidArgument)
+	}
+	return Source{image: name}, nil
 }
 
 // Snapshot returns the source snapshot when one is set.
 func (s Source) Snapshot() (SnapshotID, bool) {
-	if !s.ok {
+	if s.snap.IsZero() {
 		return SnapshotID{}, false
 	}
-	return s.id, true
+	return s.snap, true
+}
+
+// Image returns the source image when one is set.
+func (s Source) Image() (ImageName, bool) {
+	if s.image.IsZero() {
+		return ImageName{}, false
+	}
+	return s.image, true
+}
+
+// canonical is the fingerprint form: "-" when blank, SnapshotID.String() for a
+// snapshot, ImageName.String() for an image. The first two are what stored
+// token fingerprints were hashed from and must not change.
+func (s Source) canonical() string {
+	switch {
+	case !s.image.IsZero():
+		return s.image.String()
+	case !s.snap.IsZero():
+		return s.snap.String()
+	default:
+		return "-"
+	}
+}
+
+// wire is the persisted form: "" when blank, SnapshotID.wire() for a snapshot,
+// the full image name for an image. An image name is six segments and a
+// snapshot wire value is one segment or projects/{project}/snapshots/{id},
+// so sourceFrom can tell them apart. A binary that predates images fails to
+// decode an image row instead of reading it as blank. SQLite reads one kind
+// in a single scan, so that failure stops the list.
+func (s Source) wire() string {
+	switch {
+	case !s.image.IsZero():
+		return s.image.String()
+	case !s.snap.IsZero():
+		return s.snap.wire()
+	default:
+		return ""
+	}
+}
+
+func sourceFrom(w string) (Source, error) {
+	if w == "" {
+		return NoSource(), nil
+	}
+	img, ierr := ParseImageName(w)
+	if ierr == nil {
+		return FromImage(img)
+	}
+	if imageWire(w) {
+		return Source{}, ierr
+	}
+	id, err := ParseSnapshotID(w)
+	if err != nil {
+		return Source{}, err
+	}
+	return FromSnapshot(id)
+}
+
+func imageWire(w string) bool {
+	parts := strings.Split(w, "/")
+	return len(parts) == 6 && parts[0] == "projects" && parts[2] == "regions" && parts[4] == "images"
 }
 
 // VolumeSpec is the desired shape of a volume.
@@ -167,7 +241,8 @@ type Request interface {
 	isRequest()
 }
 
-// CreateVolumeRequest creates a blank volume, or restores one when Source is set.
+// CreateVolumeRequest creates a blank volume, restores one from a snapshot,
+// or records a compute image name.
 // ID is the client-chosen volume id. The zero ID asks the engine to mint one.
 type CreateVolumeRequest struct {
 	ID     VolumeID
@@ -373,11 +448,7 @@ func (r DeleteObjectRequest) Validate() error {
 }
 
 func (r CreateVolumeRequest) fingerprint() string {
-	src := "-"
-	if id, ok := r.Spec.Source.Snapshot(); ok {
-		src = id.String()
-	}
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src, r.Labels.canonical())
+	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), r.Spec.Source.canonical(), r.Labels.canonical())
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {

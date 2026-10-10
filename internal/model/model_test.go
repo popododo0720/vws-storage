@@ -1,8 +1,10 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,12 +71,147 @@ func TestVolumeCreateThenReady(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeFingerprintIsStable(t *testing.T) {
+	zone, err := ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ParseVolumeID("data-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = id.WithProject(project)
+	blank := CreateVolumeRequest{ID: id, Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD, Source: NoSource()}}
+	fp, err := HashRequest(blank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fp.String(); got != "a018b471493fa31bacf0ea333722c6743a0d92142c373119af6cd082af13f2c1" {
+		t.Fatalf("blank %s", got)
+	}
+	snapID, err := ParseSnapshotID("snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := FromSnapshot(snapID.WithProject(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapReq := blank
+	snapReq.Spec.Source = src
+	fp, err = HashRequest(snapReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fp.String(); got != "f308b1170e48ba7854e3290dd5f98fd3a27bf89482ca34c3b72c8041388a838e" {
+		t.Fatalf("snapshot %s", got)
+	}
+	img, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-24-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageSrc, err := FromImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageReq := blank
+	imageReq.Spec.Source = imageSrc
+	fp, err = HashRequest(imageReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp.String() == "a018b471493fa31bacf0ea333722c6743a0d92142c373119af6cd082af13f2c1" || fp.String() == "f308b1170e48ba7854e3290dd5f98fd3a27bf89482ca34c3b72c8041388a838e" {
+		t.Fatal("image hashed like a blank or snapshot volume")
+	}
+	otherImg, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-22-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSrc, err := FromImage(otherImg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherReq := blank
+	otherReq.Spec.Source = otherSrc
+	otherFP, err := HashRequest(otherReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherFP == fp {
+		t.Fatal("two images hashed the same")
+	}
+}
+
 func TestBlankSourceIsNotASnapshot(t *testing.T) {
-	if _, ok := NoSource().Snapshot(); ok {
+	blank := NoSource()
+	if _, ok := blank.Snapshot(); ok {
 		t.Fatal("empty source looked like a snapshot")
+	}
+	if _, ok := blank.Image(); ok {
+		t.Fatal("empty source looked like an image")
 	}
 	if _, err := FromSnapshot(SnapshotID{}); err == nil {
 		t.Fatal("zero snapshot id was accepted")
+	}
+	if _, err := FromImage(ImageName{}); err == nil {
+		t.Fatal("zero image name was accepted")
+	}
+	img, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-24-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := FromImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := image.Snapshot(); ok {
+		t.Fatal("image source looked like a snapshot")
+	}
+	if got, ok := image.Image(); !ok || got != img {
+		t.Fatalf("image %v %v", got, ok)
+	}
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID, err := ParseSnapshotID("snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := FromSnapshot(snapID.WithProject(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := snap.Image(); ok {
+		t.Fatal("snapshot source looked like an image")
+	}
+	zone, err := ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD}
+	blankSpec := base
+	blankSpec.Source = blank
+	snapSpec := base
+	snapSpec.Source = snap
+	imageSpec := base
+	imageSpec.Source = image
+	otherImg, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-22-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := FromImage(otherImg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSpec := base
+	otherSpec.Source = other
+	if blankSpec == snapSpec || blankSpec == imageSpec || snapSpec == imageSpec || imageSpec == otherSpec {
+		t.Fatal("distinct sources compared equal")
 	}
 }
 
@@ -258,6 +395,94 @@ func TestScopedIDsSurviveCodec(t *testing.T) {
 	if got.(Volume).State.(Deleting).Op != legacyOp {
 		t.Fatal("legacy op")
 	}
+}
+
+func TestImageSourceSurvivesCodec(t *testing.T) {
+	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
+	img, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-24-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := FromImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := availableVolume(t, now)
+	vol.Spec.Source = src
+	raw, err := MarshalRecord(vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, ok := got.(Volume).Spec.Source.Image()
+	if !ok || decoded != img {
+		t.Fatalf("image %v", got.(Volume).Spec.Source)
+	}
+	op := Operation{
+		ID: NewOperationID(), Work: VolumeCreation{Volume: vol.ID, Spec: vol.Spec},
+		State: OpRunning{}, Meta: fresh(now),
+	}
+	raw, err = MarshalRecord(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := got.(Operation).Work.(VolumeCreation)
+	if decoded, ok = work.Spec.Source.Image(); !ok || decoded != img {
+		t.Fatalf("op image %v", work.Spec.Source)
+	}
+	if refs := work.Refs(); len(refs) != 1 || refs[0] != vol.ID {
+		t.Fatalf("refs %v", refs)
+	}
+	blank := availableVolume(t, now)
+	raw, err = MarshalRecord(blank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"", "snap-1", "projects/a123/snapshots/snap-1"} {
+		body := bytesReplaceSource(t, raw, source)
+		got, err = UnmarshalRecord(body)
+		if err != nil {
+			t.Fatalf("source %q: %v", source, err)
+		}
+		want := NoSource()
+		if source != "" {
+			id, err := ParseSnapshotID(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err = FromSnapshot(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got.(Volume).Spec.Source != want {
+			t.Fatalf("source %q decoded %v", source, got.(Volume).Spec.Source)
+		}
+	}
+	bad := bytesReplaceSource(t, raw, "projects/shared/regions/vws-1/images/Bad")
+	if _, err := UnmarshalRecord(bad); err == nil || !strings.Contains(err.Error(), "image name") {
+		t.Fatalf("bad image %v", err)
+	}
+}
+
+func bytesReplaceSource(t *testing.T, raw []byte, source string) []byte {
+	t.Helper()
+	const from = `"source":""`
+	if !bytes.Contains(raw, []byte(from)) {
+		t.Fatalf("payload %s", raw)
+	}
+	quoted, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Replace(raw, []byte(from), append([]byte(`"source":`), quoted...), 1)
 }
 
 func TestReclaimDoesNotHoldThePath(t *testing.T) {
@@ -480,7 +705,17 @@ func sampleRecords(t *testing.T, now time.Time) []Record {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := []Record{creating, vol, snap, bucket, obj, TokenRecord{Claim: claim, Op: NewOperationID(), Meta: fresh(now)}}
+	img, err := ParseImageName("projects/shared/regions/vws-1/images/ubuntu-24-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageSrc, err := FromImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageVol := vol
+	imageVol.Spec.Source = imageSrc
+	out := []Record{creating, vol, imageVol, snap, bucket, obj, TokenRecord{Claim: claim, Op: NewOperationID(), Meta: fresh(now)}}
 	for _, k := range Kinds() {
 		out = append(out, Operation{
 			ID: NewOperationID(), Work: sampleWork(t, k, vol, snap, bucket, obj),
@@ -614,6 +849,30 @@ func TestResourceNamesRoundTrip(t *testing.T) {
 	}
 	if _, err := ParseVolumeID("Vol"); err == nil {
 		t.Fatal("uppercase volume id")
+	}
+	const image = "projects/shared/regions/vws-1/images/ubuntu-24-04"
+	img, err := ParseImageName(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.String() != image {
+		t.Fatalf("image %s", img.String())
+	}
+	again, err := ParseImageName(img.String())
+	if err != nil || again != img {
+		t.Fatalf("round trip %v %v", again, err)
+	}
+	for _, bad := range []string{
+		"images/debian",
+		"projects/shared/zones/vws-1/images/ubuntu-24-04",
+		"projects/Shared/regions/vws-1/images/ubuntu-24-04",
+		"projects/shared/regions/vws-1/images/ubuntu-24-04/",
+		"projects/shared/regions/vws-1/images/",
+		"",
+	} {
+		if _, err := ParseImageName(bad); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
 	}
 }
 
