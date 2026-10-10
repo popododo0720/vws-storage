@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -146,6 +147,50 @@ func TestPermanentUndoDropsVolume(t *testing.T) {
 	}
 	if _, err := svc.Volume(context.Background(), got.Target().(model.VolumeID)); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("volume err %v", err)
+	}
+}
+
+// errNth cancels its parent on the n-th Err call. Run samples the context
+// more than once per loop, and a cancel between those samples used to drop
+// ctx.Done from the select while no worker remained.
+type errNth struct {
+	context.Context
+	cancel context.CancelFunc
+	n, at  int
+}
+
+func (c *errNth) Err() error {
+	c.n++
+	if c.n == c.at {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestRunReturnsWhenCancelLandsBetweenChecks(t *testing.T) {
+	for at := 1; at <= 12; at++ {
+		t.Run(strconv.Itoa(at), func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := &errNth{Context: parent, cancel: cancel, at: at}
+			svc, err := storage.Open(context.Background(), opts(storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{})))
+			if err != nil {
+				t.Fatal(err)
+			}
+			errc := make(chan error, 1)
+			go func() { errc <- svc.Run(ctx) }()
+			select {
+			case err := <-errc:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				t.Fatalf("Run did not return when Err cancelled on call %d", at)
+			}
+			if err := svc.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
