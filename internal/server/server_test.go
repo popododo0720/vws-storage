@@ -157,6 +157,80 @@ func TestProjectScopedVolumeAndBucket(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeFromImage(t *testing.T) {
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vols, _, _, _, ops := dialConfig(t, "", server.Config{Projects: []model.Project{project}})
+	ctx := context.Background()
+	const image = "projects/shared/regions/vws-1/images/ubuntu-24-04"
+	req := &storagev1.CreateVolumeRequest{
+		Parent: "projects/a123/zones/az-1", VolumeId: "boot-1",
+		RequestId: "22222222-2222-4222-8222-222222222222",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+			SizeGib: 1,
+			Type:    storagev1.VolumeType_VOLUME_TYPE_SSD,
+			Source:  &storagev1.VolumeSpec_Image{Image: image},
+		}},
+	}
+	created, err := vols.CreateVolume(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a123/zones/az-1/volumes/boot-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetSpec().GetImage() != image {
+		t.Fatalf("image %q", vol.GetSpec().GetImage())
+	}
+	req.Volume.Spec.Source = &storagev1.VolumeSpec_Image{Image: "projects/shared/regions/vws-1/images/ubuntu-22-04"}
+	_, err = vols.CreateVolume(ctx, req)
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Aborted || reasonOf(st) != "IDEMPOTENCY_CONFLICT" {
+		t.Fatalf("conflict code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+	req.RequestId = "33333333-3333-4333-8333-333333333333"
+	_, err = vols.CreateVolume(ctx, req)
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.AlreadyExists || reasonOf(st) != "ALREADY_EXISTS" {
+		t.Fatalf("exists code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+	_, err = vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/a123/zones/az-1", VolumeId: "boot-bad",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+			SizeGib: 1,
+			Type:    storagev1.VolumeType_VOLUME_TYPE_SSD,
+			Source:  &storagev1.VolumeSpec_Image{Image: "images/debian"},
+		}},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_RESOURCE_ID" {
+		t.Fatalf("bad name code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+	_, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a123/zones/az-1/volumes/boot-bad"})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("missing code %v err %v", st.Code(), err)
+	}
+	_, err = vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/a123/zones/az-1", VolumeId: "boot-empty",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+			SizeGib: 1,
+			Type:    storagev1.VolumeType_VOLUME_TYPE_SSD,
+			Source:  &storagev1.VolumeSpec_Image{Image: ""},
+		}},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_RESOURCE_ID" {
+		t.Fatalf("empty image code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+}
+
 func TestProjectAllowListRejected(t *testing.T) {
 	project, err := model.ParseProject("a123")
 	if err != nil {

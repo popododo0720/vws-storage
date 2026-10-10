@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// NewVolume admits a blank volume. Spec.Source must be empty.
+// NewVolume admits a volume that needs no other local row: blank, or from a
+// compute image. A snapshot source goes through AvailableSnapshot.RestoreVolume.
 func NewVolume(st Start, id VolumeID, req CreateVolumeRequest) (Admitted, error) {
 	if _, ok := req.Spec.Source.Snapshot(); ok {
 		return Admitted{}, fmt.Errorf("%w: source requires restore", ErrInvalidArgument)

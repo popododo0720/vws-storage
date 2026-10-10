@@ -15,6 +15,9 @@ import (
 // Create calls are safe to repeat for the same id and the same arguments.
 // A repeat with different arguments is Permanent(ErrConflict).
 // Delete of an absent id returns nil.
+// An image source names a compute image the adapter resolves. Storage has not
+// checked that the image exists or that the volume size covers it. A source
+// the adapter cannot use, or one larger than the volume, is Permanent.
 type Block interface {
 	CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error
 	DeleteVolume(ctx context.Context, id model.VolumeID) error

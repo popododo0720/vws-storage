@@ -46,6 +46,29 @@ func (r Region) String() string { return r.s }
 // IsZero reports whether r is unset.
 func (r Region) IsZero() bool { return r.s == "" }
 
+// ImageName is a compute image: projects/{project}/regions/{region}/images/{image}.
+// Compute owns the image. Storage keeps the name as desired state and never
+// reads it. ImageName is neither a Key nor a Ref: no store row is keyed by it
+// and no operation holds it. Its project is not this process's to allow or deny.
+type ImageName struct{ s string }
+
+// ParseImageName validates the full name. Every segment uses the resource id
+// grammar. There is no short form, so ParseImageName(n.String()) returns n.
+func ParseImageName(s string) (ImageName, error) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 6 || parts[0] != "projects" || parts[2] != "regions" || parts[4] != "images" ||
+		!resourceID(parts[1]) || !resourceID(parts[3]) || !resourceID(parts[5]) {
+		return ImageName{}, fmt.Errorf("%w: image name", ErrInvalidArgument)
+	}
+	return ImageName{s: s}, nil
+}
+
+// String returns the full image name.
+func (n ImageName) String() string { return n.s }
+
+// IsZero reports whether n is unset.
+func (n ImageName) IsZero() bool { return n.s == "" }
+
 func scopedName(p Project, collection, id string) string {
 	if id == "" {
 		return ""

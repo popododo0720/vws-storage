@@ -309,26 +309,38 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	if err != nil {
 		return model.CreateVolumeRequest{}, "", invalidSpec("labels")
 	}
-	if specIn.GetImage() != "" {
-		return model.CreateVolumeRequest{}, "", invalidSpec("image")
+	src := model.NoSource()
+	switch source := specIn.GetSource().(type) {
+	case *storagev1.VolumeSpec_Image:
+		img, err := model.ParseImageName(source.Image)
+		if err != nil {
+			return model.CreateVolumeRequest{}, "", invalidID("image")
+		}
+		src, err = model.FromImage(img)
+		if err != nil {
+			return model.CreateVolumeRequest{}, "", invalidSpec("image")
+		}
+	case *storagev1.VolumeSpec_Snapshot:
+		if snapName := source.Snapshot; snapName != "" {
+			snap, _, err := s.parseSnapshotName(snapName)
+			if err != nil {
+				return model.CreateVolumeRequest{}, "", err
+			}
+			if snap.Project() != project {
+				return model.CreateVolumeRequest{}, "", invalidID("snapshot")
+			}
+			src, err = model.FromSnapshot(snap)
+			if err != nil {
+				return model.CreateVolumeRequest{}, "", invalidSpec("snapshot")
+			}
+		}
+	case nil:
+	default:
+		return model.CreateVolumeRequest{}, "", invalidSpec("source")
 	}
 	typ, err := volumeType(specIn.GetType())
 	if err != nil {
 		return model.CreateVolumeRequest{}, "", err
-	}
-	src := model.NoSource()
-	if snapName := specIn.GetSnapshot(); snapName != "" {
-		snap, _, err := s.parseSnapshotName(snapName)
-		if err != nil {
-			return model.CreateVolumeRequest{}, "", err
-		}
-		if snap.Project() != project {
-			return model.CreateVolumeRequest{}, "", invalidID("snapshot")
-		}
-		src, err = model.FromSnapshot(snap)
-		if err != nil {
-			return model.CreateVolumeRequest{}, "", invalidSpec("snapshot")
-		}
 	}
 	size, err := model.VolumeSize(specIn.GetSizeGib())
 	if err != nil {
@@ -579,6 +591,9 @@ func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volum
 		},
 		Status:     &storagev1.VolumeStatus{Observed: observed(v.State, v.Meta.Version), SizeGib: int64(v.Spec.Size / model.GiB)},
 		CreateTime: stamp(v.Meta.CreateTime), UpdateTime: stamp(v.Meta.UpdateTime),
+	}
+	if img, ok := v.Spec.Source.Image(); ok {
+		out.Spec.Source = &storagev1.VolumeSpec_Image{Image: img.String()}
 	}
 	if id, ok := v.Spec.Source.Snapshot(); ok {
 		region := model.Region{}
