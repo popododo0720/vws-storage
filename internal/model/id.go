@@ -7,22 +7,23 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"strings"
 	"unicode/utf8"
 )
 
-// VolumeID is "vol-" plus 16 lowercase hex digits.
+// VolumeID is the final segment of a volume name.
+// The grammar is a VWS resource id: a lowercase letter, then up to 62
+// more lowercase letters, digits, or hyphens, ending with a letter or digit.
+// NewVolumeID still mints the historical "vol-" form, which matches that grammar.
 type VolumeID struct{ s string }
 
 // NewVolumeID returns a new random volume id.
 func NewVolumeID() VolumeID { return VolumeID{s: newPrefixed("vol-", 8)} }
 
-// ParseVolumeID validates s. s is the id, without a "volumes/" prefix.
+// ParseVolumeID validates s. s is the id, or "volumes/" plus the id.
 func ParseVolumeID(s string) (VolumeID, error) {
-	const p = "volumes/"
-	s = strings.TrimPrefix(s, p)
-	if !isHexID(s, "vol-", 8) {
+	s = strings.TrimPrefix(s, "volumes/")
+	if !resourceID(s) {
 		return VolumeID{}, fmt.Errorf("%w: volume id", ErrInvalidArgument)
 	}
 	return VolumeID{s: s}, nil
@@ -42,16 +43,17 @@ func (id VolumeID) ID() string { return id.s }
 // IsZero reports whether id is unset.
 func (id VolumeID) IsZero() bool { return id.s == "" }
 
-// SnapshotID is "snap-" plus 16 lowercase hex digits.
+// SnapshotID is the final segment of a snapshot name. See VolumeID.
+// NewSnapshotID still mints the historical "snap-" form.
 type SnapshotID struct{ s string }
 
 // NewSnapshotID returns a new random snapshot id.
 func NewSnapshotID() SnapshotID { return SnapshotID{s: newPrefixed("snap-", 8)} }
 
-// ParseSnapshotID validates s.
+// ParseSnapshotID validates s. s is the id, or "snapshots/" plus the id.
 func ParseSnapshotID(s string) (SnapshotID, error) {
 	s = strings.TrimPrefix(s, "snapshots/")
-	if !isHexID(s, "snap-", 8) {
+	if !resourceID(s) {
 		return SnapshotID{}, fmt.Errorf("%w: snapshot id", ErrInvalidArgument)
 	}
 	return SnapshotID{s: s}, nil
@@ -120,21 +122,14 @@ func (g Generation) String() string { return g.s }
 // IsZero reports whether g is unset.
 func (g Generation) IsZero() bool { return g.s == "" }
 
-// BucketName is a DNS-style bucket name.
+// BucketName is the final segment of a bucket name. The grammar is a VWS resource id.
 type BucketName struct{ s string }
 
 // ParseBucketName validates s. s may be the raw name or "buckets/" plus the name.
 func ParseBucketName(s string) (BucketName, error) {
 	s = strings.TrimPrefix(s, "buckets/")
-	if len(s) < 3 || len(s) > 63 || net.ParseIP(s) != nil || strings.Contains(s, "..") {
+	if !resourceID(s) {
 		return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.'
-		if !ok || (c == '-' || c == '.') && (i == 0 || i == len(s)-1) {
-			return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
-		}
 	}
 	return BucketName{s: s}, nil
 }
@@ -176,18 +171,13 @@ func (k ObjectKey) String() string { return k.s }
 func (k ObjectKey) IsZero() bool { return k.s == "" }
 
 // Zone is an availability zone name. Existence is deployment config.
+// The grammar is a VWS resource id.
 type Zone struct{ s string }
 
 // ParseZone validates the syntax of s.
 func ParseZone(s string) (Zone, error) {
-	if len(s) == 0 || len(s) > 32 {
+	if !resourceID(s) {
 		return Zone{}, fmt.Errorf("%w: zone", ErrInvalidArgument)
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') || (c == '-' && (i == 0 || i == len(s)-1)) {
-			return Zone{}, fmt.Errorf("%w: zone", ErrInvalidArgument)
-		}
 	}
 	return Zone{s: s}, nil
 }
@@ -200,6 +190,12 @@ func (z Zone) IsZero() bool { return z.s == "" }
 
 // ClientToken is the idempotency key on every mutation.
 type ClientToken struct{ s string }
+
+// NewClientToken mints a token for a call that sent no request_id.
+// It is not derived from the request, so a later identical call is a new call.
+func NewClientToken() ClientToken {
+	return ClientToken{s: "auto-" + hex.EncodeToString(mustRand(16))}
+}
 
 // ParseClientToken validates s. The empty string is rejected.
 func ParseClientToken(s string) (ClientToken, error) {
@@ -263,6 +259,30 @@ func mustRand(n int) []byte {
 	return b
 }
 
+// resourceID is the VWS resource id grammar: [a-z]([a-z0-9-]{0,61}[a-z0-9])?
+func resourceID(s string) bool {
+	if len(s) < 1 || len(s) > 63 || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	if len(s) == 1 {
+		return true
+	}
+	last := s[len(s)-1]
+	if !isAlnum(last) {
+		return false
+	}
+	for i := 1; i < len(s)-1; i++ {
+		if c := s[i]; !isAlnum(c) && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
 func isHexID(s, prefix string, n int) bool {
 	if !strings.HasPrefix(s, prefix) || len(s) != len(prefix)+n*2 {
 		return false
@@ -273,7 +293,7 @@ func isHexID(s, prefix string, n int) bool {
 func isLowerHex(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

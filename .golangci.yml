@@ -1,98 +1,144 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
-  disable-all: true
+  default: none
   enable:
     - depguard
     - errcheck
     - errorlint
-    - gofmt
-    - goimports
     - govet
     - revive
     - staticcheck
     - unused
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/popododo0720/vws-storage
-  depguard:
+  settings:
+    depguard:
+      rules:
+        backend:
+          list-mode: lax
+          files:
+            - '**/internal/backend/**/*.go'
+            - '!**/*_test.go'
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: a backend has no gRPC
+            - pkg: google.golang.org/protobuf
+              desc: a backend has no protobuf
+            - pkg: google.golang.org/genproto
+              desc: a backend has no generated API
+            - pkg: cloud.google.com/go/longrunning
+              desc: a backend has no long-running operations
+            - pkg: github.com/popododo0720/vws-storage/internal/gen
+              desc: a backend has no generated API
+            - pkg: github.com/popododo0720/vws-proto
+              desc: a backend has no generated API
+            - pkg: github.com/popododo0720/vws-storage/internal/server
+              desc: a backend has no gRPC server
+            - pkg: github.com/popododo0720/vws-storage/internal/storage
+              desc: a backend has no engine
+        engine:
+          list-mode: lax
+          files:
+            - '**/internal/storage/*.go'
+            - '!**/*_test.go'
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: the engine has no gRPC
+            - pkg: google.golang.org/protobuf
+              desc: the engine has no protobuf
+            - pkg: google.golang.org/genproto
+              desc: the engine has no generated API
+            - pkg: cloud.google.com/go/longrunning
+              desc: the engine has no long-running operations
+            - pkg: github.com/popododo0720/vws-storage/internal/gen
+              desc: the engine has no generated API
+            - pkg: github.com/popododo0720/vws-proto
+              desc: the engine has no generated API
+            - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
+              desc: fakes are wired by the process, not the engine
+        model:
+          list-mode: lax
+          files:
+            - '**/internal/model/*.go'
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: model has no transport
+            - pkg: google.golang.org/protobuf
+              desc: model has no protobuf
+            - pkg: google.golang.org/genproto
+              desc: model has no generated API
+            - pkg: cloud.google.com/go/longrunning
+              desc: model has no long-running operations
+            - pkg: github.com/popododo0720/vws-proto
+              desc: model has no generated API
+            - pkg: database/sql
+              desc: model has no SQL
+            - pkg: modernc.org/sqlite
+              desc: model has no SQLite
+            - pkg: github.com/popododo0720/vws-storage/internal/backend
+              desc: model has no backend
+            - pkg: github.com/popododo0720/vws-storage/internal/storage
+              desc: model has no engine
+        server:
+          list-mode: lax
+          files:
+            - '**/internal/server/*.go'
+            - '!**/*_test.go'
+          deny:
+            - pkg: github.com/popododo0720/vws-storage/internal/backend
+              desc: server calls the engine, not a backend
+            - pkg: github.com/popododo0720/vws-storage/internal/storage/internal/store
+              desc: server does not write the store
+        store:
+          list-mode: lax
+          files:
+            - '**/internal/storage/internal/store/**/*.go'
+            - '!**/*_test.go'
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: the store has no gRPC
+            - pkg: google.golang.org/protobuf
+              desc: the store has no protobuf
+            - pkg: google.golang.org/genproto
+              desc: the store has no generated API
+            - pkg: cloud.google.com/go/longrunning
+              desc: the store has no long-running operations
+            - pkg: github.com/popododo0720/vws-storage/internal/gen
+              desc: the store has no generated API
+            - pkg: github.com/popododo0720/vws-proto
+              desc: the store has no generated API
+            - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
+              desc: the store has no fake backend
+            - pkg: github.com/popododo0720/vws-storage/internal/server
+              desc: the store has no gRPC server
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      model:
-        list-mode: lax
-        files:
-          - "**/internal/model/*.go"
-        deny:
-          - pkg: google.golang.org/grpc
-            desc: model has no transport
-          - pkg: google.golang.org/protobuf
-            desc: model has no protobuf
-          - pkg: database/sql
-            desc: model has no SQL
-          - pkg: modernc.org/sqlite
-            desc: model has no SQLite
-          - pkg: github.com/popododo0720/vws-storage/internal/backend
-            desc: model has no backend
-          - pkg: github.com/popododo0720/vws-storage/internal/storage
-            desc: model has no engine
-      server:
-        list-mode: lax
-        files:
-          - "**/internal/server/*.go"
-          - "!**/*_test.go"
-        deny:
-          - pkg: github.com/popododo0720/vws-storage/internal/backend
-            desc: server calls the engine, not a backend
-          - pkg: github.com/popododo0720/vws-storage/internal/storage/internal/store
-            desc: server does not write the store
-      engine:
-        list-mode: lax
-        files:
-          - "**/internal/storage/*.go"
-          - "!**/*_test.go"
-        deny:
-          - pkg: google.golang.org/grpc
-            desc: the engine has no gRPC
-          - pkg: github.com/popododo0720/vws-storage/internal/gen
-            desc: the engine has no generated API
-          - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
-            desc: fakes are wired by the process, not the engine
-      store:
-        list-mode: lax
-        files:
-          - "**/internal/storage/internal/store/**/*.go"
-          - "!**/*_test.go"
-        deny:
-          - pkg: google.golang.org/grpc
-            desc: the store has no gRPC
-          - pkg: github.com/popododo0720/vws-storage/internal/gen
-            desc: the store has no generated API
-          - pkg: github.com/popododo0720/vws-storage/internal/backend/fake
-            desc: the store has no fake backend
-          - pkg: github.com/popododo0720/vws-storage/internal/server
-            desc: the store has no gRPC server
-      backend:
-        list-mode: lax
-        files:
-          - "**/internal/backend/**/*.go"
-          - "!**/*_test.go"
-        deny:
-          - pkg: google.golang.org/grpc
-            desc: a backend has no gRPC
-          - pkg: github.com/popododo0720/vws-storage/internal/gen
-            desc: a backend has no generated API
-          - pkg: github.com/popododo0720/vws-storage/internal/server
-            desc: a backend has no gRPC server
-          - pkg: github.com/popododo0720/vws-storage/internal/storage
-            desc: a backend has no engine
-
-issues:
-  exclude-files:
-    - "\\.pb\\.go$"
-    - "^third_party/"
-
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - \.pb\.go$
+      - ^third_party/
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/popododo0720/vws-storage
+  exclusions:
+    generated: lax
+    paths:
+      - \.pb\.go$
+      - ^third_party/
+      - third_party$
+      - builtin$
+      - examples$

@@ -185,8 +185,12 @@ type VolumeCreation struct {
 	Spec   VolumeSpec
 }
 
-// VolumeDeletion deletes Volume.
-type VolumeDeletion struct{ Volume VolumeID }
+// VolumeDeletion deletes Volume. Zone is the zone copied at admission so the
+// name can be rendered after the row is gone.
+type VolumeDeletion struct {
+	Volume VolumeID
+	Zone   Zone
+}
 
 // SnapshotCreation snapshots Source into Snapshot.
 type SnapshotCreation struct {

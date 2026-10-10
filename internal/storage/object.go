@@ -12,11 +12,54 @@ import (
 )
 
 func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest) (model.Admitted, error) {
+	head, err := r.Object(ctx, req.Path)
+	switch {
+	case err == nil:
+		if head.SHA256 != req.SHA256 || head.ContentType != req.ContentType || head.Size != req.Size {
+			return model.Admitted{}, fmt.Errorf("%w: object", model.ErrAlreadyExists)
+		}
+		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
+			up, is := op.Work.(model.ObjectUpload)
+			return is && up.Object.Path == req.Path
+		})
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if ok {
+			return model.NoteExisting(st, op)
+		}
+		busy, err := r.InFlight(ctx, req.Path)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if busy {
+			return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+		}
+		work := model.ObjectUpload{
+			Object:      model.ObjectRef{Path: head.Path, Generation: head.Generation},
+			Size:        head.Size,
+			SHA256:      head.SHA256,
+			ContentType: head.ContentType,
+		}
+		return model.FinishNow(st, work, head)
+	case !errors.Is(err, model.ErrNotFound):
+		return model.Admitted{}, err
+	}
 	busy, err := r.InFlight(ctx, req.Path)
 	if err != nil {
 		return model.Admitted{}, err
 	}
 	if busy {
+		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
+			up, is := op.Work.(model.ObjectUpload)
+			return is && up.Object.Path == req.Path && up.SHA256 == req.SHA256 && up.ContentType == req.ContentType && up.Size == req.Size
+		})
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if ok {
+			return model.NoteExisting(st, op)
+		}
 		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
 	}
 	b, err := r.Bucket(ctx, req.Path.Bucket)
@@ -31,16 +74,32 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 }
 
 func (s *Service) admitDeleteObject(ctx context.Context, r store.Reader, st model.Start, req model.DeleteObjectRequest) (model.Admitted, error) {
+	obj, err := r.Object(ctx, req.Path)
+	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {
+		return model.FinishNow(st, model.ObjectPurge{Object: model.ObjectRef{Path: req.Path}}, nil)
+	}
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if err := expectVersion(obj.Meta.Version, req.Expected); err != nil {
+		return model.Admitted{}, err
+	}
 	busy, err := r.InFlight(ctx, req.Path)
 	if err != nil {
 		return model.Admitted{}, err
 	}
 	if busy {
+		op, ok, err := findOpen(ctx, r, model.KindDeleteObject, func(op model.Operation) bool {
+			purge, is := op.Work.(model.ObjectPurge)
+			return is && purge.Object.Path == req.Path
+		})
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if ok {
+			return model.NoteExisting(st, op)
+		}
 		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
-	}
-	obj, err := r.Object(ctx, req.Path)
-	if err != nil {
-		return model.Admitted{}, err
 	}
 	return obj.Delete(st)
 }

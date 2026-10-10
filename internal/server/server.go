@@ -1,91 +1,98 @@
-// Package server is the gRPC boundary. It parses proto into model values,
-// calls storage.Service, and renders the result.
+// Package server is the gRPC boundary. It parses vws-proto into model values,
+// calls storage.Service, and renders the result. Submit is the only write.
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
-	"net/url"
+	"io"
+	"net/http"
+	"time"
 
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
-	storagev1 "github.com/popododo0720/vws-storage/internal/gen/vws/storage/v1"
+	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
+	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
+
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage"
 )
 
+// MaxRecvMsgSize fits a CreateObject payload at the proto limit plus the envelope.
+const MaxRecvMsgSize = 8 << 20
+
 // Server implements the storage gRPC services.
+// Project and region are fixed for the process. Zones stay on the engine.
 type Server struct {
-	storagev1.UnimplementedBlockServiceServer
+	storagev1.UnimplementedVolumeServiceServer
+	storagev1.UnimplementedSnapshotServiceServer
+	storagev1.UnimplementedBucketServiceServer
 	storagev1.UnimplementedObjectServiceServer
-	storagev1.UnimplementedOperationServiceServer
-	svc *storage.Service
+	longrunningpb.UnimplementedOperationsServer
+	svc     *storage.Service
+	project string
+	region  string
 }
 
-// New returns a server over svc.
-func New(svc *storage.Service) *Server { return &Server{svc: svc} }
+// New returns a server for project "local" and region "local".
+func New(svc *storage.Service) *Server {
+	return &Server{svc: svc, project: "local", region: "local"}
+}
 
-// Register attaches the storage services to gs.
+// Register attaches the storage services and long-running operations to gs.
 func Register(gs *grpc.Server, svc *storage.Service) {
 	s := New(svc)
-	storagev1.RegisterBlockServiceServer(gs, s)
+	storagev1.RegisterVolumeServiceServer(gs, s)
+	storagev1.RegisterSnapshotServiceServer(gs, s)
+	storagev1.RegisterBucketServiceServer(gs, s)
 	storagev1.RegisterObjectServiceServer(gs, s)
-	storagev1.RegisterOperationServiceServer(gs, s)
+	longrunningpb.RegisterOperationsServer(gs, s)
 }
 
-// CreateVolume implements BlockService.
-func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeRequest) (*storagev1.Operation, error) {
-	tok, err := model.ParseClientToken(in.GetClientToken())
+// CreateVolume implements VolumeService.
+func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeRequest) (*longrunningpb.Operation, error) {
+	req, name, err := s.volumeCreate(in)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	zone, err := model.ParseZone(in.GetZone())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	typ, err := model.ParseVolumeType(in.GetType())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	src := model.NoSource()
-	if in.GetSourceSnapshotId() != "" {
-		id, err := model.ParseSnapshotID(in.GetSourceSnapshotId())
-		if err != nil {
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
 			return nil, toStatus(err)
 		}
-		src, err = model.FromSnapshot(id)
-		if err != nil {
-			return nil, toStatus(err)
-		}
+		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	op, err := s.svc.Submit(ctx, tok, model.CreateVolumeRequest{Spec: model.VolumeSpec{
-		Size: model.Bytes(in.GetSizeBytes()), Zone: zone, Type: typ, Source: src,
-	}})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOp(op), nil
+	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// DeleteVolume implements BlockService.
-func (s *Server) DeleteVolume(ctx context.Context, in *storagev1.DeleteVolumeRequest) (*storagev1.Operation, error) {
-	tok, id, err := tokenAnd(in.GetClientToken(), in.GetId(), model.ParseVolumeID)
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	op, err := s.svc.Submit(ctx, tok, model.DeleteVolumeRequest{Volume: id})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOp(op), nil
+// UpdateVolume is not a storage transition.
+func (s *Server) UpdateVolume(context.Context, *storagev1.UpdateVolumeRequest) (*longrunningpb.Operation, error) {
+	return nil, status.Error(codes.Unimplemented, "volume update is not a storage transition")
 }
 
-// GetVolume implements BlockService.
+// DeleteVolume implements VolumeService.
+func (s *Server) DeleteVolume(ctx context.Context, in *storagev1.DeleteVolumeRequest) (*longrunningpb.Operation, error) {
+	id, zone, err := s.parseVolumeName(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	ver, err := expectedVersion(in.GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return s.submit(ctx, in.GetRequestId(), model.DeleteVolumeRequest{
+		Volume: id, Zone: zone, Expected: ver, AllowMissing: in.GetAllowMissing(),
+	})
+}
+
+// GetVolume implements VolumeService.
 func (s *Server) GetVolume(ctx context.Context, in *storagev1.GetVolumeRequest) (*storagev1.Volume, error) {
-	id, err := model.ParseVolumeID(in.GetId())
+	id, zone, err := s.parseVolumeName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -93,51 +100,74 @@ func (s *Server) GetVolume(ctx context.Context, in *storagev1.GetVolumeRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toVolume(vol), nil
+	if vol.Spec.Zone != zone {
+		return nil, toStatus(notFound("volume"))
+	}
+	return s.volumeMsg(vol), nil
 }
 
-// ListVolumes implements BlockService.
+// ListVolumes implements VolumeService.
 func (s *Server) ListVolumes(ctx context.Context, in *storagev1.ListVolumesRequest) (*storagev1.ListVolumesResponse, error) {
-	page, err := s.svc.ListVolumes(ctx, pageReq(in.GetPageSize(), in.GetPageToken()))
+	zone, err := s.parseVolumeParent(in.GetParent())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Volume], error) {
+		return s.svc.ListVolumes(ctx, zone, p)
+	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListVolumesResponse{NextPageToken: page.NextToken}
 	for _, vol := range page.Items {
-		out.Volumes = append(out.Volumes, toVolume(vol))
+		out.Volumes = append(out.Volumes, s.volumeMsg(vol))
 	}
 	return out, nil
 }
 
-// CreateSnapshot implements BlockService.
-func (s *Server) CreateSnapshot(ctx context.Context, in *storagev1.CreateSnapshotRequest) (*storagev1.Operation, error) {
-	tok, id, err := tokenAnd(in.GetClientToken(), in.GetSourceVolumeId(), model.ParseVolumeID)
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	op, err := s.svc.Submit(ctx, tok, model.CreateSnapshotRequest{Source: id})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOp(op), nil
+// ReportVolumeStatus is not a write. Run reconciles volumes.
+func (s *Server) ReportVolumeStatus(context.Context, *storagev1.ReportVolumeStatusRequest) (*storagev1.ReportVolumeStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "volume status is reconciled by Service.Run")
 }
 
-// DeleteSnapshot implements BlockService.
-func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapshotRequest) (*storagev1.Operation, error) {
-	tok, id, err := tokenAnd(in.GetClientToken(), in.GetId(), model.ParseSnapshotID)
+// CreateSnapshot implements SnapshotService.
+func (s *Server) CreateSnapshot(ctx context.Context, in *storagev1.CreateSnapshotRequest) (*longrunningpb.Operation, error) {
+	req, name, err := s.snapshotCreate(in)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	op, err := s.svc.Submit(ctx, tok, model.DeleteSnapshotRequest{Snapshot: id})
-	if err != nil {
-		return nil, toStatus(err)
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	return toOp(op), nil
+	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// GetSnapshot implements BlockService.
+// UpdateSnapshot is not a storage transition.
+func (s *Server) UpdateSnapshot(context.Context, *storagev1.UpdateSnapshotRequest) (*longrunningpb.Operation, error) {
+	return nil, status.Error(codes.Unimplemented, "snapshot update is not a storage transition")
+}
+
+// DeleteSnapshot implements SnapshotService.
+func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapshotRequest) (*longrunningpb.Operation, error) {
+	id, err := s.parseSnapshotName(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	ver, err := expectedVersion(in.GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return s.submit(ctx, in.GetRequestId(), model.DeleteSnapshotRequest{
+		Snapshot: id, Expected: ver, AllowMissing: in.GetAllowMissing(),
+	})
+}
+
+// GetSnapshot implements SnapshotService.
 func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotRequest) (*storagev1.Snapshot, error) {
-	id, err := model.ParseSnapshotID(in.GetId())
+	id, err := s.parseSnapshotName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -145,55 +175,70 @@ func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotReque
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toSnapshot(snap), nil
+	return s.snapshotMsg(ctx, snap), nil
 }
 
-// ListSnapshots implements BlockService.
+// ListSnapshots implements SnapshotService.
 func (s *Server) ListSnapshots(ctx context.Context, in *storagev1.ListSnapshotsRequest) (*storagev1.ListSnapshotsResponse, error) {
-	page, err := s.svc.ListSnapshots(ctx, pageReq(in.GetPageSize(), in.GetPageToken()))
+	if err := s.parseSnapshotParent(in.GetParent()); err != nil {
+		return nil, toStatus(err)
+	}
+	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Snapshot], error) {
+		return s.svc.ListSnapshots(ctx, p)
+	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListSnapshotsResponse{NextPageToken: page.NextToken}
 	for _, snap := range page.Items {
-		out.Snapshots = append(out.Snapshots, toSnapshot(snap))
+		out.Snapshots = append(out.Snapshots, s.snapshotMsg(ctx, snap))
 	}
 	return out, nil
 }
 
-// CreateBucket implements ObjectService.
-func (s *Server) CreateBucket(ctx context.Context, in *storagev1.CreateBucketRequest) (*storagev1.Operation, error) {
-	tok, err := model.ParseClientToken(in.GetClientToken())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	name, err := model.ParseBucketName(in.GetName())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	op, err := s.svc.Submit(ctx, tok, model.CreateBucketRequest{Bucket: name})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOp(op), nil
+// ReportSnapshotStatus is not a write. Run reconciles snapshots.
+func (s *Server) ReportSnapshotStatus(context.Context, *storagev1.ReportSnapshotStatusRequest) (*storagev1.ReportSnapshotStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "snapshot status is reconciled by Service.Run")
 }
 
-// DeleteBucket implements ObjectService.
-func (s *Server) DeleteBucket(ctx context.Context, in *storagev1.DeleteBucketRequest) (*storagev1.Operation, error) {
-	tok, name, err := tokenAnd(in.GetClientToken(), in.GetName(), model.ParseBucketName)
+// CreateBucket implements BucketService.
+func (s *Server) CreateBucket(ctx context.Context, in *storagev1.CreateBucketRequest) (*longrunningpb.Operation, error) {
+	req, name, err := s.bucketCreate(in)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	op, err := s.svc.Submit(ctx, tok, model.DeleteBucketRequest{Bucket: name})
-	if err != nil {
-		return nil, toStatus(err)
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	return toOp(op), nil
+	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// HeadBucket implements ObjectService.
-func (s *Server) HeadBucket(ctx context.Context, in *storagev1.HeadBucketRequest) (*storagev1.Bucket, error) {
-	name, err := model.ParseBucketName(in.GetName())
+// UpdateBucket is not a storage transition.
+func (s *Server) UpdateBucket(context.Context, *storagev1.UpdateBucketRequest) (*longrunningpb.Operation, error) {
+	return nil, status.Error(codes.Unimplemented, "bucket update is not a storage transition")
+}
+
+// DeleteBucket implements BucketService.
+func (s *Server) DeleteBucket(ctx context.Context, in *storagev1.DeleteBucketRequest) (*longrunningpb.Operation, error) {
+	name, err := s.parseBucketName(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	ver, err := expectedVersion(in.GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return s.submit(ctx, in.GetRequestId(), model.DeleteBucketRequest{
+		Bucket: name, Expected: ver, AllowMissing: in.GetAllowMissing(),
+	})
+}
+
+// GetBucket implements BucketService.
+func (s *Server) GetBucket(ctx context.Context, in *storagev1.GetBucketRequest) (*storagev1.Bucket, error) {
+	name, err := s.parseBucketName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -201,68 +246,89 @@ func (s *Server) HeadBucket(ctx context.Context, in *storagev1.HeadBucketRequest
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toBucket(b), nil
+	return s.bucketMsg(b), nil
 }
 
-// ListBuckets implements ObjectService.
+// ListBuckets implements BucketService.
 func (s *Server) ListBuckets(ctx context.Context, in *storagev1.ListBucketsRequest) (*storagev1.ListBucketsResponse, error) {
-	page, err := s.svc.ListBuckets(ctx, pageReq(in.GetPageSize(), in.GetPageToken()))
+	if err := s.parseBucketParent(in.GetParent()); err != nil {
+		return nil, toStatus(err)
+	}
+	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Bucket], error) {
+		return s.svc.ListBuckets(ctx, p)
+	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListBucketsResponse{NextPageToken: page.NextToken}
 	for _, b := range page.Items {
-		out.Buckets = append(out.Buckets, toBucket(b))
+		out.Buckets = append(out.Buckets, s.bucketMsg(b))
 	}
 	return out, nil
 }
 
-// PutObject implements ObjectService.
-func (s *Server) PutObject(ctx context.Context, in *storagev1.PutObjectRequest) (*storagev1.Operation, error) {
-	tok, err := model.ParseClientToken(in.GetClientToken())
+// ReportBucketStatus is not a write. Run reconciles buckets.
+func (s *Server) ReportBucketStatus(context.Context, *storagev1.ReportBucketStatusRequest) (*storagev1.ReportBucketStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "bucket status is reconciled by Service.Run")
+}
+
+// CreateObject implements ObjectService. The bytes are written to the signed
+// upload URL before the operation is returned.
+func (s *Server) CreateObject(ctx context.Context, in *storagev1.CreateObjectRequest) (*longrunningpb.Operation, error) {
+	req, path, contents, err := s.objectCreate(in)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	path, err := objectPath(in.GetBucket(), in.GetKey())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	var sum model.Digest
-	if in.GetSha256Hex() != "" {
-		sum, err = model.ParseDigest(in.GetSha256Hex())
-		if err != nil {
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
 			return nil, toStatus(err)
 		}
+		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	op, err := s.svc.Submit(ctx, tok, model.PutObjectRequest{
-		Path: path, Size: model.Bytes(in.GetSizeBytes()), SHA256: sum, ContentType: in.GetContentType(),
-	})
+	tok, err := tokenFor(in.GetRequestId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toOp(op), nil
+	op, err := s.svc.Submit(ctx, tok, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if op.Upload != nil {
+		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		err := putBytes(putCtx, *op.Upload, contents)
+		cancel()
+		if err != nil {
+			if _, gerr := s.svc.Object(ctx, path); gerr != nil {
+				return nil, status.Error(codes.Unavailable, err.Error())
+			}
+		}
+	}
+	return s.operation(ctx, op)
+}
+
+// UpdateObject is not a storage transition.
+func (s *Server) UpdateObject(context.Context, *storagev1.UpdateObjectRequest) (*longrunningpb.Operation, error) {
+	return nil, status.Error(codes.Unimplemented, "object update is not a storage transition")
 }
 
 // DeleteObject implements ObjectService.
-func (s *Server) DeleteObject(ctx context.Context, in *storagev1.DeleteObjectRequest) (*storagev1.Operation, error) {
-	tok, err := model.ParseClientToken(in.GetClientToken())
+func (s *Server) DeleteObject(ctx context.Context, in *storagev1.DeleteObjectRequest) (*longrunningpb.Operation, error) {
+	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	path, err := objectPath(in.GetBucket(), in.GetKey())
+	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	op, err := s.svc.Submit(ctx, tok, model.DeleteObjectRequest{Path: path})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOp(op), nil
+	return s.submit(ctx, in.GetRequestId(), model.DeleteObjectRequest{
+		Path: path, Expected: ver, AllowMissing: in.GetAllowMissing(),
+	})
 }
 
-// HeadObject implements ObjectService.
-func (s *Server) HeadObject(ctx context.Context, in *storagev1.HeadObjectRequest) (*storagev1.Object, error) {
-	path, err := objectPath(in.GetBucket(), in.GetKey())
+// GetObject implements ObjectService. The payload is not returned.
+func (s *Server) GetObject(ctx context.Context, in *storagev1.GetObjectRequest) (*storagev1.Object, error) {
+	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -270,42 +336,38 @@ func (s *Server) HeadObject(ctx context.Context, in *storagev1.HeadObjectRequest
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toObject(obj), nil
-}
-
-// GetObject implements ObjectService.
-func (s *Server) GetObject(ctx context.Context, in *storagev1.GetObjectRequest) (*storagev1.GetObjectResponse, error) {
-	path, err := objectPath(in.GetBucket(), in.GetKey())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	obj, loc, err := s.svc.LocateObject(ctx, path)
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return &storagev1.GetObjectResponse{Object: toObject(obj), Download: toLoc(loc)}, nil
+	return s.objectMsg(obj), nil
 }
 
 // ListObjects implements ObjectService.
 func (s *Server) ListObjects(ctx context.Context, in *storagev1.ListObjectsRequest) (*storagev1.ListObjectsResponse, error) {
-	name, err := model.ParseBucketName(in.GetBucket())
+	bucket, err := s.parseObjectParent(in.GetParent())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	page, err := s.svc.ListObjects(ctx, name, in.GetPrefix(), pageReq(in.GetPageSize(), in.GetPageToken()))
+	n, err := pageSize(in.GetPageSize())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	page, err := s.svc.ListObjects(ctx, bucket, "", model.PageRequest{Size: n, Token: in.GetPageToken()})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListObjectsResponse{NextPageToken: page.NextToken}
 	for _, obj := range page.Items {
-		out.Objects = append(out.Objects, toObject(obj))
+		out.Objects = append(out.Objects, s.objectMsg(obj))
 	}
 	return out, nil
 }
 
-// GetOperation implements OperationService.
-func (s *Server) GetOperation(ctx context.Context, in *storagev1.GetOperationRequest) (*storagev1.Operation, error) {
-	id, err := model.ParseOperationID(in.GetId())
+// ReportObjectStatus is not a write. Run reconciles objects.
+func (s *Server) ReportObjectStatus(context.Context, *storagev1.ReportObjectStatusRequest) (*storagev1.ReportObjectStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "object status is reconciled by Service.Run")
+}
+
+// GetOperation implements google.longrunning.Operations.
+func (s *Server) GetOperation(ctx context.Context, in *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {
+	id, err := s.parseOpName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -313,150 +375,126 @@ func (s *Server) GetOperation(ctx context.Context, in *storagev1.GetOperationReq
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return toOp(op), nil
+	return s.operation(ctx, op)
 }
 
-// ListOperations implements OperationService.
-func (s *Server) ListOperations(ctx context.Context, in *storagev1.ListOperationsRequest) (*storagev1.ListOperationsResponse, error) {
-	page, err := s.svc.ListOperations(ctx, storage.OperationQuery{NonTerminal: in.GetNonTerminal()}, pageReq(in.GetPageSize(), in.GetPageToken()))
+// ListOperations implements google.longrunning.Operations.
+func (s *Server) ListOperations(ctx context.Context, in *longrunningpb.ListOperationsRequest) (*longrunningpb.ListOperationsResponse, error) {
+	if in.GetName() != "" && in.GetName() != "projects/"+s.project && in.GetName() != "projects/"+s.project+"/operations" {
+		return nil, toStatus(invalidID("operation parent"))
+	}
+	if in.GetFilter() != "" {
+		return nil, toStatus(invalidSpec("filter"))
+	}
+	n, err := pageSize(in.GetPageSize())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	out := &storagev1.ListOperationsResponse{NextPageToken: page.NextToken}
+	page, err := s.svc.ListOperations(ctx, storage.OperationQuery{}, model.PageRequest{Size: n, Token: in.GetPageToken()})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &longrunningpb.ListOperationsResponse{NextPageToken: page.NextToken}
 	for _, op := range page.Items {
-		out.Operations = append(out.Operations, toOp(op))
+		rendered, err := s.operation(ctx, op)
+		if err != nil {
+			return nil, err
+		}
+		out.Operations = append(out.Operations, rendered)
 	}
 	return out, nil
 }
 
-func tokenAnd[T any](token, raw string, parse func(string) (T, error)) (model.ClientToken, T, error) {
-	var zero T
-	tok, err := model.ParseClientToken(token)
+// DeleteOperation is not a storage transition.
+func (s *Server) DeleteOperation(context.Context, *longrunningpb.DeleteOperationRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "operation delete is not a storage transition")
+}
+
+// CancelOperation is not a storage transition.
+func (s *Server) CancelOperation(context.Context, *longrunningpb.CancelOperationRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "operation cancel is not a storage transition")
+}
+
+func (s *Server) submit(ctx context.Context, requestID string, req model.Request) (*longrunningpb.Operation, error) {
+	tok, err := tokenFor(requestID)
 	if err != nil {
-		return model.ClientToken{}, zero, err
+		return nil, toStatus(err)
 	}
-	id, err := parse(raw)
+	op, err := s.svc.Submit(ctx, tok, req)
 	if err != nil {
-		return model.ClientToken{}, zero, err
+		return nil, toStatus(err)
 	}
-	return tok, id, nil
+	return s.operation(ctx, op)
 }
 
-func objectPath(bucket, key string) (model.ObjectPath, error) {
-	b, err := model.ParseBucketName(bucket)
+func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjectRequest, model.ObjectPath, []byte, error) {
+	bucket, err := s.parseObjectParent(in.GetParent())
 	if err != nil {
-		return model.ObjectPath{}, err
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
 	}
-	k, err := model.ParseObjectKey(key)
+	if in.GetObject() == nil || in.GetObject().GetSpec() == nil {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("object")
+	}
+	if err := rejectLabels(in.GetObject().GetLabels()); err != nil {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
+	}
+	spec := in.GetObject().GetSpec()
+	if spec.GetCacheControl() != "" || len(spec.GetMetadata()) > 0 {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("object")
+	}
+	raw := in.GetObjectId()
+	path, err := s.parseObjectName("projects/" + s.project + "/buckets/" + bucket.Name() + "/objects/" + raw)
 	if err != nil {
-		return model.ObjectPath{}, err
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
 	}
-	return model.ObjectPath{Bucket: b, Key: k}, nil
-}
-
-func pageReq(size int32, token string) model.PageRequest {
-	return model.PageRequest{Size: int(size), Token: token}
-}
-
-func toOp(st storage.OperationStatus) *storagev1.Operation {
-	op := st.Operation
-	out := &storagev1.Operation{
-		Id: op.ID.ID(), Kind: op.Kind().String(), Phase: op.Phase().String(), Done: op.Terminal(),
+	name := s.objectName(path)
+	if got := in.GetObject().GetName(); got != "" && got != name {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidID("object name")
 	}
-	if op.Target() != nil {
-		out.Target = targetName(op.Target())
+	body := in.GetContents()
+	if len(body) > maxInlineObject {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("contents")
 	}
-	if !op.Err().IsZero() {
-		out.Error = &storagev1.Status{Code: int32(op.Err().Code), Message: op.Err().Message}
-	}
-	if st.Upload != nil {
-		out.Upload = toLoc(*st.Upload)
-	}
-	return out
-}
-
-func targetName(ref model.Ref) string {
-	obj, ok := ref.(model.ObjectRef)
-	if !ok {
-		return ref.String()
-	}
-	return obj.Path.Bucket.Name() + "/" + url.PathEscape(obj.Path.Key.String())
-}
-
-func toVolume(v model.Volume) *storagev1.Volume {
-	out := &storagev1.Volume{
-		Id: v.ID.ID(), SizeBytes: int64(v.Spec.Size), Zone: v.Spec.Zone.String(),
-		Type: v.Spec.Type.String(), State: lifeString(v.State),
-	}
-	if id, ok := v.Spec.Source.Snapshot(); ok {
-		out.SourceSnapshotId = id.ID()
-	}
-	return out
-}
-
-func toSnapshot(s model.Snapshot) *storagev1.Snapshot {
-	return &storagev1.Snapshot{
-		Id: s.ID.ID(), SourceVolumeId: s.Source.ID(), SizeBytes: int64(s.Size), State: lifeString(s.State),
-	}
-}
-
-func toBucket(b model.Bucket) *storagev1.Bucket {
-	return &storagev1.Bucket{Name: b.Name.Name(), State: lifeString(b.State)}
-}
-
-func toObject(o model.Object) *storagev1.Object {
-	return &storagev1.Object{
-		Bucket: o.Path.Bucket.Name(), Key: o.Path.Key.String(), SizeBytes: int64(o.Size),
-		Etag: string(o.ETag), Generation: o.Generation.String(), ContentType: o.ContentType,
-	}
-}
-
-func toLoc(l model.Locator) *storagev1.Locator {
-	return &storagev1.Locator{
-		Method: l.Method, Url: l.URL, Headers: l.Headers, ExpiresUnixMicro: l.ExpiresAt.UnixMicro(),
-	}
-}
-
-func lifeString(s model.Lifecycle) string {
-	switch s.(type) {
-	case model.Creating:
-		return "creating"
-	case model.Available:
-		return "available"
-	case model.Deleting:
-		return "deleting"
-	default:
-		return ""
-	}
-}
-
-func toStatus(err error) error {
-	if err == nil {
-		return nil
-	}
-	switch {
-	case errors.Is(err, context.Canceled):
-		return status.Error(codes.Canceled, err.Error())
-	case errors.Is(err, context.DeadlineExceeded):
-		return status.Error(codes.DeadlineExceeded, err.Error())
-	case errors.Is(err, model.ErrTokenReused):
-		st := status.New(codes.AlreadyExists, err.Error())
-		with, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: "CLIENT_TOKEN_REUSED", Domain: "vws.storage"})
-		if derr != nil {
-			return st.Err()
+	sum := sha256.Sum256(body)
+	if spec.GetSha256() != "" {
+		parsed, err := model.ParseDigest(spec.GetSha256())
+		if err != nil || parsed != sum {
+			return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("sha256")
 		}
-		return with.Err()
-	case errors.Is(err, model.ErrInvalidArgument):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, model.ErrNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, model.ErrAlreadyExists):
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, model.ErrFailedPrecondition):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, model.ErrStale):
-		return status.Error(codes.Aborted, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
 	}
+	return model.PutObjectRequest{
+		Path: path, Size: model.Bytes(len(body)), SHA256: sum, ContentType: spec.GetContentType(),
+	}, path, body, nil
+}
+
+func listPage[T any](ctx context.Context, size int32, token string, list func(context.Context, model.PageRequest) (model.Page[T], error)) (model.Page[T], error) {
+	n, err := pageSize(size)
+	if err != nil {
+		return model.Page[T]{}, err
+	}
+	return list(ctx, model.PageRequest{Size: n, Token: token})
+}
+
+func putBytes(ctx context.Context, loc model.Locator, body []byte) error {
+	method := loc.Method
+	if method == "" {
+		method = http.MethodPut
+	}
+	req, err := http.NewRequestWithContext(ctx, method, loc.URL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	for k, v := range loc.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return errors.New(resp.Status + " " + string(bytes.TrimSpace(msg)))
+	}
+	return nil
 }

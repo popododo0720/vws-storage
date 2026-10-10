@@ -16,6 +16,8 @@ var (
 	ErrTokenReused = errSentinel("client token reused with a different request")
 	// ErrStale means a stored row was not the record a Change was minted from.
 	ErrStale = errSentinel("stale change")
+	// ErrETagMismatch means the caller sent an etag other than the stored version.
+	ErrETagMismatch = errSentinel("etag mismatch")
 )
 
 type errSentinel string
@@ -29,6 +31,15 @@ type Bytes int64
 const GiB Bytes = 1 << 30
 
 const maxVolume Bytes = 16 << 40
+
+// VolumeSize converts a gibibyte count into a volume size.
+// Values that would wrap an int64, or that exceed the volume limit, are rejected.
+func VolumeSize(gib int64) (Bytes, error) {
+	if gib < 1 || gib > int64(maxVolume/GiB) {
+		return 0, fmt.Errorf("%w: volume size", ErrInvalidArgument)
+	}
+	return Bytes(gib) * GiB, nil
+}
 
 // MaxObjectBytes is the single-request upload limit. Multipart is out of scope.
 const MaxObjectBytes Bytes = 5 * GiB
@@ -156,22 +167,47 @@ type Request interface {
 }
 
 // CreateVolumeRequest creates a blank volume, or restores one when Source is set.
-type CreateVolumeRequest struct{ Spec VolumeSpec }
+// ID is the client-chosen volume id. The zero ID asks the engine to mint one.
+type CreateVolumeRequest struct {
+	ID   VolumeID
+	Spec VolumeSpec
+}
 
 // DeleteVolumeRequest deletes an available volume.
-type DeleteVolumeRequest struct{ Volume VolumeID }
+// Expected is the etag version. Zero means the caller did not send one.
+// Zone is the zone in the resource name. Zero skips that check.
+type DeleteVolumeRequest struct {
+	Volume       VolumeID
+	Zone         Zone
+	Expected     Version
+	AllowMissing bool
+}
 
 // CreateSnapshotRequest snapshots an available volume.
-type CreateSnapshotRequest struct{ Source VolumeID }
+// ID is the client-chosen snapshot id. The zero ID asks the engine to mint one.
+// Zone is the zone in the source volume name. Zero skips that check.
+type CreateSnapshotRequest struct {
+	ID     SnapshotID
+	Source VolumeID
+	Zone   Zone
+}
 
 // DeleteSnapshotRequest deletes an available snapshot.
-type DeleteSnapshotRequest struct{ Snapshot SnapshotID }
+type DeleteSnapshotRequest struct {
+	Snapshot     SnapshotID
+	Expected     Version
+	AllowMissing bool
+}
 
 // CreateBucketRequest creates a bucket.
 type CreateBucketRequest struct{ Bucket BucketName }
 
 // DeleteBucketRequest deletes an empty bucket.
-type DeleteBucketRequest struct{ Bucket BucketName }
+type DeleteBucketRequest struct {
+	Bucket       BucketName
+	Expected     Version
+	AllowMissing bool
+}
 
 // PutObjectRequest declares an upload. The bytes go to the object backend.
 type PutObjectRequest struct {
@@ -182,7 +218,11 @@ type PutObjectRequest struct {
 }
 
 // DeleteObjectRequest removes an object from reads and reclaims its bytes.
-type DeleteObjectRequest struct{ Path ObjectPath }
+type DeleteObjectRequest struct {
+	Path         ObjectPath
+	Expected     Version
+	AllowMissing bool
+}
 
 // Validate implements Request.
 func (r CreateVolumeRequest) Validate() error {
@@ -270,19 +310,19 @@ func (r CreateVolumeRequest) fingerprint() string {
 	if id, ok := r.Spec.Source.Snapshot(); ok {
 		src = id.String()
 	}
-	return fmt.Sprintf("create-volume\n%d\n%s\n%s\n%s", r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src)
+	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s", r.ID.ID(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), src)
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {
-	return "delete-volume\n" + r.Volume.String()
+	return fmt.Sprintf("delete-volume\n%s\n%s\n%d\n%t", r.Volume.String(), r.Zone.String(), r.Expected, r.AllowMissing)
 }
 
 func (r CreateSnapshotRequest) fingerprint() string {
-	return "create-snapshot\n" + r.Source.String()
+	return "create-snapshot\n" + r.ID.ID() + "\n" + r.Source.String() + "\n" + r.Zone.String()
 }
 
 func (r DeleteSnapshotRequest) fingerprint() string {
-	return "delete-snapshot\n" + r.Snapshot.String()
+	return fmt.Sprintf("delete-snapshot\n%s\n%d\n%t", r.Snapshot.String(), r.Expected, r.AllowMissing)
 }
 
 func (r CreateBucketRequest) fingerprint() string {
@@ -290,7 +330,7 @@ func (r CreateBucketRequest) fingerprint() string {
 }
 
 func (r DeleteBucketRequest) fingerprint() string {
-	return "delete-bucket\n" + r.Bucket.String()
+	return fmt.Sprintf("delete-bucket\n%s\n%d\n%t", r.Bucket.String(), r.Expected, r.AllowMissing)
 }
 
 func (r PutObjectRequest) fingerprint() string {
@@ -298,7 +338,7 @@ func (r PutObjectRequest) fingerprint() string {
 }
 
 func (r DeleteObjectRequest) fingerprint() string {
-	return "delete-object\n" + r.Path.String()
+	return fmt.Sprintf("delete-object\n%s\n%d\n%t", r.Path.String(), r.Expected, r.AllowMissing)
 }
 
 func (CreateVolumeRequest) isRequest()   {}
