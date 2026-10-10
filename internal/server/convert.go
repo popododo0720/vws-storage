@@ -55,19 +55,19 @@ func notFound(msg string) error {
 }
 
 func (s *Server) volumeName(zone model.Zone, id model.VolumeID) string {
-	return "projects/" + s.project + "/zones/" + zone.String() + "/volumes/" + id.ID()
+	return "projects/" + id.Project().String() + "/zones/" + zone.String() + "/volumes/" + id.ID()
 }
 
-func (s *Server) snapshotName(id model.SnapshotID) string {
-	return "projects/" + s.project + "/regions/" + s.region + "/snapshots/" + id.ID()
+func (s *Server) snapshotName(id model.SnapshotID, region model.Region) string {
+	return "projects/" + id.Project().String() + "/regions/" + region.String() + "/snapshots/" + id.ID()
 }
 
 func (s *Server) bucketName(name model.BucketName) string {
-	return "projects/" + s.project + "/buckets/" + name.Name()
+	return "projects/" + name.Project().String() + "/buckets/" + name.Name()
 }
 
 func (s *Server) objectName(p model.ObjectPath) string {
-	return "projects/" + s.project + "/buckets/" + p.Bucket.Name() + "/objects/" + encodeKey(p.Key.String())
+	return "projects/" + p.Project().String() + "/buckets/" + p.Bucket.Name() + "/objects/" + encodeKey(p.Key.String())
 }
 
 // encodeKey percent-encodes every byte that is not RFC 3986 unreserved.
@@ -86,7 +86,28 @@ func encodeKey(key string) string {
 }
 
 func (s *Server) opName(id model.OperationID) string {
-	return "projects/" + s.project + "/operations/" + id.ID()
+	return "projects/" + id.Project().String() + "/operations/" + id.ID()
+}
+
+func (s *Server) allowProject(p model.Project) error {
+	if s.projects == nil {
+		return nil
+	}
+	if _, ok := s.projects[p]; ok {
+		return nil
+	}
+	return notFound("project " + p.String() + " is not served")
+}
+
+func (s *Server) parseProject(seg string) (model.Project, error) {
+	p, err := model.ParseProject(seg)
+	if err != nil {
+		return model.Project{}, invalidID("project")
+	}
+	if err := s.allowProject(p); err != nil {
+		return model.Project{}, err
+	}
+	return p, nil
 }
 
 func (s *Server) parseVolumeName(name string) (model.VolumeID, model.Zone, error) {
@@ -94,8 +115,9 @@ func (s *Server) parseVolumeName(name string) (model.VolumeID, model.Zone, error
 	if err != nil || parts[2] != "zones" || parts[4] != "volumes" {
 		return model.VolumeID{}, model.Zone{}, invalidID("volume name")
 	}
-	if parts[1] != s.project {
-		return model.VolumeID{}, model.Zone{}, notFound("volume")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.VolumeID{}, model.Zone{}, err
 	}
 	zone, err := model.ParseZone(parts[3])
 	if err != nil {
@@ -105,48 +127,59 @@ func (s *Server) parseVolumeName(name string) (model.VolumeID, model.Zone, error
 	if err != nil {
 		return model.VolumeID{}, model.Zone{}, invalidID("volume id")
 	}
-	return id, zone, nil
+	return id.WithProject(project), zone, nil
 }
 
-func (s *Server) parseVolumeParent(parent string) (model.Zone, error) {
+func (s *Server) parseVolumeParent(parent string) (model.Project, model.Zone, error) {
 	parts, err := nameParts(parent, 4)
 	if err != nil || parts[2] != "zones" {
-		return model.Zone{}, invalidID("volume parent")
+		return model.Project{}, model.Zone{}, invalidID("volume parent")
 	}
-	if parts[1] != s.project {
-		return model.Zone{}, notFound("volume")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.Project{}, model.Zone{}, err
 	}
 	zone, err := model.ParseZone(parts[3])
 	if err != nil {
-		return model.Zone{}, invalidID("zone")
+		return model.Project{}, model.Zone{}, invalidID("zone")
 	}
-	return zone, nil
+	return project, zone, nil
 }
 
-func (s *Server) parseSnapshotName(name string) (model.SnapshotID, error) {
+func (s *Server) parseSnapshotName(name string) (model.SnapshotID, model.Region, error) {
 	parts, err := nameParts(name, 6)
 	if err != nil || parts[2] != "regions" || parts[4] != "snapshots" {
-		return model.SnapshotID{}, invalidID("snapshot name")
+		return model.SnapshotID{}, model.Region{}, invalidID("snapshot name")
 	}
-	if parts[1] != s.project || parts[3] != s.region {
-		return model.SnapshotID{}, notFound("snapshot")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.SnapshotID{}, model.Region{}, err
+	}
+	region, err := model.ParseRegion(parts[3])
+	if err != nil {
+		return model.SnapshotID{}, model.Region{}, invalidID("region")
 	}
 	id, err := model.ParseSnapshotID(parts[5])
 	if err != nil {
-		return model.SnapshotID{}, invalidID("snapshot id")
+		return model.SnapshotID{}, model.Region{}, invalidID("snapshot id")
 	}
-	return id, nil
+	return id.WithProject(project), region, nil
 }
 
-func (s *Server) parseSnapshotParent(parent string) error {
+func (s *Server) parseSnapshotParent(parent string) (model.Project, model.Region, error) {
 	parts, err := nameParts(parent, 4)
 	if err != nil || parts[2] != "regions" {
-		return invalidID("snapshot parent")
+		return model.Project{}, model.Region{}, invalidID("snapshot parent")
 	}
-	if parts[1] != s.project || parts[3] != s.region {
-		return notFound("snapshot")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.Project{}, model.Region{}, err
 	}
-	return nil
+	region, err := model.ParseRegion(parts[3])
+	if err != nil {
+		return model.Project{}, model.Region{}, invalidID("region")
+	}
+	return project, region, nil
 }
 
 func (s *Server) parseBucketName(name string) (model.BucketName, error) {
@@ -154,25 +187,23 @@ func (s *Server) parseBucketName(name string) (model.BucketName, error) {
 	if err != nil || parts[2] != "buckets" {
 		return model.BucketName{}, invalidID("bucket name")
 	}
-	if parts[1] != s.project {
-		return model.BucketName{}, notFound("bucket")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.BucketName{}, err
 	}
 	id, err := model.ParseBucketName(parts[3])
 	if err != nil {
 		return model.BucketName{}, invalidID("bucket id")
 	}
-	return id, nil
+	return id.WithProject(project), nil
 }
 
-func (s *Server) parseBucketParent(parent string) error {
+func (s *Server) parseBucketParent(parent string) (model.Project, error) {
 	parts, err := nameParts(parent, 2)
 	if err != nil {
-		return invalidID("bucket parent")
+		return model.Project{}, invalidID("bucket parent")
 	}
-	if parts[1] != s.project {
-		return notFound("bucket")
-	}
-	return nil
+	return s.parseProject(parts[1])
 }
 
 func (s *Server) parseObjectParent(parent string) (model.BucketName, error) {
@@ -180,10 +211,15 @@ func (s *Server) parseObjectParent(parent string) (model.BucketName, error) {
 	if err != nil || parts[2] != "buckets" {
 		return model.BucketName{}, invalidID("object parent")
 	}
-	if parts[1] != s.project {
-		return model.BucketName{}, notFound("object")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.BucketName{}, err
 	}
-	return model.ParseBucketName(parts[3])
+	id, err := model.ParseBucketName(parts[3])
+	if err != nil {
+		return model.BucketName{}, err
+	}
+	return id.WithProject(project), nil
 }
 
 func (s *Server) parseObjectName(name string) (model.ObjectPath, error) {
@@ -214,19 +250,32 @@ func (s *Server) parseObjectName(name string) (model.ObjectPath, error) {
 	return model.ObjectPath{Bucket: bucket, Key: parsed}, nil
 }
 
+func (s *Server) parseOperationParent(name string) (model.Project, error) {
+	if name == "" {
+		return model.Project{}, invalidID("operation parent")
+	}
+	name = strings.TrimSuffix(name, "/operations")
+	parts, err := nameParts(name, 2)
+	if err != nil {
+		return model.Project{}, invalidID("operation parent")
+	}
+	return s.parseProject(parts[1])
+}
+
 func (s *Server) parseOpName(name string) (model.OperationID, error) {
 	parts, err := nameParts(name, 4)
 	if err != nil || parts[2] != "operations" {
 		return model.OperationID{}, invalidID("operation name")
 	}
-	if parts[1] != s.project {
-		return model.OperationID{}, notFound("operation")
+	project, err := s.parseProject(parts[1])
+	if err != nil {
+		return model.OperationID{}, err
 	}
 	id, err := model.ParseOperationID(parts[3])
 	if err != nil {
 		return model.OperationID{}, invalidID("operation name")
 	}
-	return id, nil
+	return id.WithProject(project), nil
 }
 
 func nameParts(name string, n int) ([]string, error) {
@@ -243,7 +292,7 @@ func nameParts(name string, n int) ([]string, error) {
 }
 
 func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVolumeRequest, string, error) {
-	zone, err := s.parseVolumeParent(in.GetParent())
+	project, zone, err := s.parseVolumeParent(in.GetParent())
 	if err != nil {
 		return model.CreateVolumeRequest{}, "", err
 	}
@@ -251,12 +300,14 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	if err != nil {
 		return model.CreateVolumeRequest{}, "", invalidID("volume id")
 	}
+	id = id.WithProject(project)
 	specIn := in.GetVolume().GetSpec()
 	if in.GetVolume() == nil || specIn == nil {
 		return model.CreateVolumeRequest{}, "", invalidSpec("volume")
 	}
-	if err := rejectLabels(in.GetVolume().GetLabels()); err != nil {
-		return model.CreateVolumeRequest{}, "", err
+	labels, err := model.ParseLabels(in.GetVolume().GetLabels())
+	if err != nil {
+		return model.CreateVolumeRequest{}, "", invalidSpec("labels")
 	}
 	if specIn.GetImage() != "" {
 		return model.CreateVolumeRequest{}, "", invalidSpec("image")
@@ -267,9 +318,12 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	}
 	src := model.NoSource()
 	if snapName := specIn.GetSnapshot(); snapName != "" {
-		snap, err := s.parseSnapshotName(snapName)
+		snap, _, err := s.parseSnapshotName(snapName)
 		if err != nil {
 			return model.CreateVolumeRequest{}, "", err
+		}
+		if snap.Project() != project {
+			return model.CreateVolumeRequest{}, "", invalidID("snapshot")
 		}
 		src, err = model.FromSnapshot(snap)
 		if err != nil {
@@ -286,64 +340,77 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	}
 	return model.CreateVolumeRequest{ID: id, Spec: model.VolumeSpec{
 		Size: size, Zone: zone, Type: typ, Source: src,
-	}}, name, nil
+	}, Labels: labels}, name, nil
 }
 
 func (s *Server) snapshotCreate(in *storagev1.CreateSnapshotRequest) (model.CreateSnapshotRequest, string, error) {
-	if err := s.parseSnapshotParent(in.GetParent()); err != nil {
+	project, region, err := s.parseSnapshotParent(in.GetParent())
+	if err != nil {
 		return model.CreateSnapshotRequest{}, "", err
 	}
 	id, err := model.ParseSnapshotID(in.GetSnapshotId())
 	if err != nil {
 		return model.CreateSnapshotRequest{}, "", invalidID("snapshot id")
 	}
+	id = id.WithProject(project)
 	snap := in.GetSnapshot()
 	if snap == nil || snap.GetSpec() == nil {
 		return model.CreateSnapshotRequest{}, "", invalidSpec("snapshot")
 	}
-	if err := rejectLabels(snap.GetLabels()); err != nil {
-		return model.CreateSnapshotRequest{}, "", err
+	labels, err := model.ParseLabels(snap.GetLabels())
+	if err != nil {
+		return model.CreateSnapshotRequest{}, "", invalidSpec("labels")
 	}
-	if snap.GetSpec().GetDescription() != "" {
+	desc, err := model.ParseDescription(snap.GetSpec().GetDescription())
+	if err != nil {
 		return model.CreateSnapshotRequest{}, "", invalidSpec("description")
 	}
 	vol, zone, err := s.parseVolumeName(snap.GetSpec().GetVolume())
 	if err != nil {
 		return model.CreateSnapshotRequest{}, "", err
 	}
-	name := s.snapshotName(id)
+	if vol.Project() != project {
+		return model.CreateSnapshotRequest{}, "", invalidID("volume name")
+	}
+	name := s.snapshotName(id, region)
 	if got := snap.GetName(); got != "" && got != name {
 		return model.CreateSnapshotRequest{}, "", invalidID("snapshot name")
 	}
-	return model.CreateSnapshotRequest{ID: id, Source: vol, Zone: zone}, name, nil
+	return model.CreateSnapshotRequest{
+		ID: id, Source: vol, Zone: zone, Region: region, Labels: labels, Description: desc,
+	}, name, nil
 }
 
 func (s *Server) bucketCreate(in *storagev1.CreateBucketRequest) (model.CreateBucketRequest, string, error) {
-	if err := s.parseBucketParent(in.GetParent()); err != nil {
+	project, err := s.parseBucketParent(in.GetParent())
+	if err != nil {
 		return model.CreateBucketRequest{}, "", err
 	}
 	id, err := model.ParseBucketName(in.GetBucketId())
 	if err != nil {
 		return model.CreateBucketRequest{}, "", invalidID("bucket id")
 	}
+	id = id.WithProject(project)
 	b := in.GetBucket()
 	if b == nil || b.GetSpec() == nil {
 		return model.CreateBucketRequest{}, "", invalidSpec("bucket")
 	}
-	if err := rejectLabels(b.GetLabels()); err != nil {
-		return model.CreateBucketRequest{}, "", err
+	labels, err := model.ParseLabels(b.GetLabels())
+	if err != nil {
+		return model.CreateBucketRequest{}, "", invalidSpec("labels")
 	}
 	if b.GetSpec().GetVersioning() {
 		return model.CreateBucketRequest{}, "", invalidSpec("versioning")
 	}
-	if b.GetSpec().GetRegion() != s.region {
+	region, err := model.ParseRegion(b.GetSpec().GetRegion())
+	if err != nil {
 		return model.CreateBucketRequest{}, "", invalidSpec("region")
 	}
 	name := s.bucketName(id)
 	if got := b.GetName(); got != "" && got != name {
 		return model.CreateBucketRequest{}, "", invalidID("bucket name")
 	}
-	return model.CreateBucketRequest{Bucket: id}, name, nil
+	return model.CreateBucketRequest{Bucket: id, Region: region, Labels: labels}, name, nil
 }
 
 func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
@@ -355,13 +422,6 @@ func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
 	default:
 		return 0, invalidSpec("volume type")
 	}
-}
-
-func rejectLabels(labels map[string]string) error {
-	if len(labels) > 0 {
-		return invalidSpec("labels")
-	}
-	return nil
 }
 
 func tokenFor(requestID string) (model.ClientToken, error) {
@@ -402,7 +462,7 @@ func (s *Server) operation(ctx context.Context, st storage.OperationStatus) (*lo
 	op := st.Operation
 	md := &commonv1.OperationMetadata{
 		Resource:   s.resourceName(ctx, op),
-		Verb:       verbOf(op.Kind()),
+		Verb:       verbOf(op),
 		Generation: 1,
 		CreateTime: stamp(op.Meta.CreateTime),
 	}
@@ -451,9 +511,9 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 		}
 		return s.volumeName(zone, w.Volume)
 	case model.SnapshotCreation:
-		return s.snapshotName(w.Snapshot)
+		return s.snapshotName(w.Snapshot, w.Region)
 	case model.SnapshotDeletion:
-		return s.snapshotName(w.Snapshot)
+		return s.snapshotName(w.Snapshot, w.Region)
 	case model.BucketCreation:
 		return s.bucketName(w.Bucket)
 	case model.BucketDeletion:
@@ -477,7 +537,7 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 		if err != nil {
 			return nil, err
 		}
-		return s.volumeMsg(vol), nil
+		return s.volumeMsg(ctx, vol), nil
 	case model.SnapshotCreation:
 		snap, err := s.svc.Snapshot(ctx, w.Snapshot)
 		if errors.Is(err, model.ErrNotFound) {
@@ -510,9 +570,10 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	}
 }
 
-func (s *Server) volumeMsg(v model.Volume) *storagev1.Volume {
+func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volume {
 	out := &storagev1.Volume{
 		Name: s.volumeName(v.Spec.Zone, v.ID), Generation: int64(v.Meta.Version), Etag: etagOf(v.Meta),
+		Labels: v.Labels.Map(),
 		Spec: &storagev1.VolumeSpec{
 			SizeGib: int64(v.Spec.Size / model.GiB), Type: protoVolumeType(v.Spec.Type),
 		},
@@ -520,7 +581,11 @@ func (s *Server) volumeMsg(v model.Volume) *storagev1.Volume {
 		CreateTime: stamp(v.Meta.CreateTime), UpdateTime: stamp(v.Meta.UpdateTime),
 	}
 	if id, ok := v.Spec.Source.Snapshot(); ok {
-		out.Spec.Source = &storagev1.VolumeSpec_Snapshot{Snapshot: s.snapshotName(id)}
+		region := model.Region{}
+		if snap, err := s.svc.Snapshot(ctx, id); err == nil {
+			region = snap.Region
+		}
+		out.Spec.Source = &storagev1.VolumeSpec_Snapshot{Snapshot: s.snapshotName(id, region)}
 	}
 	if _, ok := v.State.(model.Deleting); ok {
 		out.DeleteTime = stamp(v.Meta.UpdateTime)
@@ -534,8 +599,9 @@ func (s *Server) snapshotMsg(ctx context.Context, sn model.Snapshot) *storagev1.
 		volume = s.volumeName(vol.Spec.Zone, sn.Source)
 	}
 	out := &storagev1.Snapshot{
-		Name: s.snapshotName(sn.ID), Generation: int64(sn.Meta.Version), Etag: etagOf(sn.Meta),
-		Spec:       &storagev1.SnapshotSpec{Volume: volume},
+		Name: s.snapshotName(sn.ID, sn.Region), Generation: int64(sn.Meta.Version), Etag: etagOf(sn.Meta),
+		Labels:     sn.Labels.Map(),
+		Spec:       &storagev1.SnapshotSpec{Volume: volume, Description: sn.Description},
 		Status:     &storagev1.SnapshotStatus{Observed: observed(sn.State, sn.Meta.Version), SizeGib: int64(sn.Size / model.GiB)},
 		CreateTime: stamp(sn.Meta.CreateTime), UpdateTime: stamp(sn.Meta.UpdateTime),
 	}
@@ -548,7 +614,8 @@ func (s *Server) snapshotMsg(ctx context.Context, sn model.Snapshot) *storagev1.
 func (s *Server) bucketMsg(b model.Bucket) *storagev1.Bucket {
 	out := &storagev1.Bucket{
 		Name: s.bucketName(b.Name), Generation: int64(b.Meta.Version), Etag: etagOf(b.Meta),
-		Spec:       &storagev1.BucketSpec{Region: s.region},
+		Labels:     b.Labels.Map(),
+		Spec:       &storagev1.BucketSpec{Region: b.Region.String()},
 		Status:     &storagev1.BucketStatus{Observed: observed(b.State, b.Meta.Version)},
 		CreateTime: stamp(b.Meta.CreateTime), UpdateTime: stamp(b.Meta.UpdateTime),
 	}
@@ -561,7 +628,8 @@ func (s *Server) bucketMsg(b model.Bucket) *storagev1.Bucket {
 func (s *Server) objectMsg(o model.Object) *storagev1.Object {
 	return &storagev1.Object{
 		Name: s.objectName(o.Path), Generation: int64(o.Meta.Version), Etag: etagOf(o.Meta),
-		Spec: &storagev1.ObjectSpec{ContentType: o.ContentType, Sha256: o.SHA256.String()},
+		Labels: o.Labels.Map(),
+		Spec:   &storagev1.ObjectSpec{ContentType: o.ContentType, Sha256: o.SHA256.String()},
 		Status: &storagev1.ObjectStatus{
 			Observed: observed(model.Available{}, o.Meta.Version), SizeBytes: int64(o.Size),
 		},
@@ -601,8 +669,11 @@ func observed(state model.Lifecycle, version model.Version) *commonv1.ObservedSt
 	return out
 }
 
-func verbOf(k model.Kind) commonv1.OperationVerb {
-	switch k {
+func verbOf(op model.Operation) commonv1.OperationVerb {
+	if up, ok := op.Work.(model.ObjectUpload); ok && !up.Replaces.IsZero() {
+		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
+	}
+	switch op.Kind() {
 	case model.KindCreateVolume, model.KindCreateSnapshot, model.KindCreateBucket, model.KindPutObject:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case model.KindDeleteVolume, model.KindDeleteSnapshot, model.KindDeleteBucket, model.KindDeleteObject:

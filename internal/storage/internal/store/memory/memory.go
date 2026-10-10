@@ -141,7 +141,7 @@ func (m *mem) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 	return view{m}.InFlight(ctx, ref)
 }
 
-func (m *mem) Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (m *mem) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return view{m}.Token(ctx, tok)
@@ -301,7 +301,7 @@ func (v view) InFlight(_ context.Context, ref model.Ref) (bool, error) {
 	return false, nil
 }
 
-func (v view) Token(_ context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (v view) Token(_ context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	rec, err := v.get("token", tok)
 	if err != nil {
 		return model.TokenRecord{}, err
@@ -394,7 +394,7 @@ func kindOf(key model.Key) (string, error) {
 		return "object", nil
 	case model.OperationID:
 		return "operation", nil
-	case model.ClientToken:
+	case model.TokenKey:
 		return "token", nil
 	default:
 		return "", model.ErrInvalidArgument

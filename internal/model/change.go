@@ -47,7 +47,7 @@ func withToken(st Start, ws []Write) []Write {
 	if st.Claim.Token.IsZero() {
 		return ws
 	}
-	rec := TokenRecord{Claim: st.Claim, Op: st.Op, Meta: fresh(st.Now)}
+	rec := TokenRecord{Project: st.Op.Project(), Claim: st.Claim, Op: st.Op, Meta: fresh(st.Now)}
 	return append(ws, putNew(rec))
 }
 
@@ -98,7 +98,7 @@ func NoteExisting(st Start, op Operation) (Admitted, error) {
 	if st.Claim.Token.IsZero() {
 		return Admitted{Op: op}, nil
 	}
-	rec := TokenRecord{Claim: st.Claim, Op: op.ID, Meta: fresh(st.Now)}
+	rec := TokenRecord{Project: st.Op.Project(), Claim: st.Claim, Op: op.ID, Meta: fresh(st.Now)}
 	return Admitted{Change: writes(putNew(rec)), Op: op}, nil
 }
 

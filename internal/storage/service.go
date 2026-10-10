@@ -58,9 +58,11 @@ type OperationStatus struct {
 }
 
 // OperationQuery narrows ListOperations.
+// Project selects one project's operations. The zero project selects historical unscoped rows.
 type OperationQuery struct {
 	Target      model.Ref
 	NonTerminal bool
+	Project     model.Project
 }
 
 // Service is the storage engine.
@@ -155,7 +157,7 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 	}
 	var op model.Operation
 	err = s.st.Update(ctx, func(r store.Reader) (model.Change, error) {
-		rec, err := r.Token(ctx, tok)
+		rec, err := r.Token(ctx, model.TokenKey{Project: req.Project(), Token: tok})
 		switch {
 		case err == nil:
 			id, err := rec.Match(claim)
@@ -167,7 +169,7 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 		case !errors.Is(err, model.ErrNotFound):
 			return model.Change{}, err
 		}
-		st := model.Start{Op: model.NewOperationID(), Claim: claim, Now: s.now()}
+		st := model.Start{Op: model.NewOperationID().WithProject(req.Project()), Claim: claim, Now: s.now()}
 		admitted, err := s.admit(ctx, r, st, req)
 		if err != nil {
 			return model.Change{}, err
@@ -238,6 +240,8 @@ func (s *Service) admit(ctx context.Context, r store.Reader, st model.Start, req
 		return s.admitDeleteBucket(ctx, r, st, req)
 	case model.PutObjectRequest:
 		return s.admitPutObject(ctx, r, st, req)
+	case model.UpdateObjectRequest:
+		return s.admitUpdateObject(ctx, r, st, req)
 	case model.DeleteObjectRequest:
 		return s.admitDeleteObject(ctx, r, st, req)
 	default:
@@ -264,11 +268,32 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 	if err != nil {
 		return model.Page[OperationStatus]{}, err
 	}
-	ops, err := s.st.ListOperations(ctx, store.OperationFilter{Target: q.Target, NonTerminal: q.NonTerminal}, after, n+1)
-	if err != nil {
-		return model.Page[OperationStatus]{}, err
+	var matched []model.Operation
+	for {
+		batch, err := s.st.ListOperations(ctx, store.OperationFilter{Target: q.Target, NonTerminal: q.NonTerminal}, after, n+1)
+		if err != nil {
+			return model.Page[OperationStatus]{}, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		stop := false
+		for _, op := range batch {
+			after = op.ID
+			if op.ID.Project() != q.Project {
+				continue
+			}
+			matched = append(matched, op)
+			if len(matched) == n+1 {
+				stop = true
+				break
+			}
+		}
+		if stop || len(batch) <= n {
+			break
+		}
 	}
-	ops, next := trim(ops, n, func(op model.Operation) string { return op.ID.String() })
+	ops, next := trim(matched, n, func(op model.Operation) string { return op.ID.String() })
 	items := make([]OperationStatus, 0, len(ops))
 	for _, op := range ops {
 		st, err := s.status(ctx, op)
@@ -285,9 +310,10 @@ func (s *Service) Volume(ctx context.Context, id model.VolumeID) (model.Volume, 
 	return s.st.Volume(ctx, id)
 }
 
-// ListVolumes lists volumes in id order. A non-zero zone keeps only that zone.
+// ListVolumes lists volumes in id order for one project.
+// A non-zero zone keeps only that zone.
 // The page token stays the engine cursor, including across volumes in other zones.
-func (s *Service) ListVolumes(ctx context.Context, zone model.Zone, p model.PageRequest) (model.Page[model.Volume], error) {
+func (s *Service) ListVolumes(ctx context.Context, project model.Project, zone model.Zone, p model.PageRequest) (model.Page[model.Volume], error) {
 	n, err := model.NormalizePage(p)
 	if err != nil {
 		return model.Page[model.Volume]{}, err
@@ -308,6 +334,9 @@ func (s *Service) ListVolumes(ctx context.Context, zone model.Zone, p model.Page
 		stop := false
 		for _, v := range batch {
 			after = v.ID
+			if v.ID.Project() != project {
+				continue
+			}
 			if !zone.IsZero() && v.Spec.Zone != zone {
 				continue
 			}
@@ -330,9 +359,47 @@ func (s *Service) Snapshot(ctx context.Context, id model.SnapshotID) (model.Snap
 	return s.st.Snapshot(ctx, id)
 }
 
-// ListSnapshots lists snapshots in id order.
-func (s *Service) ListSnapshots(ctx context.Context, p model.PageRequest) (model.Page[model.Snapshot], error) {
-	return page(ctx, p, model.ParseSnapshotID, s.st.ListSnapshots, func(v model.Snapshot) string { return v.ID.String() })
+// ListSnapshots lists snapshots in id order for one project.
+// A non-zero region keeps only that region.
+func (s *Service) ListSnapshots(ctx context.Context, project model.Project, region model.Region, p model.PageRequest) (model.Page[model.Snapshot], error) {
+	n, err := model.NormalizePage(p)
+	if err != nil {
+		return model.Page[model.Snapshot]{}, err
+	}
+	after, err := decodeID(p.Token, model.ParseSnapshotID)
+	if err != nil {
+		return model.Page[model.Snapshot]{}, err
+	}
+	var matched []model.Snapshot
+	for {
+		batch, err := s.st.ListSnapshots(ctx, after, n+1)
+		if err != nil {
+			return model.Page[model.Snapshot]{}, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		stop := false
+		for _, sn := range batch {
+			after = sn.ID
+			if sn.ID.Project() != project {
+				continue
+			}
+			if !region.IsZero() && sn.Region != region {
+				continue
+			}
+			matched = append(matched, sn)
+			if len(matched) == n+1 {
+				stop = true
+				break
+			}
+		}
+		if stop || len(batch) <= n {
+			break
+		}
+	}
+	items, next := trim(matched, n, func(sn model.Snapshot) string { return sn.ID.String() })
+	return model.Page[model.Snapshot]{Items: items, NextToken: next}, nil
 }
 
 // Bucket returns a bucket.
@@ -340,9 +407,43 @@ func (s *Service) Bucket(ctx context.Context, name model.BucketName) (model.Buck
 	return s.st.Bucket(ctx, name)
 }
 
-// ListBuckets lists buckets in name order.
-func (s *Service) ListBuckets(ctx context.Context, p model.PageRequest) (model.Page[model.Bucket], error) {
-	return page(ctx, p, model.ParseBucketName, s.st.ListBuckets, func(v model.Bucket) string { return v.Name.String() })
+// ListBuckets lists buckets in name order for one project.
+func (s *Service) ListBuckets(ctx context.Context, project model.Project, p model.PageRequest) (model.Page[model.Bucket], error) {
+	n, err := model.NormalizePage(p)
+	if err != nil {
+		return model.Page[model.Bucket]{}, err
+	}
+	after, err := decodeID(p.Token, model.ParseBucketName)
+	if err != nil {
+		return model.Page[model.Bucket]{}, err
+	}
+	var matched []model.Bucket
+	for {
+		batch, err := s.st.ListBuckets(ctx, after, n+1)
+		if err != nil {
+			return model.Page[model.Bucket]{}, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		stop := false
+		for _, b := range batch {
+			after = b.Name
+			if b.Name.Project() != project {
+				continue
+			}
+			matched = append(matched, b)
+			if len(matched) == n+1 {
+				stop = true
+				break
+			}
+		}
+		if stop || len(batch) <= n {
+			break
+		}
+	}
+	items, next := trim(matched, n, func(b model.Bucket) string { return b.Name.String() })
+	return model.Page[model.Bucket]{Items: items, NextToken: next}, nil
 }
 
 // Object returns the committed head at p.
@@ -411,23 +512,6 @@ func (s *Service) poke(id model.OperationID) {
 	case s.wake <- id:
 	default:
 	}
-}
-
-func page[T any, ID any](ctx context.Context, p model.PageRequest, parse func(string) (ID, error), list func(context.Context, ID, int) ([]T, error), name func(T) string) (model.Page[T], error) {
-	n, err := model.NormalizePage(p)
-	if err != nil {
-		return model.Page[T]{}, err
-	}
-	after, err := decodeID(p.Token, parse)
-	if err != nil {
-		return model.Page[T]{}, err
-	}
-	items, err := list(ctx, after, n+1)
-	if err != nil {
-		return model.Page[T]{}, err
-	}
-	items, next := trim(items, n, name)
-	return model.Page[T]{Items: items, NextToken: next}, nil
 }
 
 func trim[T any](items []T, n int, name func(T) string) ([]T, string) {

@@ -19,7 +19,7 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 		vol, err := r.Volume(ctx, id)
 		switch {
 		case err == nil:
-			if _, del := vol.State.(model.Deleting); del || !sameVolumeSpec(vol.Spec, req.Spec) {
+			if _, del := vol.State.(model.Deleting); del || !sameVolumeSpec(vol.Spec, req.Spec) || vol.Labels != req.Labels {
 				return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrAlreadyExists)
 			}
 			var creating model.OperationID
@@ -31,7 +31,7 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 			return model.Admitted{}, err
 		}
 	} else {
-		id = model.NewVolumeID()
+		id = model.NewVolumeID().WithProject(req.Project())
 	}
 	if _, ok := req.Spec.Source.Snapshot(); !ok {
 		return model.NewVolume(st, id, req)

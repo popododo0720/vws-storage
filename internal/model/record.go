@@ -28,7 +28,6 @@ func (SnapshotID) isKey()  {}
 func (BucketName) isKey()  {}
 func (ObjectPath) isKey()  {}
 func (OperationID) isKey() {}
-func (ClientToken) isKey() {}
 
 // Lifecycle is Creating, Available, or Deleting.
 // In-flight states name the one operation driving them.
@@ -50,26 +49,32 @@ func (Deleting) isLifecycle()  {}
 
 // Volume is an EBS-like block volume.
 type Volume struct {
-	ID    VolumeID
-	Spec  VolumeSpec
-	State Lifecycle
-	Meta  Meta
-}
-
-// Snapshot is a point-in-time copy of a volume.
-type Snapshot struct {
-	ID     SnapshotID
-	Source VolumeID
-	Size   Bytes
+	ID     VolumeID
+	Spec   VolumeSpec
+	Labels Labels
 	State  Lifecycle
 	Meta   Meta
 }
 
+// Snapshot is a point-in-time copy of a volume.
+type Snapshot struct {
+	ID          SnapshotID
+	Source      VolumeID
+	Region      Region
+	Labels      Labels
+	Description string
+	Size        Bytes
+	State       Lifecycle
+	Meta        Meta
+}
+
 // Bucket is an S3-compatible bucket.
 type Bucket struct {
-	Name  BucketName
-	State Lifecycle
-	Meta  Meta
+	Name   BucketName
+	Region Region
+	Labels Labels
+	State  Lifecycle
+	Meta   Meta
 }
 
 // Object is the committed head of an object path.
@@ -81,6 +86,7 @@ type Object struct {
 	ETag        ETag
 	SHA256      Digest
 	ContentType string
+	Labels      Labels
 	UploadedAt  time.Time
 	Meta        Meta
 }
@@ -92,12 +98,14 @@ type Record interface {
 	isRecord()
 }
 
-func (v Volume) RecordKey() Key      { return v.ID }
-func (s Snapshot) RecordKey() Key    { return s.ID }
-func (b Bucket) RecordKey() Key      { return b.Name }
-func (o Object) RecordKey() Key      { return o.Path }
-func (o Operation) RecordKey() Key   { return o.ID }
-func (t TokenRecord) RecordKey() Key { return t.Claim.Token }
+func (v Volume) RecordKey() Key    { return v.ID }
+func (s Snapshot) RecordKey() Key  { return s.ID }
+func (b Bucket) RecordKey() Key    { return b.Name }
+func (o Object) RecordKey() Key    { return o.Path }
+func (o Operation) RecordKey() Key { return o.ID }
+func (t TokenRecord) RecordKey() Key {
+	return TokenKey{Project: t.Project, Token: t.Claim.Token}
+}
 
 func (v Volume) RecordMeta() Meta      { return v.Meta }
 func (s Snapshot) RecordMeta() Meta    { return s.Meta }
@@ -196,10 +204,15 @@ type VolumeDeletion struct {
 type SnapshotCreation struct {
 	Snapshot SnapshotID
 	Source   VolumeID
+	Region   Region
 }
 
-// SnapshotDeletion deletes Snapshot.
-type SnapshotDeletion struct{ Snapshot SnapshotID }
+// SnapshotDeletion deletes Snapshot. Region is copied at admission so the
+// name can be rendered after the row is gone.
+type SnapshotDeletion struct {
+	Snapshot SnapshotID
+	Region   Region
+}
 
 // BucketCreation creates Bucket.
 type BucketCreation struct{ Bucket BucketName }
@@ -207,17 +220,45 @@ type BucketCreation struct{ Bucket BucketName }
 // BucketDeletion deletes Bucket.
 type BucketDeletion struct{ Bucket BucketName }
 
-// ObjectUpload waits until Size bytes exist at Object, then commits them.
-type ObjectUpload struct {
-	Object      ObjectRef
+// ObjectContent is the comparable identity of an object's bytes and metadata.
+// Two uploads are the same contents when their ObjectContent values are equal.
+type ObjectContent struct {
 	Size        Bytes
 	SHA256      Digest
 	ContentType string
+	Labels      Labels
+}
+
+// Matches reports whether c is the stored head.
+func (c ObjectContent) Matches(o Object) bool {
+	return c.Size == o.Size && c.SHA256 == o.SHA256 && c.ContentType == o.ContentType && c.Labels == o.Labels
+}
+
+// ObjectUpload waits until Size bytes exist at Object, then commits them.
+// Replaces is the head generation this upload supersedes. Zero means the path
+// has no head. Replaces equal to Object.Generation is not a byte replacement.
+type ObjectUpload struct {
+	Object      ObjectRef
+	Replaces    Generation
+	Size        Bytes
+	SHA256      Digest
+	ContentType string
+	Labels      Labels
 	Deadline    time.Time
 }
 
+// Content returns the comparable contents of the upload.
+func (w ObjectUpload) Content() ObjectContent {
+	return ObjectContent{Size: w.Size, SHA256: w.SHA256, ContentType: w.ContentType, Labels: w.Labels}
+}
+
 // ObjectPurge deletes one generation of object bytes.
-type ObjectPurge struct{ Object ObjectRef }
+// Reclaim is set when the generation is no longer the head. A reclaim does not
+// hold the object path, so a later upload or delete of the head can proceed.
+type ObjectPurge struct {
+	Object  ObjectRef
+	Reclaim bool
+}
 
 // Kind implements Work.
 func (VolumeCreation) Kind() Kind { return KindCreateVolume }
@@ -298,6 +339,9 @@ func (w ObjectUpload) Refs() []Ref {
 
 // Refs implements Work.
 func (w ObjectPurge) Refs() []Ref {
+	if w.Reclaim {
+		return []Ref{w.Object, w.Object.Path.Bucket}
+	}
 	return []Ref{w.Object, w.Object.Path, w.Object.Path.Bucket}
 }
 

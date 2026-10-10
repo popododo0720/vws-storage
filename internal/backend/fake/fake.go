@@ -162,13 +162,14 @@ func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 
 // Objects is an in-memory Object and Signer.
 type Objects struct {
-	mu     sync.Mutex
-	base   string
-	now    func() time.Time
-	bucket map[model.BucketName]struct{}
-	gens   map[string]stored
-	expect map[string]expect
-	gets   map[string]time.Time
+	mu         sync.Mutex
+	base       string
+	now        func() time.Time
+	deleteWait <-chan struct{}
+	bucket     map[model.BucketName]struct{}
+	gens       map[string]stored
+	expect     map[string]expect
+	gets       map[string]time.Time
 }
 
 type stored struct {
@@ -188,6 +189,8 @@ type expect struct {
 type ObjectOptions struct {
 	BaseURL string
 	Now     func() time.Time
+	// DeleteWait, when set, is received at the start of every DeleteObject.
+	DeleteWait <-chan struct{}
 }
 
 // NewObjects returns an empty object backend.
@@ -201,7 +204,7 @@ func NewObjects(opts ObjectOptions) *Objects {
 		base = "http://fake.invalid"
 	}
 	return &Objects{
-		base: base, now: now,
+		base: base, now: now, deleteWait: opts.DeleteWait,
 		bucket: map[model.BucketName]struct{}{},
 		gens:   map[string]stored{},
 		expect: map[string]expect{},
@@ -230,7 +233,7 @@ func (o *Objects) DeleteBucket(ctx context.Context, name model.BucketName) error
 	if _, ok := o.bucket[name]; !ok {
 		return nil
 	}
-	prefix := name.Name() + "\t"
+	prefix := name.String() + "\t"
 	for k := range o.gens {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			return backend.ErrBusy
@@ -258,6 +261,13 @@ func (o *Objects) Stat(ctx context.Context, ref model.ObjectRef) (model.Observed
 func (o *Objects) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if o.deleteWait != nil {
+		select {
+		case <-o.deleteWait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	o.mu.Lock()
 	delete(o.gens, refKey(ref))
@@ -364,7 +374,7 @@ func (o *Objects) Handler() http.Handler {
 
 func (o *Objects) url(base, op string, ref model.ObjectRef, exp time.Time) string {
 	q := url.Values{}
-	q.Set("bucket", ref.Path.Bucket.Name())
+	q.Set("bucket", ref.Path.Bucket.String())
 	q.Set("key", ref.Path.Key.String())
 	q.Set("gen", ref.Generation.String())
 	q.Set("exp", strconv.FormatInt(exp.UnixMicro(), 10))
@@ -403,5 +413,5 @@ func (o *Objects) getAllowed(ref model.ObjectRef, exp time.Time) bool {
 }
 
 func refKey(ref model.ObjectRef) string {
-	return ref.Path.Bucket.Name() + "\t" + ref.Path.Key.String() + "\t" + ref.Generation.String()
+	return ref.Path.Bucket.String() + "\t" + ref.Path.Key.String() + "\t" + ref.Generation.String()
 }

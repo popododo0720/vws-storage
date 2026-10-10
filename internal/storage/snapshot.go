@@ -22,7 +22,10 @@ func (s *Service) admitCreateSnapshot(ctx context.Context, r store.Reader, st mo
 			if c, ok := snap.State.(model.Creating); ok {
 				creating = c.Op
 			}
-			return replay(ctx, r, st, creating, model.SnapshotCreation{Snapshot: snap.ID, Source: snap.Source}, snap)
+			if snap.Region != req.Region || snap.Labels != req.Labels || snap.Description != req.Description {
+				return model.Admitted{}, fmt.Errorf("%w: snapshot", model.ErrAlreadyExists)
+			}
+			return replay(ctx, r, st, creating, model.SnapshotCreation{Snapshot: snap.ID, Source: snap.Source, Region: snap.Region}, snap)
 		case !errors.Is(err, model.ErrNotFound):
 			return model.Admitted{}, err
 		}
@@ -47,18 +50,24 @@ func (s *Service) admitCreateSnapshot(ctx context.Context, r store.Reader, st mo
 	}
 	id := req.ID
 	if id.IsZero() {
-		id = model.NewSnapshotID()
+		id = model.NewSnapshotID().WithProject(req.Source.Project())
 	}
-	return avail.Snapshot(st, id)
+	if !id.Project().IsZero() && id.Project() != req.Source.Project() {
+		return model.Admitted{}, fmt.Errorf("%w: project", model.ErrInvalidArgument)
+	}
+	return avail.Snapshot(st, id, req.Region, req.Labels, req.Description)
 }
 
 func (s *Service) admitDeleteSnapshot(ctx context.Context, r store.Reader, st model.Start, req model.DeleteSnapshotRequest) (model.Admitted, error) {
 	snap, err := r.Snapshot(ctx, req.Snapshot)
 	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {
-		return model.FinishNow(st, model.SnapshotDeletion{Snapshot: req.Snapshot}, nil)
+		return model.FinishNow(st, model.SnapshotDeletion{Snapshot: req.Snapshot, Region: req.Region}, nil)
 	}
 	if err != nil {
 		return model.Admitted{}, err
+	}
+	if !req.Region.IsZero() && snap.Region != req.Region {
+		return model.Admitted{}, fmt.Errorf("%w: snapshot", model.ErrNotFound)
 	}
 	if del, ok := snap.State.(model.Deleting); ok {
 		op, err := r.Operation(ctx, del.Op)

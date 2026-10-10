@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -164,14 +165,14 @@ func TestListBucketsSecondPage(t *testing.T) {
 			t.Fatal(got.Err())
 		}
 	}
-	page, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2})
+	page, err := svc.ListBuckets(context.Background(), model.Project{}, model.PageRequest{Size: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Items) != 2 || page.NextToken == "" {
 		t.Fatalf("page %+v", page)
 	}
-	next, err := svc.ListBuckets(context.Background(), model.PageRequest{Size: 2, Token: page.NextToken})
+	next, err := svc.ListBuckets(context.Background(), model.Project{}, model.PageRequest{Size: 2, Token: page.NextToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +253,208 @@ func TestPutAndGetObject(t *testing.T) {
 	_, err = svc.Submit(context.Background(), token(t, "del-bkt"), model.DeleteBucketRequest{Bucket: bucket})
 	if !errors.Is(err, model.ErrFailedPrecondition) {
 		t.Fatalf("delete bucket %v", err)
+	}
+}
+
+func TestUpdateObjectReplacesGeneration(t *testing.T) {
+	obj := fake.NewObjects(fake.ObjectOptions{Now: time.Now})
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), obj)
+	defer cancel()
+	bucket, err := model.ParseBucketName("logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bop, err := svc.Submit(context.Background(), token(t, "bkt"), model.CreateBucketRequest{Bucket: bucket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, bop.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	key, err := model.ParseObjectKey("day.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := model.ObjectPath{Bucket: bucket, Key: key}
+	first, err := svc.Submit(context.Background(), token(t, "put"), model.PutObjectRequest{Path: path, Size: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*first.Upload, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, first.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	head, err := svc.Object(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("world!!")
+	sum := sha256.Sum256(body)
+	upd, err := svc.Submit(context.Background(), token(t, "upd"), model.UpdateObjectRequest{
+		Path: path, Size: model.Bytes(len(body)), SHA256: sum, HasContents: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upd.Upload == nil {
+		t.Fatal("missing upload locator")
+	}
+	if err := obj.Accept(*upd.Upload, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*upd.Upload, body); err == nil {
+		t.Fatal("generation was written twice")
+	}
+	if got := waitDone(t, svc, upd.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("%s %+v", got.Phase(), got.Err())
+	}
+	up, ok := upd.Work.(model.ObjectUpload)
+	if !ok || up.Replaces != head.Generation {
+		t.Fatalf("work %+v", upd.Work)
+	}
+	next, err := svc.Object(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Generation == head.Generation || next.Size != model.Bytes(len(body)) || next.Meta.Version == head.Meta.Version {
+		t.Fatalf("head %+v", next)
+	}
+	_, err = svc.Submit(context.Background(), token(t, "again"), model.PutObjectRequest{Path: path, Size: 1})
+	if !errors.Is(err, model.ErrAlreadyExists) {
+		t.Fatalf("create %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	old := model.ObjectRef{Path: path, Generation: head.Generation}
+	for {
+		_, err := obj.Stat(context.Background(), old)
+		if errors.Is(err, backend.ErrNotFound) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("old generation %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestScopedVolumeSettlesOnSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vws.db")
+	svc, cancel := openRunning(t, storage.SQLite(path), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := model.ParseVolumeID("data-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := volumeReq(t)
+	req.ID = id.WithProject(project)
+	op, err := svc.Submit(context.Background(), token(t, "scoped"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, op.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("phase %s %+v", got.Phase(), got.Err())
+	}
+	vol, err := svc.Volume(context.Background(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := vol.AsAvailable(); !ok || vol.ID.Project() != project {
+		t.Fatalf("volume %+v", vol)
+	}
+}
+
+func TestReclaimDoesNotCoverTheHead(t *testing.T) {
+	gate := make(chan struct{})
+	obj := fake.NewObjects(fake.ObjectOptions{Now: time.Now, DeleteWait: gate})
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), obj)
+	defer cancel()
+	bucket, err := model.ParseBucketName("logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bop, err := svc.Submit(context.Background(), token(t, "bkt"), model.CreateBucketRequest{Bucket: bucket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, bop.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	key, err := model.ParseObjectKey("day.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := model.ObjectPath{Bucket: bucket, Key: key}
+	first, err := svc.Submit(context.Background(), token(t, "put"), model.PutObjectRequest{Path: path, Size: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*first.Upload, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, first.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatal(got.Err())
+	}
+	body := []byte("world!!")
+	sum := sha256.Sum256(body)
+	upd, err := svc.Submit(context.Background(), token(t, "upd"), model.UpdateObjectRequest{
+		Path: path, Size: model.Bytes(len(body)), SHA256: sum, HasContents: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.Accept(*upd.Upload, body); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, upd.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("update %s %+v", got.Phase(), got.Err())
+	}
+	nextBody := []byte("again!!!")
+	nextSum := sha256.Sum256(nextBody)
+	upd2, err := svc.Submit(context.Background(), token(t, "upd-2"), model.UpdateObjectRequest{
+		Path: path, Size: model.Bytes(len(nextBody)), SHA256: nextSum, HasContents: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upd2.Upload == nil {
+		t.Fatal("reclaim blocked the next overwrite")
+	}
+	if err := obj.Accept(*upd2.Upload, nextBody); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, upd2.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("second update %s %+v", got.Phase(), got.Err())
+	}
+	head, err := svc.Object(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Size != model.Bytes(len(nextBody)) {
+		t.Fatalf("size %d", head.Size)
+	}
+	del, err := svc.Submit(context.Background(), token(t, "del"), model.DeleteObjectRequest{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	purge, ok := del.Work.(model.ObjectPurge)
+	if !ok || purge.Reclaim || purge.Object.Generation != head.Generation {
+		t.Fatalf("delete %+v head %s", del.Work, head.Generation)
+	}
+	if del.Terminal() {
+		t.Fatal("delete finished while the backend was held")
+	}
+	close(gate)
+	if got := waitDone(t, svc, del.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("delete %s %+v", got.Phase(), got.Err())
+	}
+	if _, err := svc.Object(context.Background(), path); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("object %v", err)
 	}
 }
 

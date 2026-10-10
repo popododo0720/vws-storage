@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
@@ -100,6 +102,74 @@ func TestCreateObjectStoresBytes(t *testing.T) {
 	}
 	if obj.GetSpec().GetContentType() != "text/plain" || obj.GetStatus().GetSizeBytes() != int64(len(body)) {
 		t.Fatalf("object %+v", obj)
+	}
+}
+
+func TestProjectScopedVolumeAndBucket(t *testing.T) {
+	vols, _, buckets, _, ops := dial(t, "")
+	ctx := context.Background()
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/a123/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	if created.GetName() == "" || !strings.HasPrefix(created.GetName(), "projects/a123/operations/") {
+		t.Fatalf("operation %s", created.GetName())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a123/zones/az-1/volumes/data-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetName() != "projects/a123/zones/az-1/volumes/data-1" {
+		t.Fatalf("name %s", vol.GetName())
+	}
+	_, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a999/zones/az-1/volumes/data-1"})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("other project code %v err %v", st.Code(), err)
+	}
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/a123", BucketId: "logs",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "vws-1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	got, err := buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/a123/buckets/logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSpec().GetRegion() != "vws-1" {
+		t.Fatalf("region %s", got.GetSpec().GetRegion())
+	}
+	_, err = buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/a999/buckets/logs"})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("other bucket code %v err %v", st.Code(), err)
+	}
+}
+
+func TestProjectAllowListRejected(t *testing.T) {
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vols, _, _, _, _ := dialConfig(t, "", server.Config{Projects: []model.Project{project}})
+	_, err = vols.CreateVolume(context.Background(), &storagev1.CreateVolumeRequest{
+		Parent: "projects/a999/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound || reasonOf(st) != "RESOURCE_NOT_FOUND" {
+		t.Fatalf("code %v reason %q err %v", st.Code(), reasonOf(st), err)
 	}
 }
 
@@ -190,7 +260,7 @@ func TestDeleteReplayAndRecreate(t *testing.T) {
 	if !got.GetDone() || got.GetError() != nil {
 		t.Fatalf("create after delete %+v", got)
 	}
-	page, err := ops.ListOperations(ctx, &longrunningpb.ListOperationsRequest{})
+	page, err := ops.ListOperations(ctx, &longrunningpb.ListOperationsRequest{Name: "projects/local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +334,265 @@ func TestObjectNameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUpdateObjectOverwrites(t *testing.T) {
+	_, _, buckets, objects, ops := dial(t, "http://127.0.0.1")
+	ctx := context.Background()
+	_, err := objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"uid"}},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unimplemented {
+		t.Fatalf("mask code %v err %v", st.Code(), err)
+	}
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/local", BucketId: "logs",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "local"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	const name = "projects/local/buckets/logs/objects/day.bin"
+	oop, err := objects.CreateObject(ctx, &storagev1.CreateObjectRequest{
+		Parent: "projects/local/buckets/logs", ObjectId: "day.bin",
+		Object:   &storagev1.Object{Spec: &storagev1.ObjectSpec{ContentType: "text/plain"}},
+		Contents: []byte("hello"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, oop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	_, err = objects.CreateObject(ctx, &storagev1.CreateObjectRequest{
+		Parent: "projects/local/buckets/logs", ObjectId: "day.bin",
+		Object:   &storagev1.Object{Spec: &storagev1.ObjectSpec{ContentType: "text/plain"}},
+		Contents: []byte("world!!"),
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.AlreadyExists {
+		t.Fatalf("create code %v err %v", st.Code(), err)
+	}
+	before, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &storagev1.UpdateObjectRequest{
+		RequestId: "22222222-2222-4222-8222-222222222222",
+		Object: &storagev1.Object{
+			Name: name,
+			Spec: &storagev1.ObjectSpec{ContentType: "application/octet-stream"},
+		},
+		Contents: []byte("world!!"),
+	}
+	uop, err := objects.UpdateObject(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, uop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	again, err := objects.UpdateObject(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetName() != uop.GetName() {
+		t.Fatalf("replay %s want %s", again.GetName(), uop.GetName())
+	}
+	req.Contents = []byte("other!")
+	_, err = objects.UpdateObject(ctx, req)
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.Aborted || reasonOf(st) != "IDEMPOTENCY_CONFLICT" {
+		t.Fatalf("token code %v reason %s err %v", st.Code(), reasonOf(st), err)
+	}
+	got, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetStatus().GetSizeBytes() != 7 || got.GetEtag() == before.GetEtag() || got.GetSpec().GetContentType() != "application/octet-stream" {
+		t.Fatalf("object %+v", got)
+	}
+	same, err := objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		Object: &storagev1.Object{
+			Name: name,
+			Spec: &storagev1.ObjectSpec{ContentType: "application/octet-stream"},
+		},
+		Contents: []byte("world!!"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, same.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	kept, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.GetEtag() != got.GetEtag() {
+		t.Fatalf("identical overwrite bumped etag %s -> %s", got.GetEtag(), kept.GetEtag())
+	}
+	meta, err := objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		Object: &storagev1.Object{
+			Name:   name,
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.ObjectSpec{ContentType: "application/octet-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, meta.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	labeled, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labeled.GetLabels()["env"] != "prod" || labeled.GetStatus().GetSizeBytes() != 7 || labeled.GetEtag() == kept.GetEtag() {
+		t.Fatalf("metadata %+v", labeled)
+	}
+	_, err = objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		AllowMissing: true,
+		Object:       &storagev1.Object{Name: "projects/local/buckets/logs/objects/missing", Spec: &storagev1.ObjectSpec{}},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("allow_missing without contents %v %v", st.Code(), err)
+	}
+	_, err = objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		Object: &storagev1.Object{Name: "projects/local/buckets/logs/objects/missing", Spec: &storagev1.ObjectSpec{}},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("missing code %v err %v", st.Code(), err)
+	}
+	made, err := objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		AllowMissing: true,
+		Object:       &storagev1.Object{Name: "projects/local/buckets/logs/objects/other", Spec: &storagev1.ObjectSpec{}},
+		Contents:     []byte("z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, made.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	other, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: "projects/local/buckets/logs/objects/other"})
+	if err != nil || other.GetStatus().GetSizeBytes() != 1 {
+		t.Fatalf("created %+v %v", other, err)
+	}
+}
+
+func TestLabelsRoundTrip(t *testing.T) {
+	vols, snaps, buckets, objects, ops := dial(t, "http://127.0.0.1")
+	ctx := context.Background()
+	_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{
+			Labels: map[string]string{"Bad": "x"},
+			Spec:   &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD},
+		},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("bad label code %v err %v", st.Code(), err)
+	}
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/local/zones/az-1/volumes/data-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetLabels()["env"] != "prod" || len(vol.GetLabels()) != 1 {
+		t.Fatalf("volume labels %v", vol.GetLabels())
+	}
+	_, err = snaps.CreateSnapshot(ctx, &storagev1.CreateSnapshotRequest{
+		Parent: "projects/local/regions/local", SnapshotId: "snap-1",
+		Snapshot: &storagev1.Snapshot{
+			Spec: &storagev1.SnapshotSpec{Volume: vol.GetName(), Description: "bad\n"},
+		},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("bad description code %v err %v", st.Code(), err)
+	}
+	sop, err := snaps.CreateSnapshot(ctx, &storagev1.CreateSnapshotRequest{
+		Parent: "projects/local/regions/local", SnapshotId: "snap-1",
+		Snapshot: &storagev1.Snapshot{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.SnapshotSpec{Volume: vol.GetName(), Description: "nightly copy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, sop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	snap, err := snaps.GetSnapshot(ctx, &storagev1.GetSnapshotRequest{Name: "projects/local/regions/local/snapshots/snap-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GetSpec().GetDescription() != "nightly copy" || snap.GetLabels()["env"] != "prod" {
+		t.Fatalf("snapshot %+v", snap)
+	}
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/local", BucketId: "logs",
+		Bucket: &storagev1.Bucket{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.BucketSpec{Region: "local"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	bucket, err := buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/local/buckets/logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bucket.GetLabels()["env"] != "prod" {
+		t.Fatalf("bucket labels %v", bucket.GetLabels())
+	}
+	oop, err := objects.CreateObject(ctx, &storagev1.CreateObjectRequest{
+		Parent: "projects/local/buckets/logs", ObjectId: "day.bin",
+		Object: &storagev1.Object{
+			Labels: map[string]string{"env": "prod"},
+			Spec:   &storagev1.ObjectSpec{ContentType: "text/plain"},
+		},
+		Contents: []byte("hello"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, oop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	obj, err := objects.GetObject(ctx, &storagev1.GetObjectRequest{Name: "projects/local/buckets/logs/objects/day.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.GetLabels()["env"] != "prod" {
+		t.Fatalf("object labels %v", obj.GetLabels())
+	}
+}
+
 func reasonOf(st *status.Status) string {
 	for _, d := range st.Details() {
 		info, ok := d.(*errdetails.ErrorInfo)
@@ -293,6 +622,17 @@ func waitOp(t *testing.T, ops longrunningpb.OperationsClient, name string) *long
 }
 
 func dial(t *testing.T, objectBase string) (
+	storagev1.VolumeServiceClient,
+	storagev1.SnapshotServiceClient,
+	storagev1.BucketServiceClient,
+	storagev1.ObjectServiceClient,
+	longrunningpb.OperationsClient,
+) {
+	t.Helper()
+	return dialConfig(t, objectBase, server.Config{})
+}
+
+func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 	storagev1.VolumeServiceClient,
 	storagev1.SnapshotServiceClient,
 	storagev1.BucketServiceClient,
@@ -331,7 +671,7 @@ func dial(t *testing.T, objectBase string) (
 	}()
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
-	server.Register(gs, svc)
+	server.Register(gs, svc, cfg)
 	go func() { _ = gs.Serve(lis) }()
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {

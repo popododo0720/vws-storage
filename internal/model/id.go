@@ -11,17 +11,90 @@ import (
 	"unicode/utf8"
 )
 
+// Project is the first scope of a stored resource.
+// The zero Project is the historical unscoped key, not a default the server applies.
+type Project struct{ s string }
+
+// ParseProject validates the VWS resource id grammar.
+func ParseProject(s string) (Project, error) {
+	if !resourceID(s) {
+		return Project{}, fmt.Errorf("%w: project", ErrInvalidArgument)
+	}
+	return Project{s: s}, nil
+}
+
+// String returns the project id.
+func (p Project) String() string { return p.s }
+
+// IsZero reports whether p is unset.
+func (p Project) IsZero() bool { return p.s == "" }
+
+// Region is echoed metadata. It is not part of a store key.
+type Region struct{ s string }
+
+// ParseRegion validates the VWS resource id grammar.
+func ParseRegion(s string) (Region, error) {
+	if !resourceID(s) {
+		return Region{}, fmt.Errorf("%w: region", ErrInvalidArgument)
+	}
+	return Region{s: s}, nil
+}
+
+// String returns the region id.
+func (r Region) String() string { return r.s }
+
+// IsZero reports whether r is unset.
+func (r Region) IsZero() bool { return r.s == "" }
+
+func scopedName(p Project, collection, id string) string {
+	if id == "" {
+		return ""
+	}
+	if p.IsZero() {
+		return collection + "/" + id
+	}
+	return "projects/" + p.s + "/" + collection + "/" + id
+}
+
+// splitScoped parses projects/{project}/{collection}/{id}.
+// The id segment may contain anything except '/'.
+func splitScoped(s, collection string) (Project, string, bool) {
+	rest, ok := strings.CutPrefix(s, "projects/")
+	if !ok {
+		return Project{}, "", false
+	}
+	proj, rest, ok := strings.Cut(rest, "/")
+	if !ok || !resourceID(proj) {
+		return Project{}, "", false
+	}
+	col, id, ok := strings.Cut(rest, "/")
+	if !ok || col != collection || id == "" || strings.Contains(id, "/") {
+		return Project{}, "", false
+	}
+	return Project{s: proj}, id, true
+}
+
 // VolumeID is the final segment of a volume name.
 // The grammar is a VWS resource id: a lowercase letter, then up to 62
 // more lowercase letters, digits, or hyphens, ending with a letter or digit.
 // NewVolumeID still mints the historical "vol-" form, which matches that grammar.
-type VolumeID struct{ s string }
+type VolumeID struct {
+	project Project
+	s       string
+}
 
 // NewVolumeID returns a new random volume id.
 func NewVolumeID() VolumeID { return VolumeID{s: newPrefixed("vol-", 8)} }
 
-// ParseVolumeID validates s. s is the id, or "volumes/" plus the id.
+// ParseVolumeID validates s. s is the id, "volumes/" plus the id, or
+// "projects/{project}/volumes/{id}".
 func ParseVolumeID(s string) (VolumeID, error) {
+	if p, id, ok := splitScoped(s, "volumes"); ok {
+		if !resourceID(id) {
+			return VolumeID{}, fmt.Errorf("%w: volume id", ErrInvalidArgument)
+		}
+		return VolumeID{project: p, s: id}, nil
+	}
 	s = strings.TrimPrefix(s, "volumes/")
 	if !resourceID(s) {
 		return VolumeID{}, fmt.Errorf("%w: volume id", ErrInvalidArgument)
@@ -29,12 +102,24 @@ func ParseVolumeID(s string) (VolumeID, error) {
 	return VolumeID{s: s}, nil
 }
 
-// String returns the canonical resource name.
-func (id VolumeID) String() string {
-	if id.s == "" {
-		return ""
+// WithProject returns id scoped to p. A zero id stays zero.
+func (id VolumeID) WithProject(p Project) VolumeID {
+	id.project = p
+	return id
+}
+
+// Project returns the stored project. Zero means the historical unscoped key.
+func (id VolumeID) Project() Project { return id.project }
+
+// String returns the canonical store key.
+func (id VolumeID) String() string { return scopedName(id.project, "volumes", id.s) }
+
+// wire is the codec form. Unscoped ids stay the raw segment so old payloads load.
+func (id VolumeID) wire() string {
+	if id.s == "" || id.project.IsZero() {
+		return id.s
 	}
-	return "volumes/" + id.s
+	return id.String()
 }
 
 // ID returns the raw id.
@@ -45,13 +130,23 @@ func (id VolumeID) IsZero() bool { return id.s == "" }
 
 // SnapshotID is the final segment of a snapshot name. See VolumeID.
 // NewSnapshotID still mints the historical "snap-" form.
-type SnapshotID struct{ s string }
+type SnapshotID struct {
+	project Project
+	s       string
+}
 
 // NewSnapshotID returns a new random snapshot id.
 func NewSnapshotID() SnapshotID { return SnapshotID{s: newPrefixed("snap-", 8)} }
 
-// ParseSnapshotID validates s. s is the id, or "snapshots/" plus the id.
+// ParseSnapshotID validates s. s is the id, "snapshots/" plus the id, or
+// "projects/{project}/snapshots/{id}".
 func ParseSnapshotID(s string) (SnapshotID, error) {
+	if p, id, ok := splitScoped(s, "snapshots"); ok {
+		if !resourceID(id) {
+			return SnapshotID{}, fmt.Errorf("%w: snapshot id", ErrInvalidArgument)
+		}
+		return SnapshotID{project: p, s: id}, nil
+	}
 	s = strings.TrimPrefix(s, "snapshots/")
 	if !resourceID(s) {
 		return SnapshotID{}, fmt.Errorf("%w: snapshot id", ErrInvalidArgument)
@@ -59,12 +154,23 @@ func ParseSnapshotID(s string) (SnapshotID, error) {
 	return SnapshotID{s: s}, nil
 }
 
-// String returns the canonical resource name.
-func (id SnapshotID) String() string {
-	if id.s == "" {
-		return ""
+// WithProject returns id scoped to p.
+func (id SnapshotID) WithProject(p Project) SnapshotID {
+	id.project = p
+	return id
+}
+
+// Project returns the stored project.
+func (id SnapshotID) Project() Project { return id.project }
+
+// String returns the canonical store key.
+func (id SnapshotID) String() string { return scopedName(id.project, "snapshots", id.s) }
+
+func (id SnapshotID) wire() string {
+	if id.s == "" || id.project.IsZero() {
+		return id.s
 	}
-	return "snapshots/" + id.s
+	return id.String()
 }
 
 // ID returns the raw id.
@@ -74,13 +180,23 @@ func (id SnapshotID) ID() string { return id.s }
 func (id SnapshotID) IsZero() bool { return id.s == "" }
 
 // OperationID is "op-" plus 20 lowercase hex digits.
-type OperationID struct{ s string }
+type OperationID struct {
+	project Project
+	s       string
+}
 
 // NewOperationID returns a new random operation id.
 func NewOperationID() OperationID { return OperationID{s: newPrefixed("op-", 10)} }
 
-// ParseOperationID validates s.
+// ParseOperationID validates s. s is the id, "operations/" plus the id, or
+// "projects/{project}/operations/{id}".
 func ParseOperationID(s string) (OperationID, error) {
+	if p, id, ok := splitScoped(s, "operations"); ok {
+		if !isHexID(id, "op-", 10) {
+			return OperationID{}, fmt.Errorf("%w: operation id", ErrInvalidArgument)
+		}
+		return OperationID{project: p, s: id}, nil
+	}
 	s = strings.TrimPrefix(s, "operations/")
 	if !isHexID(s, "op-", 10) {
 		return OperationID{}, fmt.Errorf("%w: operation id", ErrInvalidArgument)
@@ -88,12 +204,23 @@ func ParseOperationID(s string) (OperationID, error) {
 	return OperationID{s: s}, nil
 }
 
-// String returns the canonical resource name.
-func (id OperationID) String() string {
-	if id.s == "" {
-		return ""
+// WithProject returns id scoped to p.
+func (id OperationID) WithProject(p Project) OperationID {
+	id.project = p
+	return id
+}
+
+// Project returns the stored project.
+func (id OperationID) Project() Project { return id.project }
+
+// String returns the canonical store key.
+func (id OperationID) String() string { return scopedName(id.project, "operations", id.s) }
+
+func (id OperationID) wire() string {
+	if id.s == "" || id.project.IsZero() {
+		return id.s
 	}
-	return "operations/" + id.s
+	return id.String()
 }
 
 // ID returns the raw id.
@@ -123,10 +250,20 @@ func (g Generation) String() string { return g.s }
 func (g Generation) IsZero() bool { return g.s == "" }
 
 // BucketName is the final segment of a bucket name. The grammar is a VWS resource id.
-type BucketName struct{ s string }
+type BucketName struct {
+	project Project
+	s       string
+}
 
-// ParseBucketName validates s. s may be the raw name or "buckets/" plus the name.
+// ParseBucketName validates s. s may be the raw name, "buckets/" plus the name,
+// or "projects/{project}/buckets/{name}".
 func ParseBucketName(s string) (BucketName, error) {
+	if p, name, ok := splitScoped(s, "buckets"); ok {
+		if !resourceID(name) {
+			return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
+		}
+		return BucketName{project: p, s: name}, nil
+	}
 	s = strings.TrimPrefix(s, "buckets/")
 	if !resourceID(s) {
 		return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
@@ -134,12 +271,23 @@ func ParseBucketName(s string) (BucketName, error) {
 	return BucketName{s: s}, nil
 }
 
-// String returns the canonical resource name.
-func (b BucketName) String() string {
-	if b.s == "" {
-		return ""
+// WithProject returns b scoped to p.
+func (b BucketName) WithProject(p Project) BucketName {
+	b.project = p
+	return b
+}
+
+// Project returns the stored project.
+func (b BucketName) Project() Project { return b.project }
+
+// String returns the canonical store key.
+func (b BucketName) String() string { return scopedName(b.project, "buckets", b.s) }
+
+func (b BucketName) wire() string {
+	if b.s == "" || b.project.IsZero() {
+		return b.s
 	}
-	return "buckets/" + b.s
+	return b.String()
 }
 
 // Name returns the raw bucket name.
@@ -218,11 +366,34 @@ func (t ClientToken) String() string { return t.s }
 // IsZero reports whether t is unset.
 func (t ClientToken) IsZero() bool { return t.s == "" }
 
+// TokenKey is the token row. A zero project keeps the raw token, which is
+// the key a current database already stores.
+type TokenKey struct {
+	Project Project
+	Token   ClientToken
+}
+
+// String returns the store key.
+func (k TokenKey) String() string {
+	if k.Token.IsZero() {
+		return ""
+	}
+	if k.Project.IsZero() {
+		return k.Token.String()
+	}
+	return "projects/" + k.Project.String() + "/tokens/" + k.Token.String()
+}
+
+func (TokenKey) isKey() {}
+
 // ObjectPath is the client-visible address of an object.
 type ObjectPath struct {
 	Bucket BucketName
 	Key    ObjectKey
 }
+
+// Project returns the bucket's project.
+func (p ObjectPath) Project() Project { return p.Bucket.Project() }
 
 // String returns a canonical name. Keys cannot contain control characters,
 // so the tab separators do not collide with a key.
@@ -230,7 +401,11 @@ func (p ObjectPath) String() string {
 	if p.Bucket.IsZero() && p.Key.IsZero() {
 		return ""
 	}
-	return "object\t" + p.Bucket.Name() + "\t" + p.Key.String()
+	body := "object\t" + p.Bucket.Name() + "\t" + p.Key.String()
+	if p.Bucket.Project().IsZero() {
+		return body
+	}
+	return "projects/" + p.Bucket.Project().String() + "/" + body
 }
 
 // ObjectRef is one generation of an object's bytes in the backend.

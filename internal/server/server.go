@@ -27,27 +27,39 @@ import (
 // MaxRecvMsgSize fits a CreateObject payload at the proto limit plus the envelope.
 const MaxRecvMsgSize = 8 << 20
 
+// Config is process policy for which projects this server answers.
+// An empty Projects list accepts every syntactically valid project.
+type Config struct {
+	Projects []model.Project
+}
+
 // Server implements the storage gRPC services.
-// Project and region are fixed for the process. Zones stay on the engine.
+// Project comes from each request. Zones stay on the engine.
 type Server struct {
 	storagev1.UnimplementedVolumeServiceServer
 	storagev1.UnimplementedSnapshotServiceServer
 	storagev1.UnimplementedBucketServiceServer
 	storagev1.UnimplementedObjectServiceServer
 	longrunningpb.UnimplementedOperationsServer
-	svc     *storage.Service
-	project string
-	region  string
+	svc      *storage.Service
+	projects map[model.Project]struct{}
 }
 
-// New returns a server for project "local" and region "local".
-func New(svc *storage.Service) *Server {
-	return &Server{svc: svc, project: "local", region: "local"}
+// New returns a server. A nil or empty project list does not pin a default project.
+func New(svc *storage.Service, cfg Config) *Server {
+	var projects map[model.Project]struct{}
+	if len(cfg.Projects) > 0 {
+		projects = make(map[model.Project]struct{}, len(cfg.Projects))
+		for _, p := range cfg.Projects {
+			projects[p] = struct{}{}
+		}
+	}
+	return &Server{svc: svc, projects: projects}
 }
 
 // Register attaches the storage services and long-running operations to gs.
-func Register(gs *grpc.Server, svc *storage.Service) {
-	s := New(svc)
+func Register(gs *grpc.Server, svc *storage.Service, cfg Config) {
+	s := New(svc, cfg)
 	storagev1.RegisterVolumeServiceServer(gs, s)
 	storagev1.RegisterSnapshotServiceServer(gs, s)
 	storagev1.RegisterBucketServiceServer(gs, s)
@@ -103,24 +115,24 @@ func (s *Server) GetVolume(ctx context.Context, in *storagev1.GetVolumeRequest) 
 	if vol.Spec.Zone != zone {
 		return nil, toStatus(notFound("volume"))
 	}
-	return s.volumeMsg(vol), nil
+	return s.volumeMsg(ctx, vol), nil
 }
 
 // ListVolumes implements VolumeService.
 func (s *Server) ListVolumes(ctx context.Context, in *storagev1.ListVolumesRequest) (*storagev1.ListVolumesResponse, error) {
-	zone, err := s.parseVolumeParent(in.GetParent())
+	project, zone, err := s.parseVolumeParent(in.GetParent())
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Volume], error) {
-		return s.svc.ListVolumes(ctx, zone, p)
+		return s.svc.ListVolumes(ctx, project, zone, p)
 	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListVolumesResponse{NextPageToken: page.NextToken}
 	for _, vol := range page.Items {
-		out.Volumes = append(out.Volumes, s.volumeMsg(vol))
+		out.Volumes = append(out.Volumes, s.volumeMsg(ctx, vol))
 	}
 	return out, nil
 }
@@ -152,7 +164,7 @@ func (s *Server) UpdateSnapshot(context.Context, *storagev1.UpdateSnapshotReques
 
 // DeleteSnapshot implements SnapshotService.
 func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapshotRequest) (*longrunningpb.Operation, error) {
-	id, err := s.parseSnapshotName(in.GetName())
+	id, region, err := s.parseSnapshotName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -161,13 +173,13 @@ func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapsho
 		return nil, toStatus(err)
 	}
 	return s.submit(ctx, in.GetRequestId(), model.DeleteSnapshotRequest{
-		Snapshot: id, Expected: ver, AllowMissing: in.GetAllowMissing(),
+		Snapshot: id, Region: region, Expected: ver, AllowMissing: in.GetAllowMissing(),
 	})
 }
 
 // GetSnapshot implements SnapshotService.
 func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotRequest) (*storagev1.Snapshot, error) {
-	id, err := s.parseSnapshotName(in.GetName())
+	id, region, err := s.parseSnapshotName(in.GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -175,16 +187,20 @@ func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotReque
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	if snap.Region != region {
+		return nil, toStatus(notFound("snapshot"))
+	}
 	return s.snapshotMsg(ctx, snap), nil
 }
 
 // ListSnapshots implements SnapshotService.
 func (s *Server) ListSnapshots(ctx context.Context, in *storagev1.ListSnapshotsRequest) (*storagev1.ListSnapshotsResponse, error) {
-	if err := s.parseSnapshotParent(in.GetParent()); err != nil {
+	project, region, err := s.parseSnapshotParent(in.GetParent())
+	if err != nil {
 		return nil, toStatus(err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Snapshot], error) {
-		return s.svc.ListSnapshots(ctx, p)
+		return s.svc.ListSnapshots(ctx, project, region, p)
 	})
 	if err != nil {
 		return nil, toStatus(err)
@@ -251,11 +267,12 @@ func (s *Server) GetBucket(ctx context.Context, in *storagev1.GetBucketRequest) 
 
 // ListBuckets implements BucketService.
 func (s *Server) ListBuckets(ctx context.Context, in *storagev1.ListBucketsRequest) (*storagev1.ListBucketsResponse, error) {
-	if err := s.parseBucketParent(in.GetParent()); err != nil {
+	project, err := s.parseBucketParent(in.GetParent())
+	if err != nil {
 		return nil, toStatus(err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Bucket], error) {
-		return s.svc.ListBuckets(ctx, p)
+		return s.svc.ListBuckets(ctx, project, p)
 	})
 	if err != nil {
 		return nil, toStatus(err)
@@ -285,30 +302,28 @@ func (s *Server) CreateObject(ctx context.Context, in *storagev1.CreateObjectReq
 		}
 		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
-	tok, err := tokenFor(in.GetRequestId())
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	op, err := s.svc.Submit(ctx, tok, req)
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	if op.Upload != nil {
-		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		err := putBytes(putCtx, *op.Upload, contents)
-		cancel()
-		if err != nil {
-			if _, gerr := s.svc.Object(ctx, path); gerr != nil {
-				return nil, status.Error(codes.Unavailable, err.Error())
-			}
-		}
-	}
-	return s.operation(ctx, op)
+	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
-// UpdateObject is not a storage transition.
-func (s *Server) UpdateObject(context.Context, *storagev1.UpdateObjectRequest) (*longrunningpb.Operation, error) {
-	return nil, status.Error(codes.Unimplemented, "object update is not a storage transition")
+// UpdateObject implements ObjectService.
+// A payload replaces the object. An empty payload keeps the stored bytes and
+// applies content type and labels. Proto3 bytes have no presence, so a
+// zero-length replacement is expressed as an empty payload and keeps the bytes.
+func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectRequest) (*longrunningpb.Operation, error) {
+	if !objectMaskOK(in.GetUpdateMask().GetPaths()) {
+		return nil, status.Error(codes.Unimplemented, "object field mask")
+	}
+	req, contents, err := s.objectUpdate(in)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(s.objectName(req.Path), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
+	}
+	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
 // DeleteObject implements ObjectService.
@@ -380,8 +395,9 @@ func (s *Server) GetOperation(ctx context.Context, in *longrunningpb.GetOperatio
 
 // ListOperations implements google.longrunning.Operations.
 func (s *Server) ListOperations(ctx context.Context, in *longrunningpb.ListOperationsRequest) (*longrunningpb.ListOperationsResponse, error) {
-	if in.GetName() != "" && in.GetName() != "projects/"+s.project && in.GetName() != "projects/"+s.project+"/operations" {
-		return nil, toStatus(invalidID("operation parent"))
+	project, err := s.parseOperationParent(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
 	}
 	if in.GetFilter() != "" {
 		return nil, toStatus(invalidSpec("filter"))
@@ -390,7 +406,7 @@ func (s *Server) ListOperations(ctx context.Context, in *longrunningpb.ListOpera
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	page, err := s.svc.ListOperations(ctx, storage.OperationQuery{}, model.PageRequest{Size: n, Token: in.GetPageToken()})
+	page, err := s.svc.ListOperations(ctx, storage.OperationQuery{Project: project}, model.PageRequest{Size: n, Token: in.GetPageToken()})
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -415,7 +431,55 @@ func (s *Server) CancelOperation(context.Context, *longrunningpb.CancelOperation
 	return nil, status.Error(codes.Unimplemented, "operation cancel is not a storage transition")
 }
 
+func (s *Server) submitUpload(ctx context.Context, requestID string, req model.Request, body []byte) (*longrunningpb.Operation, error) {
+	if req.Project().IsZero() {
+		return nil, toStatus(invalidID("project"))
+	}
+	tok, err := tokenFor(requestID)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	op, err := s.svc.Submit(ctx, tok, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if op.Upload != nil {
+		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		err := putBytes(putCtx, *op.Upload, body)
+		cancel()
+		if err != nil {
+			again, gerr := s.svc.Operation(ctx, op.ID)
+			if gerr != nil || !again.Terminal() || !again.Err().IsZero() {
+				return nil, status.Error(codes.Unavailable, err.Error())
+			}
+			op = again
+		}
+	}
+	return s.operation(ctx, op)
+}
+
+func objectMaskOK(paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	var spec, labels bool
+	for _, p := range paths {
+		switch p {
+		case "spec":
+			spec = true
+		case "labels":
+			labels = true
+		default:
+			return false
+		}
+	}
+	return spec && labels
+}
+
 func (s *Server) submit(ctx context.Context, requestID string, req model.Request) (*longrunningpb.Operation, error) {
+	if req.Project().IsZero() {
+		return nil, toStatus(invalidID("project"))
+	}
 	tok, err := tokenFor(requestID)
 	if err != nil {
 		return nil, toStatus(err)
@@ -435,15 +499,16 @@ func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjec
 	if in.GetObject() == nil || in.GetObject().GetSpec() == nil {
 		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("object")
 	}
-	if err := rejectLabels(in.GetObject().GetLabels()); err != nil {
-		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
+	labels, err := model.ParseLabels(in.GetObject().GetLabels())
+	if err != nil {
+		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("labels")
 	}
 	spec := in.GetObject().GetSpec()
 	if spec.GetCacheControl() != "" || len(spec.GetMetadata()) > 0 {
 		return model.PutObjectRequest{}, model.ObjectPath{}, nil, invalidSpec("object")
 	}
 	raw := in.GetObjectId()
-	path, err := s.parseObjectName("projects/" + s.project + "/buckets/" + bucket.Name() + "/objects/" + raw)
+	path, err := s.parseObjectName("projects/" + bucket.Project().String() + "/buckets/" + bucket.Name() + "/objects/" + raw)
 	if err != nil {
 		return model.PutObjectRequest{}, model.ObjectPath{}, nil, err
 	}
@@ -464,7 +529,55 @@ func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjec
 	}
 	return model.PutObjectRequest{
 		Path: path, Size: model.Bytes(len(body)), SHA256: sum, ContentType: spec.GetContentType(),
+		Labels: labels,
 	}, path, body, nil
+}
+
+func (s *Server) objectUpdate(in *storagev1.UpdateObjectRequest) (model.UpdateObjectRequest, []byte, error) {
+	obj := in.GetObject()
+	if obj == nil || obj.GetSpec() == nil {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("object")
+	}
+	path, err := s.parseObjectName(obj.GetName())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, err
+	}
+	spec := obj.GetSpec()
+	if spec.GetCacheControl() != "" || len(spec.GetMetadata()) > 0 {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("object")
+	}
+	labels, err := model.ParseLabels(obj.GetLabels())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("labels")
+	}
+	ver, err := expectedVersion(obj.GetEtag())
+	if err != nil {
+		return model.UpdateObjectRequest{}, nil, err
+	}
+	body := in.GetContents()
+	if len(body) > maxInlineObject {
+		return model.UpdateObjectRequest{}, nil, invalidSpec("contents")
+	}
+	req := model.UpdateObjectRequest{
+		Path: path, ContentType: spec.GetContentType(), Labels: labels,
+		Expected: ver, AllowMissing: in.GetAllowMissing(), HasContents: len(body) > 0,
+	}
+	if !req.HasContents {
+		if req.AllowMissing {
+			return model.UpdateObjectRequest{}, nil, invalidSpec("contents")
+		}
+		return req, nil, nil
+	}
+	sum := sha256.Sum256(body)
+	if spec.GetSha256() != "" {
+		parsed, err := model.ParseDigest(spec.GetSha256())
+		if err != nil || parsed != sum {
+			return model.UpdateObjectRequest{}, nil, invalidSpec("sha256")
+		}
+	}
+	req.Size = model.Bytes(len(body))
+	req.SHA256 = sum
+	return req, body, nil
 }
 
 func listPage[T any](ctx context.Context, size int32, token string, list func(context.Context, model.PageRequest) (model.Page[T], error)) (model.Page[T], error) {

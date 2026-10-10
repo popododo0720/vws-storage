@@ -15,12 +15,12 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 	head, err := r.Object(ctx, req.Path)
 	switch {
 	case err == nil:
-		if head.SHA256 != req.SHA256 || head.ContentType != req.ContentType || head.Size != req.Size {
+		if !req.Content().Matches(head) {
 			return model.Admitted{}, fmt.Errorf("%w: object", model.ErrAlreadyExists)
 		}
 		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
 			up, is := op.Work.(model.ObjectUpload)
-			return is && up.Object.Path == req.Path
+			return is && up.Replaces.IsZero() && up.Object.Path == req.Path
 		})
 		if err != nil {
 			return model.Admitted{}, err
@@ -40,11 +40,88 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 			Size:        head.Size,
 			SHA256:      head.SHA256,
 			ContentType: head.ContentType,
+			Labels:      head.Labels,
 		}
 		return model.FinishNow(st, work, head)
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
+	return s.admitFirstUpload(ctx, r, st, req)
+}
+
+func (s *Service) admitUpdateObject(ctx context.Context, r store.Reader, st model.Start, req model.UpdateObjectRequest) (model.Admitted, error) {
+	head, err := r.Object(ctx, req.Path)
+	switch {
+	case errors.Is(err, model.ErrNotFound):
+		if !req.AllowMissing {
+			return model.Admitted{}, err
+		}
+		if !req.HasContents {
+			return model.Admitted{}, fmt.Errorf("%w: contents", model.ErrInvalidArgument)
+		}
+		return s.admitFirstUpload(ctx, r, st, req.AsPut())
+	case err != nil:
+		return model.Admitted{}, err
+	}
+	if err := expectVersion(head.Meta.Version, req.Expected); err != nil {
+		return model.Admitted{}, err
+	}
+	busy, err := r.InFlight(ctx, req.Path)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if !req.HasContents {
+		if busy {
+			return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+		}
+		return model.ApplyMeta(st, head, req.ContentType, req.Labels)
+	}
+	match := func(op model.Operation) bool {
+		up, is := op.Work.(model.ObjectUpload)
+		return is && up.Object.Path == req.Path && up.Replaces == head.Generation && up.Content() == req.Content()
+	}
+	if req.Content().Matches(head) {
+		op, ok, err := findOpen(ctx, r, model.KindPutObject, match)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if ok {
+			return model.NoteExisting(st, op)
+		}
+		if busy {
+			return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+		}
+		work := model.ObjectUpload{
+			Object:      model.ObjectRef{Path: head.Path, Generation: head.Generation},
+			Size:        head.Size,
+			SHA256:      head.SHA256,
+			ContentType: head.ContentType,
+			Labels:      head.Labels,
+		}
+		return model.FinishNow(st, work, head)
+	}
+	if busy {
+		op, ok, err := findOpen(ctx, r, model.KindPutObject, match)
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if ok {
+			return model.NoteExisting(st, op)
+		}
+		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
+	}
+	b, err := r.Bucket(ctx, req.Path.Bucket)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	avail, ok := b.AsAvailable()
+	if !ok {
+		return model.Admitted{}, fmt.Errorf("%w: bucket is not available", model.ErrFailedPrecondition)
+	}
+	return avail.Replace(st, head, model.NewGeneration(), req, st.Now.Add(s.window))
+}
+
+func (s *Service) admitFirstUpload(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest) (model.Admitted, error) {
 	busy, err := r.InFlight(ctx, req.Path)
 	if err != nil {
 		return model.Admitted{}, err
@@ -52,7 +129,7 @@ func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.S
 	if busy {
 		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
 			up, is := op.Work.(model.ObjectUpload)
-			return is && up.Object.Path == req.Path && up.SHA256 == req.SHA256 && up.ContentType == req.ContentType && up.Size == req.Size
+			return is && up.Replaces.IsZero() && up.Object.Path == req.Path && up.Content() == req.Content()
 		})
 		if err != nil {
 			return model.Admitted{}, err
@@ -91,7 +168,7 @@ func (s *Service) admitDeleteObject(ctx context.Context, r store.Reader, st mode
 	if busy {
 		op, ok, err := findOpen(ctx, r, model.KindDeleteObject, func(op model.Operation) bool {
 			purge, is := op.Work.(model.ObjectPurge)
-			return is && purge.Object.Path == req.Path
+			return is && !purge.Reclaim && purge.Object.Path == req.Path && purge.Object.Generation == obj.Generation
 		})
 		if err != nil {
 			return model.Admitted{}, err
@@ -119,7 +196,7 @@ func (s *Service) runObjectUpload(ctx context.Context, op model.Operation, w mod
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	purgeID := model.NewOperationID()
+	purgeID := model.NewOperationID().WithProject(op.ID.Project())
 	return s.settle(ctx, func(r store.Reader, now time.Time) (model.Change, error) {
 		cur, err := r.Operation(ctx, op.ID)
 		if err != nil {

@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,6 +20,44 @@ func TestStore(t *testing.T) {
 		}
 		return st
 	})
+}
+
+func TestOpenRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	const rel = "nested/storage.db"
+	st, err := sqlite.Open(context.Background(), rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	second, err := sqlite.Open(ctx, rel)
+	if err == nil {
+		second.Close()
+		st.Close()
+		t.Fatal("second open succeeded")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := sqlite.Open(context.Background(), rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Close()
 }
 
 func TestSecondOpenFails(t *testing.T) {

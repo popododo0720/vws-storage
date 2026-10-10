@@ -161,6 +161,156 @@ func TestCommitUploadReplacesOlderHead(t *testing.T) {
 	}
 }
 
+func TestCommitUploadReplacesNamedGeneration(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	path := ObjectPath{Bucket: mustBucket(t), Key: mustKey(t, "a.bin")}
+	headGen := NewGeneration()
+	head := &Object{
+		Path: path, Generation: headGen, Size: 4, ETag: "old",
+		UploadedAt: now.Add(time.Hour), Meta: fresh(now),
+	}
+	upGen := NewGeneration()
+	work := ObjectUpload{
+		Object: ObjectRef{Path: path, Generation: upGen}, Replaces: headGen, Size: 4,
+		Deadline: now.Add(2 * time.Hour),
+	}
+	op := Operation{ID: NewOperationID(), Work: work, State: OpRunning{}, Meta: fresh(now)}
+	run, ok := AsRunning[ObjectUpload](op)
+	if !ok {
+		t.Fatal("not running")
+	}
+	obs := ObservedObject{Size: 4, ETag: "new", UploadedAt: now}
+	ch, err := CommitUpload(run, head, obs, NewOperationID(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := putNext(t, ch, "object").(Object)
+	if next.Generation != upGen || next.ETag != "new" {
+		t.Fatalf("head %+v", next)
+	}
+	var sawPurge bool
+	for _, w := range ch.Writes() {
+		put, ok := w.(Put)
+		if !ok || put.Prev != nil {
+			continue
+		}
+		nop, ok := put.Next.(Operation)
+		if !ok {
+			continue
+		}
+		purge, ok := nop.Work.(ObjectPurge)
+		if ok && purge.Object.Generation == headGen {
+			sawPurge = true
+		}
+	}
+	if !sawPurge {
+		t.Fatal("old generation was not purged")
+	}
+}
+
+func TestScopedIDsSurviveCodec(t *testing.T) {
+	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := availableVolume(t, now)
+	vol.ID = vol.ID.WithProject(project)
+	opID := NewOperationID().WithProject(project)
+	vol.State = Creating{Op: opID}
+	snap := NewSnapshotID().WithProject(project)
+	src, err := FromSnapshot(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol.Spec.Source = src
+	raw, err := MarshalRecord(vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := got.(Volume)
+	if decoded.ID != vol.ID {
+		t.Fatalf("id %s", decoded.ID)
+	}
+	st, ok := decoded.State.(Creating)
+	if !ok || st.Op != opID {
+		t.Fatalf("op %v", decoded.State)
+	}
+	id, ok := decoded.Spec.Source.Snapshot()
+	if !ok || id != snap {
+		t.Fatalf("source %v", decoded.Spec.Source)
+	}
+	legacy := availableVolume(t, now)
+	legacyOp := NewOperationID()
+	legacy.State = Deleting{Op: legacyOp}
+	raw, err = MarshalRecord(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.(Volume).State.(Deleting).Op != legacyOp {
+		t.Fatal("legacy op")
+	}
+}
+
+func TestReclaimDoesNotHoldThePath(t *testing.T) {
+	path := ObjectPath{Bucket: mustBucket(t), Key: mustKey(t, "a.bin")}
+	gen := NewGeneration()
+	head := ObjectPurge{Object: ObjectRef{Path: path, Generation: gen}}
+	reclaim := head
+	reclaim.Reclaim = true
+	if !hasRef(head.Refs(), path) || hasRef(reclaim.Refs(), path) {
+		t.Fatalf("head %v reclaim %v", head.Refs(), reclaim.Refs())
+	}
+	op := Operation{ID: NewOperationID(), Work: reclaim, State: OpSucceeded{}, Meta: fresh(time.Unix(0, 0).UTC())}
+	raw, err := MarshalRecord(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok := got.(Operation).Work.(ObjectPurge)
+	if !ok || !loaded.Reclaim || hasRef(loaded.Refs(), path) {
+		t.Fatalf("loaded %+v", got.(Operation).Work)
+	}
+}
+
+func hasRef(refs []Ref, want Ref) bool {
+	for _, ref := range refs {
+		if ref.String() == want.String() {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReplaceRejectsSameGeneration(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	bucket := Bucket{Name: mustBucket(t), State: Available{}, Meta: fresh(now)}
+	avail, ok := bucket.AsAvailable()
+	if !ok {
+		t.Fatal("bucket")
+	}
+	head := Object{
+		Path: ObjectPath{Bucket: bucket.Name, Key: mustKey(t, "a.bin")}, Generation: NewGeneration(), Meta: fresh(now),
+	}
+	_, err := avail.Replace(Start{Op: NewOperationID(), Now: now}, head, head.Generation, UpdateObjectRequest{
+		Path: head.Path, HasContents: true, Size: 1,
+	}, now.Add(time.Hour))
+	if err == nil {
+		t.Fatal("same generation")
+	}
+}
+
 func TestDeleteKeepsHeadUntilPurge(t *testing.T) {
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	obj := Object{
@@ -354,6 +504,78 @@ func sampleRecords(t *testing.T, now time.Time) []Record {
 	return out
 }
 
+func TestParseLabels(t *testing.T) {
+	empty, err := ParseLabels(nil)
+	if err != nil || empty.Map() != nil {
+		t.Fatalf("empty %+v %v", empty, err)
+	}
+	a, err := ParseLabels(map[string]string{"team": "storage", "env": "prod", "eq": "a=b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ParseLabels(map[string]string{"eq": "a=b", "env": "prod", "team": "storage"})
+	if err != nil || a != b {
+		t.Fatalf("order %v %v %v", a, b, err)
+	}
+	got := a.Map()
+	if got["env"] != "prod" || got["team"] != "storage" || got["eq"] != "a=b" || len(got) != 3 {
+		t.Fatalf("map %v", got)
+	}
+	if _, err := ParseLabels(map[string]string{"Bad": "x"}); err == nil {
+		t.Fatal("uppercase key")
+	}
+	desc, err := ParseDescription("nightly copy")
+	if err != nil || desc != "nightly copy" {
+		t.Fatalf("description %q %v", desc, err)
+	}
+	if _, err := ParseDescription("bad\n"); err == nil {
+		t.Fatal("control character")
+	}
+	if err := (CreateSnapshotRequest{Source: NewVolumeID(), Description: "bad\n"}).Validate(); err == nil {
+		t.Fatal("request description")
+	}
+}
+
+func TestLabelsSurviveCodec(t *testing.T) {
+	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
+	labels, err := ParseLabels(map[string]string{"env": "prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := availableVolume(t, now)
+	vol.Labels = labels
+	snap := Snapshot{
+		ID: NewSnapshotID(), Source: vol.ID, Labels: labels, Description: "nightly",
+		Size: vol.Spec.Size, State: Available{}, Meta: fresh(now),
+	}
+	bucket := Bucket{Name: mustBucket(t), Labels: labels, State: Available{}, Meta: fresh(now)}
+	obj := Object{
+		Path: ObjectPath{Bucket: bucket.Name, Key: mustKey(t, "k")}, Generation: NewGeneration(),
+		Size: 3, Labels: labels, UploadedAt: now, Meta: fresh(now),
+	}
+	op := Operation{
+		ID: NewOperationID(),
+		Work: ObjectUpload{
+			Object: ObjectRef{Path: obj.Path, Generation: obj.Generation}, Size: obj.Size,
+			Labels: labels, Deadline: now,
+		},
+		State: OpSucceeded{}, Meta: fresh(now),
+	}
+	for _, rec := range []Record{vol, snap, bucket, obj, op} {
+		raw, err := MarshalRecord(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := UnmarshalRecord(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !SameRecord(rec, got) {
+			t.Fatalf("round trip %T\n%s", rec, raw)
+		}
+	}
+}
+
 func TestResourceNamesRoundTrip(t *testing.T) {
 	vol := NewVolumeID()
 	if got, err := ParseVolumeID(vol.String()); err != nil || got != vol {
@@ -375,8 +597,20 @@ func TestResourceNamesRoundTrip(t *testing.T) {
 		t.Fatalf("bucket %v %v", got, err)
 	}
 	id, err := ParseVolumeID("data-1")
-	if err != nil || id.ID() != "data-1" {
+	if err != nil || id.ID() != "data-1" || id.String() != "volumes/data-1" {
 		t.Fatalf("resource id %v %v", id, err)
+	}
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := id.WithProject(project)
+	if got, err := ParseVolumeID(scoped.String()); err != nil || got != scoped {
+		t.Fatalf("scoped volume %v %v", got, err)
+	}
+	legacy, err := ParseVolumeID("data-1")
+	if err != nil || legacy.Project() != (Project{}) || legacy.String() != "volumes/data-1" {
+		t.Fatalf("legacy %v %v", legacy, err)
 	}
 	if _, err := ParseVolumeID("Vol"); err == nil {
 		t.Fatal("uppercase volume id")

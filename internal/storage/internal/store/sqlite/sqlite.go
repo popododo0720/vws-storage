@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,10 +39,19 @@ CREATE TABLE op_refs (
 `
 
 // Open opens path and migrates it to schema version 1.
-// The connection is exclusive so a second process fails instead of driving
-// the same operations.
+// path may be relative. The parent directory is created. The connection is
+// exclusive so a second process fails instead of driving the same operations.
 func Open(ctx context.Context, path string) (store.Store, error) {
-	db, err := sql.Open("sqlite", sqliteDSN(path))
+	// A relative Path in a file URI becomes the authority (file://data/storage.db).
+	// SQLite rejects that, and the driver reports it as "SQL logic error: out of memory".
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", sqliteDSN(abs))
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +278,7 @@ func (s *dbStore) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 	return out, err
 }
 
-func (s *dbStore) Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (s *dbStore) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	var out model.TokenRecord
 	err := s.lock(func() error {
 		var err error
@@ -452,7 +463,7 @@ func (v view) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 	return n > 0, err
 }
 
-func (v view) Token(ctx context.Context, tok model.ClientToken) (model.TokenRecord, error) {
+func (v view) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
 	rec, err := v.s.Get(ctx, tok)
 	if err != nil {
 		return model.TokenRecord{}, err
@@ -603,7 +614,7 @@ func kindID(key model.Key) (string, string, error) {
 		return "object", id, nil
 	case model.OperationID:
 		return "operation", id, nil
-	case model.ClientToken:
+	case model.TokenKey:
 		return "token", id, nil
 	default:
 		return "", "", model.ErrInvalidArgument
