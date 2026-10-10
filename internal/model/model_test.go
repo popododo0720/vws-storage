@@ -208,6 +208,91 @@ func TestCommitUploadReplacesNamedGeneration(t *testing.T) {
 	}
 }
 
+func TestScopedIDsSurviveCodec(t *testing.T) {
+	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
+	project, err := ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := availableVolume(t, now)
+	vol.ID = vol.ID.WithProject(project)
+	opID := NewOperationID().WithProject(project)
+	vol.State = Creating{Op: opID}
+	snap := NewSnapshotID().WithProject(project)
+	src, err := FromSnapshot(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol.Spec.Source = src
+	raw, err := MarshalRecord(vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := got.(Volume)
+	if decoded.ID != vol.ID {
+		t.Fatalf("id %s", decoded.ID)
+	}
+	st, ok := decoded.State.(Creating)
+	if !ok || st.Op != opID {
+		t.Fatalf("op %v", decoded.State)
+	}
+	id, ok := decoded.Spec.Source.Snapshot()
+	if !ok || id != snap {
+		t.Fatalf("source %v", decoded.Spec.Source)
+	}
+	legacy := availableVolume(t, now)
+	legacyOp := NewOperationID()
+	legacy.State = Deleting{Op: legacyOp}
+	raw, err = MarshalRecord(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.(Volume).State.(Deleting).Op != legacyOp {
+		t.Fatal("legacy op")
+	}
+}
+
+func TestReclaimDoesNotHoldThePath(t *testing.T) {
+	path := ObjectPath{Bucket: mustBucket(t), Key: mustKey(t, "a.bin")}
+	gen := NewGeneration()
+	head := ObjectPurge{Object: ObjectRef{Path: path, Generation: gen}}
+	reclaim := head
+	reclaim.Reclaim = true
+	if !hasRef(head.Refs(), path) || hasRef(reclaim.Refs(), path) {
+		t.Fatalf("head %v reclaim %v", head.Refs(), reclaim.Refs())
+	}
+	op := Operation{ID: NewOperationID(), Work: reclaim, State: OpSucceeded{}, Meta: fresh(time.Unix(0, 0).UTC())}
+	raw, err := MarshalRecord(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok := got.(Operation).Work.(ObjectPurge)
+	if !ok || !loaded.Reclaim || hasRef(loaded.Refs(), path) {
+		t.Fatalf("loaded %+v", got.(Operation).Work)
+	}
+}
+
+func hasRef(refs []Ref, want Ref) bool {
+	for _, ref := range refs {
+		if ref.String() == want.String() {
+			return true
+		}
+	}
+	return false
+}
+
 func TestReplaceRejectsSameGeneration(t *testing.T) {
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	bucket := Bucket{Name: mustBucket(t), State: Available{}, Meta: fresh(now)}
@@ -445,6 +530,9 @@ func TestParseLabels(t *testing.T) {
 	}
 	if _, err := ParseDescription("bad\n"); err == nil {
 		t.Fatal("control character")
+	}
+	if err := (CreateSnapshotRequest{Source: NewVolumeID(), Description: "bad\n"}).Validate(); err == nil {
+		t.Fatal("request description")
 	}
 }
 

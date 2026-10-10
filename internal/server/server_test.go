@@ -455,6 +455,14 @@ func TestUpdateObjectOverwrites(t *testing.T) {
 		t.Fatalf("metadata %+v", labeled)
 	}
 	_, err = objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
+		AllowMissing: true,
+		Object:       &storagev1.Object{Name: "projects/local/buckets/logs/objects/missing", Spec: &storagev1.ObjectSpec{}},
+	})
+	st, ok = status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("allow_missing without contents %v %v", st.Code(), err)
+	}
+	_, err = objects.UpdateObject(ctx, &storagev1.UpdateObjectRequest{
 		Object: &storagev1.Object{Name: "projects/local/buckets/logs/objects/missing", Spec: &storagev1.ObjectSpec{}},
 	})
 	st, ok = status.FromError(err)

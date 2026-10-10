@@ -291,6 +291,9 @@ func (r CreateSnapshotRequest) Validate() error {
 	if r.Source.IsZero() {
 		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
 	}
+	if _, err := ParseDescription(r.Description); err != nil {
+		return err
+	}
 	return nil
 }
 

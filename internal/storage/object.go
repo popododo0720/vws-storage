@@ -168,7 +168,7 @@ func (s *Service) admitDeleteObject(ctx context.Context, r store.Reader, st mode
 	if busy {
 		op, ok, err := findOpen(ctx, r, model.KindDeleteObject, func(op model.Operation) bool {
 			purge, is := op.Work.(model.ObjectPurge)
-			return is && purge.Object.Path == req.Path
+			return is && !purge.Reclaim && purge.Object.Path == req.Path && purge.Object.Generation == obj.Generation
 		})
 		if err != nil {
 			return model.Admitted{}, err

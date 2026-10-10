@@ -425,7 +425,7 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 	case !w.Replaces.IsZero() && head.Generation == w.Replaces && head.Generation != w.Object.Generation:
 		next := replacedHead(*head, w, obs, now)
 		old := ObjectRef{Path: head.Path, Generation: head.Generation}
-		reclaim := internalOp(purge, ObjectPurge{Object: old}, now)
+		reclaim := internalOp(purge, ObjectPurge{Object: old, Reclaim: true}, now)
 		return writes(putUpdate(*head, next), putNew(reclaim), putUpdate(op.Operation(), done)), nil
 	case head.Generation == w.Object.Generation:
 		return writes(guardRec(*head), putUpdate(op.Operation(), done)), nil
@@ -434,10 +434,10 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 	case !head.UploadedAt.After(obs.UploadedAt):
 		next := replacedHead(*head, w, obs, now)
 		old := ObjectRef{Path: head.Path, Generation: head.Generation}
-		reclaim := internalOp(purge, ObjectPurge{Object: old}, now)
+		reclaim := internalOp(purge, ObjectPurge{Object: old, Reclaim: true}, now)
 		return writes(putUpdate(*head, next), putNew(reclaim), putUpdate(op.Operation(), done)), nil
 	default:
-		reclaim := internalOp(purge, ObjectPurge{Object: w.Object}, now)
+		reclaim := internalOp(purge, ObjectPurge{Object: w.Object, Reclaim: true}, now)
 		return writes(guardRec(*head), putNew(reclaim), putUpdate(op.Operation(), done)), nil
 	}
 }
@@ -459,7 +459,7 @@ func abandonReplaced(op RunningOp[ObjectUpload], purge OperationID, head *Object
 	if purge.IsZero() {
 		return Change{}, fmt.Errorf("%w: purge", ErrInvalidArgument)
 	}
-	reclaim := internalOp(purge, ObjectPurge{Object: op.Work().Object}, now)
+	reclaim := internalOp(purge, ObjectPurge{Object: op.Work().Object, Reclaim: true}, now)
 	failed := failOp(op.Operation(), Status{Code: CodeFailedPrecondition, Message: "object generation changed"}, now)
 	ws := []Write{putNew(reclaim), putUpdate(op.Operation(), failed)}
 	if head != nil {

@@ -50,11 +50,11 @@ type lifeWire struct {
 func lifeTo(s Lifecycle) (lifeWire, error) {
 	switch s := s.(type) {
 	case Creating:
-		return lifeWire{Kind: "creating", Op: s.Op.ID()}, nil
+		return lifeWire{Kind: "creating", Op: s.Op.wire()}, nil
 	case Available:
 		return lifeWire{Kind: "available"}, nil
 	case Deleting:
-		return lifeWire{Kind: "deleting", Op: s.Op.ID()}, nil
+		return lifeWire{Kind: "deleting", Op: s.Op.wire()}, nil
 	default:
 		return lifeWire{}, fmt.Errorf("lifecycle %T", s)
 	}
@@ -91,7 +91,7 @@ type specWire struct {
 func specTo(s VolumeSpec) specWire {
 	src := ""
 	if id, ok := s.Source.Snapshot(); ok {
-		src = id.ID()
+		src = id.wire()
 	}
 	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: src}
 }
@@ -200,6 +200,7 @@ type workWire struct {
 	ContentType string            `json:"content_type"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	Replaces    string            `json:"replaces,omitempty"`
+	Reclaim     bool              `json:"reclaim,omitempty"`
 	Deadline    int64             `json:"deadline"`
 }
 
@@ -228,7 +229,7 @@ func workTo(w Work) (workWire, error) {
 	case ObjectPurge:
 		return workWire{
 			Kind: w.Kind().String(), Bucket: w.Object.Path.Bucket.wire(), Key: w.Object.Path.Key.String(),
-			Generation: w.Object.Generation.String(),
+			Generation: w.Object.Generation.String(), Reclaim: w.Reclaim,
 		}, nil
 	default:
 		return workWire{}, fmt.Errorf("work %T", w)
@@ -328,7 +329,7 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		return ObjectPurge{Object: ref}, nil
+		return ObjectPurge{Object: ref, Reclaim: w.Reclaim}, nil
 	default:
 		return nil, fmt.Errorf("work %q", w.Kind)
 	}

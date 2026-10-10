@@ -253,7 +253,12 @@ func (w ObjectUpload) Content() ObjectContent {
 }
 
 // ObjectPurge deletes one generation of object bytes.
-type ObjectPurge struct{ Object ObjectRef }
+// Reclaim is set when the generation is no longer the head. A reclaim does not
+// hold the object path, so a later upload or delete of the head can proceed.
+type ObjectPurge struct {
+	Object  ObjectRef
+	Reclaim bool
+}
 
 // Kind implements Work.
 func (VolumeCreation) Kind() Kind { return KindCreateVolume }
@@ -334,6 +339,9 @@ func (w ObjectUpload) Refs() []Ref {
 
 // Refs implements Work.
 func (w ObjectPurge) Refs() []Ref {
+	if w.Reclaim {
+		return []Ref{w.Object, w.Object.Path.Bucket}
+	}
 	return []Ref{w.Object, w.Object.Path, w.Object.Path.Bucket}
 }
 
