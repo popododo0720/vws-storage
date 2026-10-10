@@ -90,6 +90,7 @@ linters-settings:
 issues:
   exclude-files:
     - "\\.pb\\.go$"
+    - "^third_party/"
 
   exclude-rules:
     - path: _test\.go

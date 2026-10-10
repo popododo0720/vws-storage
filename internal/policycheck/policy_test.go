@@ -17,7 +17,7 @@ func TestRepoPolicy(t *testing.T) {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			if base == ".git" || base == "vendor" {
+			if base == ".git" || base == "vendor" || base == "third_party" {
 				return filepath.SkipDir
 			}
 			switch base {
