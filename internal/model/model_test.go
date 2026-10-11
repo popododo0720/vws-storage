@@ -900,3 +900,37 @@ func sampleWork(t *testing.T, k Kind, vol Volume, snap Snapshot, bucket Bucket, 
 		return nil
 	}
 }
+
+func TestWriteObjectFingerprintCoversBytesAndEtag(t *testing.T) {
+	bucket, err := ParseBucketName("projects/p1/buckets/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ParseObjectKey("day.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := WriteObjectRequest{Path: ObjectPath{Bucket: bucket, Key: key}, Size: 3, SHA256: Digest{1}, Expected: 2}
+	base, err := HashRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mut := range map[string]func(*WriteObjectRequest){
+		"sha":  func(r *WriteObjectRequest) { r.SHA256 = Digest{2} },
+		"size": func(r *WriteObjectRequest) { r.Size = 4 },
+		"etag": func(r *WriteObjectRequest) { r.Expected = 3 },
+	} {
+		other := req
+		mut(&other)
+		got, err := HashRequest(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == base {
+			t.Fatalf("%s change hashed the same", name)
+		}
+	}
+	if (WriteObjectRequest{Path: req.Path, Size: 0}).Validate() == nil {
+		t.Fatal("a write without a sha256 validated")
+	}
+}
