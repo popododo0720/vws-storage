@@ -31,7 +31,7 @@ Mutations return a long-running operation. Poll `GetOperation` until `done` is s
 
 ## Proto
 
-Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `a1c6084`).
+Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `2d8a7e9`).
 
 vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
