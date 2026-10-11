@@ -2,6 +2,7 @@ package model
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -76,6 +77,30 @@ func (d Digest) String() string {
 
 // IsZero reports whether d was omitted.
 func (d Digest) IsZero() bool { return d == Digest{} }
+
+// MD5 is the MD5 of a stored payload. It is a content digest, not a
+// concurrency token. The zero value means no payload digest is recorded.
+type MD5 [16]byte
+
+// ParseMD5 parses a 32-character lowercase hex MD5.
+func ParseMD5(hex string) (MD5, error) {
+	if len(hex) != 32 || !isLowerHex(hex) {
+		return MD5{}, fmt.Errorf("%w: md5", ErrInvalidArgument)
+	}
+	var d MD5
+	for i := range d {
+		d[i] = hexByte(hex[i*2])<<4 | hexByte(hex[i*2+1])
+	}
+	return d, nil
+}
+
+// String returns the lowercase hex MD5, or "" when d is zero.
+func (d MD5) String() string {
+	if d == (MD5{}) {
+		return ""
+	}
+	return hex.EncodeToString(d[:])
+}
 
 func hexByte(c byte) byte {
 	switch {

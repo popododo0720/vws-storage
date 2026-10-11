@@ -85,6 +85,7 @@ type Object struct {
 	Size        Bytes
 	ETag        ETag
 	SHA256      Digest
+	MD5         MD5
 	ContentType string
 	Labels      Labels
 	UploadedAt  time.Time
@@ -374,6 +375,7 @@ type ObservedObject struct {
 	Size       Bytes
 	ETag       ETag
 	SHA256     Digest
+	MD5        MD5
 	UploadedAt time.Time
 }
 

@@ -417,7 +417,7 @@ func CommitUpload(op RunningOp[ObjectUpload], head *Object, obs ObservedObject, 
 	case head == nil && w.Replaces.IsZero():
 		obj := Object{
 			Path: w.Object.Path, Generation: w.Object.Generation, Size: obs.Size,
-			ETag: obs.ETag, SHA256: obs.SHA256, ContentType: w.ContentType, Labels: w.Labels,
+			ETag: obs.ETag, SHA256: obs.SHA256, MD5: obs.MD5, ContentType: w.ContentType, Labels: w.Labels,
 			UploadedAt: norm(obs.UploadedAt), Meta: fresh(now),
 		}
 		return writes(putNew(obj), putUpdate(op.Operation(), done)), nil
@@ -449,6 +449,7 @@ func replacedHead(head Object, w ObjectUpload, obs ObservedObject, now time.Time
 	next.Size = obs.Size
 	next.ETag = obs.ETag
 	next.SHA256 = obs.SHA256
+	next.MD5 = obs.MD5
 	next.ContentType = w.ContentType
 	next.Labels = w.Labels
 	next.UploadedAt = norm(obs.UploadedAt)

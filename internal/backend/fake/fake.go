@@ -3,6 +3,7 @@ package fake
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -177,6 +178,7 @@ type stored struct {
 	at   time.Time
 	etag string
 	sum  model.Digest
+	md5  model.MD5
 }
 
 type expect struct {
@@ -254,7 +256,7 @@ func (o *Objects) Stat(ctx context.Context, ref model.ObjectRef) (model.Observed
 	if !ok {
 		return model.ObservedObject{}, backend.ErrNotFound
 	}
-	return model.ObservedObject{Size: model.Bytes(len(g.body)), ETag: model.ETag(g.etag), SHA256: g.sum, UploadedAt: g.at}, nil
+	return model.ObservedObject{Size: model.Bytes(len(g.body)), ETag: model.ETag(g.etag), SHA256: g.sum, MD5: g.md5, UploadedAt: g.at}, nil
 }
 
 // DeleteObject implements backend.Object.
@@ -323,7 +325,7 @@ func (o *Objects) Accept(loc model.Locator, body []byte) error {
 	if !want.sha.IsZero() && sum != want.sha {
 		return fmt.Errorf("%w: checksum", backend.ErrConflict)
 	}
-	o.gens[key] = stored{body: append([]byte(nil), body...), at: o.now(), etag: hex.EncodeToString(sum[:8]), sum: sum}
+	o.gens[key] = stored{body: append([]byte(nil), body...), at: o.now(), etag: hex.EncodeToString(sum[:8]), sum: sum, md5: md5.Sum(body)}
 	delete(o.expect, key)
 	return nil
 }

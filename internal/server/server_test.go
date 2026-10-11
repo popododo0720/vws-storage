@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"strings"
@@ -102,6 +104,13 @@ func TestCreateObjectStoresBytes(t *testing.T) {
 	}
 	if obj.GetSpec().GetContentType() != "text/plain" || obj.GetStatus().GetSizeBytes() != int64(len(body)) {
 		t.Fatalf("object %+v", obj)
+	}
+	sum := md5.Sum(body)
+	if want := hex.EncodeToString(sum[:]); obj.GetStatus().GetMd5() != want {
+		t.Fatalf("md5 %q want %q", obj.GetStatus().GetMd5(), want)
+	}
+	if obj.GetEtag() == obj.GetStatus().GetMd5() || obj.GetEtag() == obj.GetSpec().GetSha256() {
+		t.Fatalf("etag %q is a digest", obj.GetEtag())
 	}
 }
 
