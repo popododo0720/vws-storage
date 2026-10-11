@@ -48,3 +48,5 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 프로젝트는 저장 키다. 요청의 project가 행을 가른다 | `VolumeID.String`이 `projects/{project}/volumes/{id}`. `TestProjectScopedVolumeAndBucket` |
 | 허용 목록에 없는 프로젝트는 그 프로세스의 리소스가 아니다 | `Server.allowProject` → `RESOURCE_NOT_FOUND`. `TestProjectAllowListRejected` |
 | 이미지는 이름만 저장한다. 조회, 복사, 크기 검사를 하지 않는다 | `ImageName`은 `Key`도 `Ref`도 아니다. `TestImageSourceSurvivesCodec`, `TestCreateVolumeFromImage` |
+| `Object.etag`은 동시성 토큰이고 md5가 아니다 | `status.md5`는 `Object.MD5`, etag는 `Meta.Version`. `TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5` |
+| 같은 `request_id`의 WriteObject는 다시 쓰지 않는다 | `Service.Submit`의 토큰 조회가 admit보다 먼저다. `TestWriteObjectIsIdempotentOnRequestID` |
