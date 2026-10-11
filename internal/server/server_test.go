@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"net"
 	"net/http"
@@ -774,6 +775,7 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 			return lis.DialContext(ctx)
 		}),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(server.MaxRecvMsgSize)),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -795,4 +797,88 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 		storagev1.NewBucketServiceClient(conn),
 		storagev1.NewObjectServiceClient(conn),
 		longrunningpb.NewOperationsClient(conn)
+}
+
+const (
+	writeBucket = "projects/local/buckets/logs"
+	writeName   = writeBucket + "/objects/day.bin"
+	reqA        = "33333333-3333-4333-8333-333333333333"
+)
+
+func md5hex(b []byte) string {
+	sum := md5.Sum(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// seedObject creates bucket logs and object day.bin with body, content type
+// text/plain, and one label.
+func seedObject(t *testing.T, body []byte) (storagev1.ObjectServiceClient, longrunningpb.OperationsClient) {
+	t.Helper()
+	_, _, buckets, objects, ops := dial(t, "http://127.0.0.1")
+	ctx := context.Background()
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/local", BucketId: "logs",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "local"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, bop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	oop, err := objects.CreateObject(ctx, &storagev1.CreateObjectRequest{
+		Parent: writeBucket, ObjectId: "day.bin",
+		Object: &storagev1.Object{
+			Labels: map[string]string{"env": "dev"},
+			Spec:   &storagev1.ObjectSpec{ContentType: "text/plain"},
+		},
+		Contents: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, oop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	return objects, ops
+}
+
+func getObject(t *testing.T, objects storagev1.ObjectServiceClient) *storagev1.Object {
+	t.Helper()
+	obj, err := objects.GetObject(context.Background(), &storagev1.GetObjectRequest{Name: writeName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return obj
+}
+
+func wantStatus(t *testing.T, err error, code codes.Code, reason string) {
+	t.Helper()
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != code || reasonOf(st) != reason {
+		t.Fatalf("got code %v reason %q err %v; want %v %q", st.Code(), reasonOf(st), err, code, reason)
+	}
+}
+
+func TestReadObject(t *testing.T) {
+	objects, _ := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	obj := getObject(t, objects)
+	read, err := objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeName, Etag: obj.GetEtag()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(read.GetContents()) != "hello" || read.GetObject().GetStatus().GetMd5() != md5hex([]byte("hello")) ||
+		read.GetObject().GetSpec().GetSha256() != sha256hex([]byte("hello")) || read.GetObject().GetEtag() != obj.GetEtag() {
+		t.Fatalf("read %+v", read)
+	}
+	_, err = objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeName, Etag: "999"})
+	wantStatus(t, err, codes.Aborted, "ETAG_MISMATCH")
+	_, err = objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeBucket + "/objects/missing"})
+	wantStatus(t, err, codes.NotFound, "RESOURCE_NOT_FOUND")
 }

@@ -31,6 +31,9 @@ const errorDomain = "vws.dev"
 // maxInlineObject is the unary CreateObject payload limit from the proto.
 const maxInlineObject = 4194304
 
+// readAttempts bounds ReadObject retries when the head moves under a read.
+const readAttempts = 3
+
 var uuid4Pattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type statusError struct {

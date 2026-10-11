@@ -326,6 +326,45 @@ func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectReq
 	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
+// ReadObject implements ObjectService. It returns the whole stored payload and
+// the object record it belongs to. A write that commits between the record
+// read and the byte fetch moves the head, so the read retries on the new head.
+func (s *Server) ReadObject(ctx context.Context, in *storagev1.ReadObjectRequest) (*storagev1.ReadObjectResponse, error) {
+	path, err := s.parseObjectName(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	want, err := expectedVersion(in.GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	var lastErr error
+	for range readAttempts {
+		obj, loc, err := s.svc.LocateObject(ctx, path)
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		if want != 0 && obj.Meta.Version != want {
+			return nil, toStatus(model.ErrETagMismatch)
+		}
+		if obj.Size > maxInlineObject {
+			return nil, status.Error(codes.FailedPrecondition, "stored payload exceeds the read limit")
+		}
+		body, err := getBytes(ctx, loc)
+		if err == nil && model.Bytes(len(body)) == obj.Size && sha256.Sum256(body) == [32]byte(obj.SHA256) {
+			return &storagev1.ReadObjectResponse{Contents: body, Object: s.objectMsg(obj)}, nil
+		}
+		if ctx.Err() != nil {
+			return nil, toStatus(ctx.Err())
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("stored payload changed during read")
+	}
+	return nil, status.Error(codes.Unavailable, lastErr.Error())
+}
+
 // DeleteObject implements ObjectService.
 func (s *Server) DeleteObject(ctx context.Context, in *storagev1.DeleteObjectRequest) (*longrunningpb.Operation, error) {
 	path, err := s.parseObjectName(in.GetName())
@@ -586,6 +625,37 @@ func listPage[T any](ctx context.Context, size int32, token string, list func(co
 		return model.Page[T]{}, err
 	}
 	return list(ctx, model.PageRequest{Size: n, Token: token})
+}
+
+func getBytes(ctx context.Context, loc model.Locator) ([]byte, error) {
+	method := loc.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, loc.URL, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range loc.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, errors.New(resp.Status + " " + string(bytes.TrimSpace(msg)))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInlineObject+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxInlineObject {
+		return nil, errors.New("payload exceeds the read limit")
+	}
+	return body, nil
 }
 
 func putBytes(ctx context.Context, loc model.Locator, body []byte) error {
