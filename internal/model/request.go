@@ -2,6 +2,7 @@ package model
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -76,6 +77,30 @@ func (d Digest) String() string {
 
 // IsZero reports whether d was omitted.
 func (d Digest) IsZero() bool { return d == Digest{} }
+
+// MD5 is the MD5 of a stored payload. It is a content digest, not a
+// concurrency token. The zero value means no payload digest is recorded.
+type MD5 [16]byte
+
+// ParseMD5 parses a 32-character lowercase hex MD5.
+func ParseMD5(hex string) (MD5, error) {
+	if len(hex) != 32 || !isLowerHex(hex) {
+		return MD5{}, fmt.Errorf("%w: md5", ErrInvalidArgument)
+	}
+	var d MD5
+	for i := range d {
+		d[i] = hexByte(hex[i*2])<<4 | hexByte(hex[i*2+1])
+	}
+	return d, nil
+}
+
+// String returns the lowercase hex MD5, or "" when d is zero.
+func (d MD5) String() string {
+	if d == (MD5{}) {
+		return ""
+	}
+	return hex.EncodeToString(d[:])
+}
 
 func hexByte(c byte) byte {
 	switch {
@@ -322,6 +347,26 @@ type UpdateObjectRequest struct {
 	AllowMissing bool
 }
 
+// WriteObjectRequest replaces the payload of an existing object and keeps its
+// content type and labels. Size and SHA256 describe the new bytes; the caller
+// always fills SHA256, so a zero-length payload is expressible.
+// Expected is the stored version token, or zero to skip the check.
+type WriteObjectRequest struct {
+	Path     ObjectPath
+	Size     Bytes
+	SHA256   Digest
+	Expected Version
+}
+
+// AsUpdate returns the overwrite this write performs on head.
+func (r WriteObjectRequest) AsUpdate(head Object) UpdateObjectRequest {
+	return UpdateObjectRequest{
+		Path: r.Path, Size: r.Size, SHA256: r.SHA256,
+		ContentType: head.ContentType, Labels: head.Labels,
+		HasContents: true, Expected: r.Expected,
+	}
+}
+
 // DeleteObjectRequest removes an object from reads and reclaims its bytes.
 type DeleteObjectRequest struct {
 	Path         ObjectPath
@@ -338,6 +383,7 @@ func (r CreateBucketRequest) Project() Project   { return r.Bucket.Project() }
 func (r DeleteBucketRequest) Project() Project   { return r.Bucket.Project() }
 func (r PutObjectRequest) Project() Project      { return r.Path.Project() }
 func (r UpdateObjectRequest) Project() Project   { return r.Path.Project() }
+func (r WriteObjectRequest) Project() Project    { return r.Path.Project() }
 func (r DeleteObjectRequest) Project() Project   { return r.Path.Project() }
 
 func (r CreateVolumeRequest) Validate() error {
@@ -440,6 +486,20 @@ func validateContentType(s string) error {
 }
 
 // Validate implements Request.
+func (r WriteObjectRequest) Validate() error {
+	if r.Path.Bucket.IsZero() || r.Path.Key.IsZero() {
+		return fmt.Errorf("%w: object path", ErrInvalidArgument)
+	}
+	if r.Size < 0 || r.Size > MaxObjectBytes {
+		return fmt.Errorf("%w: object size", ErrInvalidArgument)
+	}
+	if r.SHA256.IsZero() {
+		return fmt.Errorf("%w: sha256", ErrInvalidArgument)
+	}
+	return nil
+}
+
+// Validate implements Request.
 func (r DeleteObjectRequest) Validate() error {
 	if r.Path.Bucket.IsZero() || r.Path.Key.IsZero() {
 		return fmt.Errorf("%w: object path", ErrInvalidArgument)
@@ -479,6 +539,10 @@ func (r UpdateObjectRequest) fingerprint() string {
 	return fmt.Sprintf("update-object\n%s\n%s\n%d\n%s\n%s\n%s\n%t\n%d\n%t", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.ContentType, r.Labels.canonical(), r.HasContents, r.Expected, r.AllowMissing)
 }
 
+func (r WriteObjectRequest) fingerprint() string {
+	return fmt.Sprintf("write-object\n%s\n%s\n%d\n%s\n%d", r.Path.Bucket.String(), r.Path.Key.String(), r.Size, r.SHA256.String(), r.Expected)
+}
+
 func (r DeleteObjectRequest) fingerprint() string {
 	return fmt.Sprintf("delete-object\n%s\n%d\n%t", r.Path.String(), r.Expected, r.AllowMissing)
 }
@@ -491,6 +555,7 @@ func (CreateBucketRequest) isRequest()   {}
 func (DeleteBucketRequest) isRequest()   {}
 func (PutObjectRequest) isRequest()      {}
 func (UpdateObjectRequest) isRequest()   {}
+func (WriteObjectRequest) isRequest()    {}
 func (DeleteObjectRequest) isRequest()   {}
 
 // Content returns the comparable contents of the upload.

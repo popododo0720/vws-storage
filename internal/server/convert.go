@@ -31,6 +31,9 @@ const errorDomain = "vws.dev"
 // maxInlineObject is the unary CreateObject payload limit from the proto.
 const maxInlineObject = 4194304
 
+// readAttempts bounds ReadObject retries when the head moves under a read.
+const readAttempts = 3
+
 var uuid4Pattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type statusError struct {
@@ -648,7 +651,7 @@ func (s *Server) objectMsg(o model.Object) *storagev1.Object {
 		Labels: o.Labels.Map(),
 		Spec:   &storagev1.ObjectSpec{ContentType: o.ContentType, Sha256: o.SHA256.String()},
 		Status: &storagev1.ObjectStatus{
-			Observed: observed(model.Available{}, o.Meta.Version), SizeBytes: int64(o.Size),
+			Observed: observed(model.Available{}, o.Meta.Version), SizeBytes: int64(o.Size), Md5: o.MD5.String(),
 		},
 		CreateTime: stamp(o.Meta.CreateTime), UpdateTime: stamp(o.Meta.UpdateTime),
 	}

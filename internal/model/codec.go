@@ -354,6 +354,13 @@ func digestOrZero(s string) (Digest, error) {
 	return ParseDigest(s)
 }
 
+func md5OrZero(s string) (MD5, error) {
+	if s == "" {
+		return MD5{}, nil
+	}
+	return ParseMD5(s)
+}
+
 // MarshalRecord encodes r with the one codec both stores use.
 func MarshalRecord(r Record) ([]byte, error) {
 	body, kind, err := marshalBody(r)
@@ -415,13 +422,14 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Size        int64             `json:"size"`
 			ETag        string            `json:"etag"`
 			SHA256      string            `json:"sha256"`
+			MD5         string            `json:"md5,omitempty"`
 			ContentType string            `json:"content_type"`
 			Labels      map[string]string `json:"labels,omitempty"`
 			UploadedAt  timeWire          `json:"uploaded_at"`
 			Meta        metaWire          `json:"meta"`
 		}{
 			Bucket: r.Path.Bucket.wire(), Key: r.Path.Key.String(), Generation: r.Generation.String(),
-			Size: int64(r.Size), ETag: string(r.ETag), SHA256: r.SHA256.String(), ContentType: r.ContentType,
+			Size: int64(r.Size), ETag: string(r.ETag), SHA256: r.SHA256.String(), MD5: r.MD5.String(), ContentType: r.ContentType,
 			Labels: r.Labels.Map(), UploadedAt: timeTo(r.UploadedAt), Meta: metaTo(r.Meta),
 		})
 		return b, "object", err
@@ -571,6 +579,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Size        int64             `json:"size"`
 			ETag        string            `json:"etag"`
 			SHA256      string            `json:"sha256"`
+			MD5         string            `json:"md5"`
 			ContentType string            `json:"content_type"`
 			Labels      map[string]string `json:"labels"`
 			UploadedAt  timeWire          `json:"uploaded_at"`
@@ -595,13 +604,17 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		sum5, err := md5OrZero(w.MD5)
+		if err != nil {
+			return nil, err
+		}
 		labels, err := ParseLabels(w.Labels)
 		if err != nil {
 			return nil, err
 		}
 		return Object{
 			Path: ObjectPath{Bucket: b, Key: k}, Generation: g, Size: Bytes(w.Size),
-			ETag: ETag(w.ETag), SHA256: sum, ContentType: w.ContentType, Labels: labels,
+			ETag: ETag(w.ETag), SHA256: sum, MD5: sum5, ContentType: w.ContentType, Labels: labels,
 			UploadedAt: timeFrom(w.UploadedAt), Meta: metaFrom(w.Meta),
 		}, nil
 	case "operation":
