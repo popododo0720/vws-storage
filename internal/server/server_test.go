@@ -865,6 +865,165 @@ func wantStatus(t *testing.T, err error, code codes.Code, reason string) {
 	}
 }
 
+func TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	before := getObject(t, objects)
+	body := []byte("world!!")
+	wop, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: body, Etag: before.GetEtag()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, wop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	after := getObject(t, objects)
+	if after.GetStatus().GetMd5() != md5hex(body) || after.GetSpec().GetSha256() != sha256hex(body) || after.GetStatus().GetSizeBytes() != 7 {
+		t.Fatalf("digests %+v", after)
+	}
+	if after.GetEtag() == before.GetEtag() || after.GetEtag() == after.GetStatus().GetMd5() || after.GetEtag() == after.GetSpec().GetSha256() {
+		t.Fatalf("etag %q before %q md5 %q", after.GetEtag(), before.GetEtag(), after.GetStatus().GetMd5())
+	}
+	if after.GetSpec().GetContentType() != "text/plain" || after.GetLabels()["env"] != "dev" {
+		t.Fatalf("metadata not kept: %+v", after)
+	}
+	read, err := objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeName})
+	if err != nil || string(read.GetContents()) != string(body) || read.GetObject().GetEtag() != after.GetEtag() {
+		t.Fatalf("read %v %v", read, err)
+	}
+}
+
+func TestWriteObjectIdenticalBytesKeepEtag(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	before := getObject(t, objects)
+	wop, err := objects.WriteObject(context.Background(), &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("hello")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, wop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	after := getObject(t, objects)
+	if after.GetEtag() != before.GetEtag() || after.GetGeneration() != before.GetGeneration() || after.GetStatus().GetMd5() != md5hex([]byte("hello")) {
+		t.Fatalf("before %+v after %+v", before, after)
+	}
+}
+
+func TestWriteObjectIsIdempotentOnRequestID(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	before := getObject(t, objects)
+	req := &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("first"), Etag: before.GetEtag(), RequestId: reqA}
+	first, err := objects.WriteObject(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, first.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	written := getObject(t, objects)
+	// The replay carries the etag from before the write. Replay wins over the etag compare.
+	again, err := objects.WriteObject(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetName() != first.GetName() {
+		t.Fatalf("replay %s want %s", again.GetName(), first.GetName())
+	}
+	if got := getObject(t, objects); got.GetEtag() != written.GetEtag() || got.GetGeneration() != written.GetGeneration() {
+		t.Fatalf("replay wrote again: %+v -> %+v", written, got)
+	}
+	req.Contents = []byte("second")
+	_, err = objects.WriteObject(ctx, req)
+	wantStatus(t, err, codes.Aborted, "IDEMPOTENCY_CONFLICT")
+	if got := getObject(t, objects); got.GetStatus().GetMd5() != md5hex([]byte("first")) {
+		t.Fatalf("conflict wrote: %+v", got)
+	}
+	// Without the replay, the stale etag is rejected.
+	_, err = objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("third"), Etag: before.GetEtag()})
+	wantStatus(t, err, codes.Aborted, "ETAG_MISMATCH")
+}
+
+func TestWriteObjectSizeLimitBoundary(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	atLimit := make([]byte, 4194304)
+	atLimit[len(atLimit)-1] = 1
+	wop, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: atLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, wop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	stored := getObject(t, objects)
+	if stored.GetStatus().GetSizeBytes() != 4194304 || stored.GetStatus().GetMd5() != md5hex(atLimit) {
+		t.Fatalf("at limit %+v", stored)
+	}
+	read, err := objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeName})
+	if err != nil || len(read.GetContents()) != 4194304 {
+		t.Fatalf("read at limit %d %v", len(read.GetContents()), err)
+	}
+	_, err = objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: make([]byte, 4194305)})
+	wantStatus(t, err, codes.InvalidArgument, "INVALID_SPEC")
+	if got := getObject(t, objects); got.GetEtag() != stored.GetEtag() {
+		t.Fatalf("oversize write changed the object: %+v", got)
+	}
+}
+
+func TestWriteObjectRejects(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	_, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName})
+	wantStatus(t, err, codes.InvalidArgument, "INVALID_SPEC")
+	_, err = objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("x"), Sha256: sha256hex([]byte("y"))})
+	wantStatus(t, err, codes.InvalidArgument, "INVALID_SPEC")
+	_, err = objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeBucket + "/objects/missing", Contents: []byte("x")})
+	wantStatus(t, err, codes.NotFound, "RESOURCE_NOT_FOUND")
+	_, err = objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("x"), Etag: "999"})
+	wantStatus(t, err, codes.Aborted, "ETAG_MISMATCH")
+	if got := getObject(t, objects); got.GetStatus().GetMd5() != md5hex([]byte("hello")) {
+		t.Fatalf("rejected write changed the object: %+v", got)
+	}
+	// A matching sha256 is accepted.
+	wop, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("x"), Sha256: sha256hex([]byte("x"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, wop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	// validate_only stores nothing.
+	before := getObject(t, objects)
+	vop, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte("zzz"), ValidateOnly: true})
+	if err != nil || !vop.GetDone() {
+		t.Fatalf("validate_only %v %v", vop, err)
+	}
+	if got := getObject(t, objects); got.GetEtag() != before.GetEtag() {
+		t.Fatalf("validate_only wrote: %+v", got)
+	}
+}
+
+func TestWriteObjectEmptyPayload(t *testing.T) {
+	objects, ops := seedObject(t, []byte("hello"))
+	ctx := context.Background()
+	wop, err := objects.WriteObject(ctx, &storagev1.WriteObjectRequest{Name: writeName, Contents: []byte{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, wop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	got := getObject(t, objects)
+	if got.GetStatus().GetSizeBytes() != 0 || got.GetStatus().GetMd5() != "d41d8cd98f00b204e9800998ecf8427e" {
+		t.Fatalf("empty %+v", got)
+	}
+	read, err := objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeName})
+	if err != nil || len(read.GetContents()) != 0 || read.GetObject().GetStatus().GetMd5() != got.GetStatus().GetMd5() {
+		t.Fatalf("read %v %v", read, err)
+	}
+}
+
 func TestReadObject(t *testing.T) {
 	objects, _ := seedObject(t, []byte("hello"))
 	ctx := context.Background()

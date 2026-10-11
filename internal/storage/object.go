@@ -150,6 +150,18 @@ func (s *Service) admitFirstUpload(ctx context.Context, r store.Reader, st model
 	return avail.Upload(st, model.NewGeneration(), req, st.Now.Add(s.window))
 }
 
+// admitWriteObject replaces the payload of an existing object. It is an
+// overwrite that keeps the stored content type and labels, so it shares every
+// rule of UpdateObject: the etag check, the identical-bytes no-op, and the
+// in-flight guard.
+func (s *Service) admitWriteObject(ctx context.Context, r store.Reader, st model.Start, req model.WriteObjectRequest) (model.Admitted, error) {
+	head, err := r.Object(ctx, req.Path)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	return s.admitUpdateObject(ctx, r, st, req.AsUpdate(head))
+}
+
 func (s *Service) admitDeleteObject(ctx context.Context, r store.Reader, st model.Start, req model.DeleteObjectRequest) (model.Admitted, error) {
 	obj, err := r.Object(ctx, req.Path)
 	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {

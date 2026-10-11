@@ -242,6 +242,8 @@ func (s *Service) admit(ctx context.Context, r store.Reader, st model.Start, req
 		return s.admitPutObject(ctx, r, st, req)
 	case model.UpdateObjectRequest:
 		return s.admitUpdateObject(ctx, r, st, req)
+	case model.WriteObjectRequest:
+		return s.admitWriteObject(ctx, r, st, req)
 	case model.DeleteObjectRequest:
 		return s.admitDeleteObject(ctx, r, st, req)
 	default:

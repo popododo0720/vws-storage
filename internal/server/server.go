@@ -326,6 +326,40 @@ func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectReq
 	return s.submitUpload(ctx, in.GetRequestId(), req, contents)
 }
 
+// WriteObject implements ObjectService. It replaces the payload of an existing
+// object, including with a zero-length payload, and keeps content type and
+// labels. It never creates. Unset contents is INVALID_SPEC; contents above
+// maxInlineObject is INVALID_SPEC too, and stores nothing.
+func (s *Server) WriteObject(ctx context.Context, in *storagev1.WriteObjectRequest) (*longrunningpb.Operation, error) {
+	path, err := s.parseObjectName(in.GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if in.Contents == nil || len(in.Contents) > maxInlineObject {
+		return nil, toStatus(invalidSpec("contents"))
+	}
+	body := in.GetContents()
+	sum := sha256.Sum256(body)
+	if in.GetSha256() != "" {
+		parsed, err := model.ParseDigest(in.GetSha256())
+		if err != nil || parsed != sum {
+			return nil, toStatus(invalidSpec("sha256"))
+		}
+	}
+	ver, err := expectedVersion(in.GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	req := model.WriteObjectRequest{Path: path, Size: model.Bytes(len(body)), SHA256: sum, Expected: ver}
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
+	}
+	return s.submitUpload(ctx, in.GetRequestId(), req, body)
+}
+
 // ReadObject implements ObjectService. It returns the whole stored payload and
 // the object record it belongs to. A write that commits between the record
 // read and the byte fetch moves the head, so the read retries on the new head.
