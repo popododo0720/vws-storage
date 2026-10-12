@@ -55,7 +55,7 @@ func (s *Service) admitDeleteBucket(ctx context.Context, r store.Reader, st mode
 		return model.Admitted{}, err
 	}
 	if has {
-		return model.Admitted{}, fmt.Errorf("%w: bucket is not empty", model.ErrFailedPrecondition)
+		return model.Admitted{}, fmt.Errorf("%w: bucket is not empty", model.ErrDependencyMissing)
 	}
 	busy, err := r.InFlight(ctx, req.Bucket)
 	if err != nil {

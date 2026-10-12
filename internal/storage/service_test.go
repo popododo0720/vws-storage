@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,7 +252,7 @@ func (c *errNth) Err() error {
 	if c.n == c.at {
 		c.cancel()
 	}
-	return c.Context.Err()
+	return c.Context.Err() //nolint:wrapcheck // the test double must return the context's own error
 }
 
 func TestRunReturnsWhenCancelLandsBetweenChecks(t *testing.T) {
@@ -911,5 +912,22 @@ func TestBackendObjectNamesAreEmptyWhileCreating(t *testing.T) {
 	}
 	if got := svc.SnapshotObjectName(model.Snapshot{ID: sid, State: model.Available{}}); got != "fake-snap-1" {
 		t.Errorf("available snapshot: %q", got)
+	}
+}
+
+func TestPanicInAnOperationIsRetriedNotFatal(t *testing.T) {
+	blk := fake.NewBlock()
+	var once sync.Once
+	blk.AfterCall(func(fake.Call) {
+		once.Do(func() { panic("backend bug") })
+	})
+	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	op, err := svc.Submit(context.Background(), token(t, "panic-1"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, op.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
 	}
 }

@@ -201,12 +201,12 @@ func (s *Service) runObjectUpload(ctx context.Context, op model.Operation, w mod
 				return model.AbandonUpload(comp, now)
 			})
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	obs, statErr := s.object.Stat(ctx, w.Object)
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	purgeID := model.NewOperationID().WithProject(op.ID.Project())
 	return s.settle(ctx, func(r store.Reader, now time.Time) (model.Change, error) {
@@ -226,10 +226,10 @@ func (s *Service) runObjectUpload(ctx context.Context, op model.Operation, w mod
 		case statErr != nil && backend.IsPermanent(statErr):
 			return model.Compensate(run, statusOf(statErr), now), nil
 		case statErr != nil:
-			return run.Retry(statusOf(statErr), s.policy.next(run.Attempts(), now), now), nil
+			return run.Retry(statusOf(statErr), s.policy.next(run.Attempts(), now), now), nil //nolint:nilerr // the backend error is recorded on the retry change and the engine retries
 		}
 		if err := w.Check(obs); err != nil {
-			return model.Compensate(run, model.Status{Code: model.CodeFailedPrecondition, Message: err.Error()}, now), nil
+			return model.Compensate(run, model.Status{Code: model.CodeFailedPrecondition, Message: err.Error()}, now), nil //nolint:nilerr // a failed check is recorded on the compensating change
 		}
 		var head *model.Object
 		switch h, err := r.Object(ctx, w.Object.Path); {

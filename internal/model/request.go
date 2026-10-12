@@ -10,21 +10,31 @@ import (
 
 // Sentinel errors. internal/server maps each to one gRPC code.
 var (
-	ErrInvalidArgument    = errSentinel("invalid argument")
-	ErrNotFound           = errSentinel("not found")
-	ErrAlreadyExists      = errSentinel("already exists")
-	ErrFailedPrecondition = errSentinel("failed precondition")
+	ErrInvalidArgument    = sentinelError("invalid argument")
+	ErrNotFound           = sentinelError("not found")
+	ErrAlreadyExists      = sentinelError("already exists")
+	ErrFailedPrecondition = sentinelError("failed precondition")
 	// ErrTokenReused means the client token is bound to a different request.
-	ErrTokenReused = errSentinel("client token reused with a different request")
+	ErrTokenReused = sentinelError("client token reused with a different request")
 	// ErrStale means a stored row was not the record a Change was minted from.
-	ErrStale = errSentinel("stale change")
+	ErrStale = sentinelError("stale change")
 	// ErrETagMismatch means the caller sent an etag other than the stored version.
-	ErrETagMismatch = errSentinel("etag mismatch")
+	ErrETagMismatch = sentinelError("etag mismatch")
+	// ErrDependencyMissing is an ErrFailedPrecondition whose cause is a resource
+	// that must go first, such as a bucket that still holds objects. It prints
+	// as ErrFailedPrecondition.
+	ErrDependencyMissing error = refinedError{parent: ErrFailedPrecondition}
 )
 
-type errSentinel string
+// refinedError is a more specific sentinel that still matches its parent.
+type refinedError struct{ parent error }
 
-func (e errSentinel) Error() string { return string(e) }
+func (e refinedError) Error() string { return e.parent.Error() }
+func (e refinedError) Unwrap() error { return e.parent }
+
+type sentinelError string
+
+func (e sentinelError) Error() string { return string(e) }
 
 // Bytes is a size in bytes.
 type Bytes int64

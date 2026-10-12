@@ -52,9 +52,10 @@ func ref(t *testing.T, bucket, key string) model.ObjectRef {
 	return model.ObjectRef{Path: model.ObjectPath{Bucket: b, Key: k}, Generation: model.NewGeneration()}
 }
 
-func send(t *testing.T, loc model.Locator, body []byte) *http.Response {
+// send performs the request and returns the status and the full body.
+func send(t *testing.T, loc model.Locator, body []byte) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(loc.Method, loc.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), loc.Method, loc.URL, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +66,16 @@ func send(t *testing.T, loc model.Locator, body []byte) *http.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return resp
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, got
 }
 
 func TestBucketLifecycleIsIdempotent(t *testing.T) {
@@ -83,8 +92,8 @@ func TestBucketLifecycleIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp := send(t, loc, []byte("hi")); resp.StatusCode != http.StatusOK {
-		t.Fatalf("put status %d", resp.StatusCode)
+	if status, _ := send(t, loc, []byte("hi")); status != http.StatusOK {
+		t.Fatalf("put status %d", status)
 	}
 	if err := d.DeleteBucket(ctx, r.Path.Bucket); !errors.Is(err, backend.ErrBusy) {
 		t.Fatalf("non-empty delete: %v", err)
@@ -118,8 +127,8 @@ func TestStatReportsUploadedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp := send(t, loc, body); resp.StatusCode != http.StatusOK {
-		t.Fatalf("put status %d", resp.StatusCode)
+	if status, _ := send(t, loc, body); status != http.StatusOK {
+		t.Fatalf("put status %d", status)
 	}
 	obs, err := d.Stat(ctx, r)
 	if err != nil {
@@ -132,10 +141,8 @@ func TestStatReportsUploadedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := send(t, get, nil)
-	got, err := io.ReadAll(resp.Body)
-	if err != nil || !bytes.Equal(got, body) {
-		t.Fatalf("get %q err %v", got, err)
+	if _, got := send(t, get, nil); !bytes.Equal(got, body) {
+		t.Fatalf("get %q", got)
 	}
 	other := r
 	other.Generation = model.NewGeneration()
@@ -191,5 +198,36 @@ func TestProfilesAndOpenValidation(t *testing.T) {
 	}
 	if _, err := s3.Open(s3.Config{}); err == nil {
 		t.Fatal("empty config opened")
+	}
+}
+
+// A transport failure is not an S3 error code. Every call must return it
+// instead of reading it as success or as an empty answer.
+func TestTransportFailureIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	cfg, err := s3.ProfileConfig(s3.MinIO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Endpoint, cfg.AccessKey, cfg.SecretKey = srv.URL, "key", "secret"
+	d, err := s3.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r := ref(t, "logs", "a.txt")
+	if err := d.CreateBucket(ctx, r.Path.Bucket); err == nil {
+		t.Error("CreateBucket returned nil")
+	}
+	if err := d.DeleteBucket(ctx, r.Path.Bucket); err == nil {
+		t.Error("DeleteBucket returned nil")
+	}
+	if _, err := d.Stat(ctx, r); err == nil || errors.Is(err, backend.ErrNotFound) {
+		t.Errorf("Stat err = %v", err)
+	}
+	if err := d.DeleteObject(ctx, r); err == nil {
+		t.Error("DeleteObject returned nil")
 	}
 }

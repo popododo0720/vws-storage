@@ -54,7 +54,7 @@ func run(args []string) error {
 	s3Region := fs.String("s3-region", "", "S3 region; empty uses the profile default")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse flags: %w", err)
 	}
 	zones, err := parseZones(*zonesFlag)
 	if err != nil {
@@ -71,6 +71,7 @@ func run(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var lc net.ListenConfig
 
 	objs, err := openObjects(*objectBackend, *objectAddr, *s3Profile, *s3Endpoint, *s3Region)
 	if err != nil {
@@ -80,16 +81,18 @@ func run(args []string) error {
 	stopHTTP := func() {}
 	objectAt := *s3Endpoint
 	if objs.handler != nil {
-		httpLn, err := net.Listen("tcp", *objectAddr)
+		httpLn, err := lc.Listen(ctx, "tcp", *objectAddr)
 		if err != nil {
-			return err
+			return fmt.Errorf("listen %s: %w", *objectAddr, err)
 		}
 		httpSrv := &http.Server{Handler: objs.handler, ReadHeaderTimeout: 10 * time.Second}
 		go func() { httpErr <- httpSrv.Serve(httpLn) }()
 		stopHTTP = func() {
 			shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = httpSrv.Shutdown(shut)
+			if err := httpSrv.Shutdown(shut); err != nil {
+				log.Printf("vws-storage: object http shutdown: %v", err)
+			}
 		}
 		objectAt = httpLn.Addr().String()
 	}
@@ -108,15 +111,19 @@ func run(args []string) error {
 	runErr := make(chan error, 1)
 	go func() { runErr <- svc.Run(ctx) }()
 
-	grpcLn, err := net.Listen("tcp", *listen)
+	grpcLn, err := lc.Listen(ctx, "tcp", *listen)
 	if err != nil {
 		stop()
 		<-runErr
 		closeErr := svc.Close()
 		stopHTTP()
-		return errors.Join(err, closeErr)
+		return errors.Join(fmt.Errorf("listen %s: %w", *listen, err), closeErr)
 	}
-	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
+	gs := grpc.NewServer(
+		grpc.MaxRecvMsgSize(server.MaxRecvMsgSize),
+		grpc.ChainUnaryInterceptor(server.RecoverUnary),
+		grpc.ChainStreamInterceptor(server.RecoverStream),
+	)
 	server.Register(gs, svc, server.Config{Projects: projects})
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()

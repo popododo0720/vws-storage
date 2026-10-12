@@ -32,7 +32,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("kube: get claim: %w", err)
 	}
 	snaps := b.dyn.Resource(snapshotGVR).Namespace(b.ns)
 	vs := &unstructured.Unstructured{Object: map[string]any{
@@ -59,7 +59,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 		}
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("kube: create snapshot: %w", err)
 	}
 	return b.ready(ctx, cur)
 }
@@ -70,10 +70,10 @@ func (b *Block) SnapshotObjectName(id model.SnapshotID) string { return snapshot
 // DeleteSnapshot deletes the VolumeSnapshot. An absent one is not an error.
 func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 	err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Delete(ctx, snapshotName(id), metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("kube: delete snapshot: %w", err)
 	}
-	return err
+	return nil
 }
 
 func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) (*unstructured.Unstructured, error) {
@@ -82,7 +82,7 @@ func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) (*unstruc
 		return nil, backend.Permanent(fmt.Errorf("%w: snapshot", backend.ErrNotFound))
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("kube: get snapshot: %w", err)
 	}
 	return vs, b.ready(ctx, vs)
 }
@@ -100,10 +100,10 @@ var snapshotErrorGrace = 10 * time.Minute
 // annotation on the VolumeSnapshot, so it survives a restart. It is removed
 // when the error is gone.
 func (b *Block) ready(ctx context.Context, vs *unstructured.Unstructured) error {
-	if ok, _, _ := unstructured.NestedBool(vs.Object, "status", "readyToUse"); ok {
+	if nestedBool(vs, "status", "readyToUse") {
 		return nil
 	}
-	msg, _, _ := unstructured.NestedString(vs.Object, "status", "error", "message")
+	msg := nestedString(vs, "status", "error", "message")
 	ann := vs.GetAnnotations()
 	if ann == nil {
 		ann = map[string]string{}
@@ -131,13 +131,30 @@ func (b *Block) ready(ctx context.Context, vs *unstructured.Unstructured) error 
 
 func (b *Block) setAnnotations(ctx context.Context, vs *unstructured.Unstructured, ann map[string]string) error {
 	vs.SetAnnotations(ann)
-	_, err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Update(ctx, vs, metav1.UpdateOptions{})
-	return err
+	if _, err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Update(ctx, vs, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("kube: update snapshot annotations: %w", err)
+	}
+	return nil
+}
+
+// nestedBool and nestedString read a field the snapshotter writes. A value of
+// the wrong type is read as absent, the same as a missing field.
+func nestedBool(vs *unstructured.Unstructured, fields ...string) bool {
+	v, _, err := unstructured.NestedBool(vs.Object, fields...)
+	return err == nil && v
+}
+
+func nestedString(vs *unstructured.Unstructured, fields ...string) string {
+	v, _, err := unstructured.NestedString(vs.Object, fields...)
+	if err != nil {
+		return ""
+	}
+	return v
 }
 
 // restoreSize is status.restoreSize in bytes, when the snapshotter reported it.
 func restoreSize(vs *unstructured.Unstructured) (int64, bool) {
-	raw, _, _ := unstructured.NestedString(vs.Object, "status", "restoreSize")
+	raw := nestedString(vs, "status", "restoreSize")
 	if raw == "" {
 		return 0, false
 	}

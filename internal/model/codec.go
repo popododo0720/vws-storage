@@ -375,7 +375,11 @@ func MarshalRecord(r Record) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(envelope{Record: kind, Body: body})
+	out, err := json.Marshal(envelope{Record: kind, Body: body})
+	if err != nil {
+		return nil, fmt.Errorf("model: encode record: %w", err)
+	}
+	return out, nil
 }
 
 func marshalBody(r Record) ([]byte, string, error) {
@@ -392,7 +396,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Life   lifeWire          `json:"life"`
 			Meta   metaWire          `json:"meta"`
 		}{ID: r.ID.wire(), Spec: specTo(r.Spec), Labels: r.Labels.Map(), Life: life, Meta: metaTo(r.Meta)})
-		return b, "volume", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode volume: %w", err)
+		}
+		return b, "volume", nil
 	case Snapshot:
 		life, err := lifeTo(r.State)
 		if err != nil {
@@ -408,7 +415,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Life        lifeWire          `json:"life"`
 			Meta        metaWire          `json:"meta"`
 		}{ID: r.ID.wire(), Source: r.Source.wire(), Region: r.Region.String(), Labels: r.Labels.Map(), Description: r.Description, Size: int64(r.Size), Life: life, Meta: metaTo(r.Meta)})
-		return b, "snapshot", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode snapshot: %w", err)
+		}
+		return b, "snapshot", nil
 	case Bucket:
 		life, err := lifeTo(r.State)
 		if err != nil {
@@ -421,7 +431,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Life   lifeWire          `json:"life"`
 			Meta   metaWire          `json:"meta"`
 		}{Name: r.Name.wire(), Region: r.Region.String(), Labels: r.Labels.Map(), Life: life, Meta: metaTo(r.Meta)})
-		return b, "bucket", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode bucket: %w", err)
+		}
+		return b, "bucket", nil
 	case Object:
 		b, err := json.Marshal(struct {
 			Bucket      string            `json:"bucket"`
@@ -440,7 +453,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Size: int64(r.Size), ETag: string(r.ETag), SHA256: r.SHA256.String(), MD5: r.MD5.String(), ContentType: r.ContentType,
 			Labels: r.Labels.Map(), UploadedAt: timeTo(r.UploadedAt), Meta: metaTo(r.Meta),
 		})
-		return b, "object", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode object: %w", err)
+		}
+		return b, "object", nil
 	case Operation:
 		work, err := workTo(r.Work)
 		if err != nil {
@@ -457,7 +473,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Claim claimWire `json:"claim"`
 			Meta  metaWire  `json:"meta"`
 		}{ID: r.ID.wire(), Work: work, State: st, Claim: claimTo(r.Claim), Meta: metaTo(r.Meta)})
-		return b, "operation", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode operation: %w", err)
+		}
+		return b, "operation", nil
 	case TokenRecord:
 		b, err := json.Marshal(struct {
 			Project string    `json:"project,omitempty"`
@@ -465,7 +484,10 @@ func marshalBody(r Record) ([]byte, string, error) {
 			Op      string    `json:"op"`
 			Meta    metaWire  `json:"meta"`
 		}{Project: r.Project.String(), Claim: claimTo(r.Claim), Op: r.Op.wire(), Meta: metaTo(r.Meta)})
-		return b, "token", err
+		if err != nil {
+			return nil, "", fmt.Errorf("model: encode token: %w", err)
+		}
+		return b, "token", nil
 	default:
 		return nil, "", fmt.Errorf("record %T", r)
 	}
@@ -475,7 +497,7 @@ func marshalBody(r Record) ([]byte, string, error) {
 func UnmarshalRecord(data []byte) (Record, error) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("model: decode envelope: %w", err)
 	}
 	switch env.Record {
 	case "volume":
@@ -487,7 +509,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta   metaWire          `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		id, err := ParseVolumeID(w.ID)
 		if err != nil {
@@ -518,7 +540,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta        metaWire          `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		id, err := ParseSnapshotID(w.ID)
 		if err != nil {
@@ -557,7 +579,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta   metaWire          `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		name, err := ParseBucketName(w.Name)
 		if err != nil {
@@ -594,7 +616,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta        metaWire          `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		b, err := ParseBucketName(w.Bucket)
 		if err != nil {
@@ -634,7 +656,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta  metaWire  `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		id, err := ParseOperationID(w.ID)
 		if err != nil {
@@ -661,7 +683,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			Meta    metaWire  `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
 		}
 		claim, err := claimFrom(w.Claim)
 		if err != nil {
