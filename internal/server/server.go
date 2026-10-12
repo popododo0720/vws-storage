@@ -5,11 +5,13 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
@@ -747,6 +749,20 @@ func putBytes(ctx context.Context, loc model.Locator, body []byte) (err error) {
 	defer closeBody(resp.Body, &err)
 	if resp.StatusCode/100 != 2 {
 		return statusErr(resp)
+	}
+	return checkPutETag(resp.Header.Get("ETag"), body)
+}
+
+// checkPutETag compares a single-part MD5 ETag from the PUT response with the
+// bytes sent. It is the integrity check when the store reports no SHA-256.
+// An absent ETag or one that is not an MD5 (multipart) is not compared.
+func checkPutETag(etag string, body []byte) error {
+	got, err := model.ParseMD5(strings.Trim(etag, `"`))
+	if err != nil {
+		return nil //nolint:nilerr // not an MD5 ETag, so there is nothing to compare
+	}
+	if got != model.MD5(md5.Sum(body)) {
+		return errors.New("uploaded bytes do not match the PUT response md5")
 	}
 	return nil
 }
