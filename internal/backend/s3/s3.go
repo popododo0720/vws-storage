@@ -26,6 +26,8 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
+	"github.com/popododo0720/vws-lib/obs"
+
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
 )
@@ -275,7 +277,8 @@ func (d *Driver) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 // PresignPut signs a PUT that fixes the body length, carries the SHA-256 when
 // one is given so the server verifies it, and fails if the key exists.
 // The returned headers must be sent with the request.
-func (d *Driver) PresignPut(ctx context.Context, ref model.ObjectRef, size model.Bytes, sha model.Digest, expires time.Time) (model.Locator, error) {
+func (d *Driver) PresignPut(ctx context.Context, ref model.ObjectRef, size model.Bytes, sha model.Digest, expires time.Time) (_ model.Locator, err error) {
+	defer countPresignError(ctx, "presign_put", &err)
 	ttl, err := d.ttl(expires)
 	if err != nil {
 		return model.Locator{}, err
@@ -297,7 +300,8 @@ func (d *Driver) PresignPut(ctx context.Context, ref model.ObjectRef, size model
 }
 
 // PresignGet signs a GET.
-func (d *Driver) PresignGet(ctx context.Context, ref model.ObjectRef, expires time.Time) (model.Locator, error) {
+func (d *Driver) PresignGet(ctx context.Context, ref model.ObjectRef, expires time.Time) (_ model.Locator, err error) {
+	defer countPresignError(ctx, "presign_get", &err)
 	ttl, err := d.ttl(expires)
 	if err != nil {
 		return model.Locator{}, err
@@ -311,6 +315,30 @@ func (d *Driver) PresignGet(ctx context.Context, ref model.ObjectRef, expires ti
 }
 
 // ttl rounds down to whole seconds so the URL never outlives expires.
+// metricService is the service label of the S3 metrics.
+const metricService = "vws-storage"
+
+// countPresignError counts a failed presign in vws.aws.errors by its S3 error
+// code. Labels are the action and the code only: never a bucket, key, or id.
+func countPresignError(ctx context.Context, action string, err *error) {
+	if *err == nil {
+		return
+	}
+	obs.M().AWSError(ctx, metricService, action, presignCode(*err))
+}
+
+// presignCode is a small fixed set: the S3 error code when there is one.
+func presignCode(err error) string {
+	switch c := code(err); {
+	case c != "":
+		return c
+	case errors.Is(err, backend.ErrInvalid):
+		return "InvalidExpiry"
+	default:
+		return "ClientError"
+	}
+}
+
 func (d *Driver) ttl(expires time.Time) (time.Duration, error) {
 	ttl := expires.Sub(d.now()).Truncate(time.Second)
 	if ttl < time.Second {

@@ -33,6 +33,7 @@ func (s *Service) Run(ctx context.Context) error {
 	done := make(chan drove, s.workers)
 	ticker := time.NewTicker(s.scanInterval)
 	defer ticker.Stop()
+	s.sampleQueue(ctx)
 	for {
 		// Sample the context once. A second Err call can observe a cancel that
 		// the exit check missed and then drop ctx.Done from the select, which
@@ -62,6 +63,7 @@ func (s *Service) Run(ctx context.Context) error {
 				hold[d.id] = s.now().Add(s.policy.base)
 			}
 		case <-tick:
+			s.sampleQueue(ctx)
 		}
 	}
 }

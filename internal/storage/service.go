@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
@@ -79,6 +80,8 @@ type Service struct {
 
 	workers      int
 	scanInterval time.Duration
+	queueDepth   atomic.Int64
+	queueOldest  atomic.Int64 // unix nanos of the oldest non-terminal operation, 0 for none
 	wake         chan model.OperationID
 
 	mu      sync.Mutex

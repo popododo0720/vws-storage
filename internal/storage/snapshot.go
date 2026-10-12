@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/popododo0720/vws-lib/obs"
+
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
 )
@@ -109,7 +111,11 @@ func (s *Service) admitDeleteSnapshot(ctx context.Context, r store.Reader, st mo
 	return avail.Delete(st)
 }
 
-func (s *Service) runSnapshotCreation(ctx context.Context, op model.Operation, w model.SnapshotCreation) error {
+// SnapshotReadyController labels the snapshot readyToUse wait in
+// vws.reconcile.duration.
+const SnapshotReadyController = "snapshot_ready"
+
+func (s *Service) runSnapshotCreation(ctx context.Context, op model.Operation, w model.SnapshotCreation) (err error) {
 	if _, ok := model.AsCompensating[model.SnapshotCreation](op); ok {
 		return undo(ctx, s, op.ID,
 			func(ctx context.Context) error { return s.block.DeleteSnapshot(ctx, w.Snapshot) },
@@ -129,6 +135,15 @@ func (s *Service) runSnapshotCreation(ctx context.Context, op model.Operation, w
 			})
 	}
 	callErr := s.block.CreateSnapshot(ctx, w.Snapshot, w.Source)
+	if callErr == nil {
+		// The backend answers nil once the snapshot is readyToUse; the wait is
+		// the time since the operation was created, retries included.
+		defer func() {
+			if err == nil {
+				obs.M().Reconcile(ctx, SnapshotReadyController, "ready", s.now().Sub(op.Meta.CreateTime))
+			}
+		}()
+	}
 	return finish(ctx, s, op.ID, callErr,
 		func(run model.RunningOp[model.SnapshotCreation], r store.Reader, now time.Time) (model.Change, error) {
 			snap, err := r.Snapshot(ctx, w.Snapshot)

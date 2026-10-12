@@ -127,6 +127,7 @@ func run(args []string) error {
 		stopHTTP()
 		return err
 	}
+	obs.M().RegisterQueue(storage.QueueName, svc.QueueDepth, svc.QueueOldest)
 	runErr := make(chan error, 1)
 	go func() { runErr <- svc.Run(ctx) }()
 
