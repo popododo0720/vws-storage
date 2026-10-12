@@ -24,7 +24,11 @@ func Run(t *testing.T, open OpenFunc) {
 func roundTrip(t *testing.T, open OpenFunc) {
 	ctx := context.Background()
 	st := open(t)
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	admitted := admitVolume(t, now)
 	if err := st.Update(ctx, func(store.Reader) (model.Change, error) {
@@ -37,7 +41,7 @@ func roundTrip(t *testing.T, open OpenFunc) {
 	}); !errors.Is(err, model.ErrStale) {
 		t.Fatalf("second insert err = %v", err)
 	}
-	got, err := st.Volume(ctx, admitted.Op.Work.(model.VolumeCreation).Volume)
+	got, err := st.Volume(ctx, creationVolume(t, admitted))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +114,17 @@ func roundTrip(t *testing.T, open OpenFunc) {
 func runnable(t *testing.T, open OpenFunc) {
 	ctx := context.Background()
 	st := open(t)
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	admitted := admitVolume(t, now)
 	if err := st.Update(ctx, func(store.Reader) (model.Change, error) { return admitted.Change, nil }); err != nil {
 		t.Fatal(err)
 	}
-	id := admitted.Op.Work.(model.VolumeCreation).Volume
+	id := creationVolume(t, admitted)
 	busy, err := st.InFlight(ctx, id)
 	if err != nil || !busy {
 		t.Fatalf("inflight %v %v", busy, err)
@@ -198,4 +206,13 @@ func volumeFrom(t *testing.T, ch model.Change) model.Volume {
 	}
 	t.Fatal("no volume")
 	return model.Volume{}
+}
+
+func creationVolume(t *testing.T, a model.Admitted) model.VolumeID {
+	t.Helper()
+	w, ok := a.Op.Work.(model.VolumeCreation)
+	if !ok {
+		t.Fatalf("work is %T, want VolumeCreation", a.Op.Work)
+	}
+	return w.Volume
 }

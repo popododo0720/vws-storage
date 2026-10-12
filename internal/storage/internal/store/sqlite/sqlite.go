@@ -5,6 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,20 +49,19 @@ func Open(ctx context.Context, path string) (store.Store, error) {
 	// SQLite rejects that, and the driver reports it as "SQL logic error: out of memory".
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: resolve %q: %w", path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: create directory: %w", err)
 	}
 	db, err := sql.Open("sqlite", sqliteDSN(abs))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	s := &dbStore{sql: db}
 	if err := s.migrate(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, errors.Join(err, db.Close())
 	}
 	return s, nil
 }
@@ -78,38 +80,47 @@ type dbStore struct {
 	tx  *sql.Tx
 }
 
-func (s *dbStore) Close() error { return s.sql.Close() }
+func (s *dbStore) Close() error {
+	if err := s.sql.Close(); err != nil {
+		return fmt.Errorf("sqlite: close: %w", err)
+	}
+	return nil
+}
 
 func (s *dbStore) migrate(ctx context.Context) error {
 	// BEGIN IMMEDIATE takes the write lock. locking_mode=EXCLUSIVE keeps it
 	// until the connection closes, so a second process fails here.
 	if _, err := s.sql.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return err
+		return fmt.Errorf("sqlite: begin migration: %w", err)
 	}
 	committed := false
 	defer func() {
-		if !committed {
-			_, _ = s.sql.ExecContext(context.Background(), `ROLLBACK`)
+		if committed {
+			return
+		}
+		// The rollback must run even when ctx is already cancelled.
+		if _, err := s.sql.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`); err != nil {
+			log.Printf("vws-storage: sqlite: rollback migration: %v", err)
 		}
 	}()
 	var v int
 	if err := s.sql.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
-		return err
+		return fmt.Errorf("sqlite: read schema version: %w", err)
 	}
 	switch v {
 	case 1:
 	case 0:
 		if _, err := s.sql.ExecContext(ctx, schema); err != nil {
-			return err
+			return fmt.Errorf("sqlite: create schema: %w", err)
 		}
 		if _, err := s.sql.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
-			return err
+			return fmt.Errorf("sqlite: set schema version: %w", err)
 		}
 	default:
 		return errSchema(v)
 	}
 	if _, err := s.sql.ExecContext(ctx, `COMMIT`); err != nil {
-		return err
+		return fmt.Errorf("sqlite: commit migration: %w", err)
 	}
 	committed = true
 	return nil
@@ -126,20 +137,35 @@ func (s *dbStore) Update(ctx context.Context, fn func(store.Reader) (model.Chang
 	defer s.mu.Unlock()
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("sqlite: begin: %w", err)
 	}
 	s.tx = tx
 	defer func() { s.tx = nil }()
 	ch, err := fn(view{s})
 	if err != nil {
-		_ = tx.Rollback()
-		return err
+		return errors.Join(err, rollback(tx))
 	}
 	if err := store.Apply(ctx, s, ch); err != nil {
-		_ = tx.Rollback()
-		return err
+		return errors.Join(err, rollback(tx))
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: commit: %w", err)
+	}
+	return nil
+}
+
+// closeInto joins a Close error into *err.
+func closeInto(c io.Closer, err *error) {
+	if cerr := c.Close(); cerr != nil {
+		*err = errors.Join(*err, fmt.Errorf("sqlite: close rows: %w", cerr))
+	}
+}
+
+func rollback(tx *sql.Tx) error {
+	if err := tx.Rollback(); err != nil {
+		return fmt.Errorf("sqlite: rollback: %w", err)
+	}
+	return nil
 }
 
 func (s *dbStore) lock(fn func() error) error {
@@ -295,7 +321,7 @@ func (v view) Volume(ctx context.Context, id model.VolumeID) (model.Volume, erro
 	if err != nil {
 		return model.Volume{}, err
 	}
-	return rec.(model.Volume), nil
+	return store.Cast[model.Volume](rec)
 }
 
 func (v view) ListVolumes(ctx context.Context, after model.VolumeID, limit int) ([]model.Volume, error) {
@@ -305,7 +331,10 @@ func (v view) ListVolumes(ctx context.Context, after model.VolumeID, limit int) 
 	}
 	var out []model.Volume
 	for _, rec := range all {
-		vol := rec.(model.Volume)
+		vol, err := store.Cast[model.Volume](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && vol.ID.String() <= after.String() {
 			continue
 		}
@@ -320,7 +349,7 @@ func (v view) Snapshot(ctx context.Context, id model.SnapshotID) (model.Snapshot
 	if err != nil {
 		return model.Snapshot{}, err
 	}
-	return rec.(model.Snapshot), nil
+	return store.Cast[model.Snapshot](rec)
 }
 
 func (v view) ListSnapshots(ctx context.Context, after model.SnapshotID, limit int) ([]model.Snapshot, error) {
@@ -330,7 +359,10 @@ func (v view) ListSnapshots(ctx context.Context, after model.SnapshotID, limit i
 	}
 	var out []model.Snapshot
 	for _, rec := range all {
-		snap := rec.(model.Snapshot)
+		snap, err := store.Cast[model.Snapshot](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && snap.ID.String() <= after.String() {
 			continue
 		}
@@ -345,7 +377,7 @@ func (v view) Bucket(ctx context.Context, name model.BucketName) (model.Bucket, 
 	if err != nil {
 		return model.Bucket{}, err
 	}
-	return rec.(model.Bucket), nil
+	return store.Cast[model.Bucket](rec)
 }
 
 func (v view) ListBuckets(ctx context.Context, after model.BucketName, limit int) ([]model.Bucket, error) {
@@ -355,7 +387,10 @@ func (v view) ListBuckets(ctx context.Context, after model.BucketName, limit int
 	}
 	var out []model.Bucket
 	for _, rec := range all {
-		b := rec.(model.Bucket)
+		b, err := store.Cast[model.Bucket](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && b.Name.String() <= after.String() {
 			continue
 		}
@@ -370,7 +405,7 @@ func (v view) Object(ctx context.Context, p model.ObjectPath) (model.Object, err
 	if err != nil {
 		return model.Object{}, err
 	}
-	return rec.(model.Object), nil
+	return store.Cast[model.Object](rec)
 }
 
 func (v view) ListObjects(ctx context.Context, b model.BucketName, prefix string, after model.ObjectKey, limit int) ([]model.Object, error) {
@@ -380,7 +415,10 @@ func (v view) ListObjects(ctx context.Context, b model.BucketName, prefix string
 	}
 	var out []model.Object
 	for _, rec := range all {
-		o := rec.(model.Object)
+		o, err := store.Cast[model.Object](rec)
+		if err != nil {
+			return nil, err
+		}
 		if o.Path.Bucket != b || !strings.HasPrefix(o.Path.Key.String(), prefix) {
 			continue
 		}
@@ -399,7 +437,11 @@ func (v view) HasObjects(ctx context.Context, b model.BucketName) (bool, error) 
 		return false, err
 	}
 	for _, rec := range all {
-		if rec.(model.Object).Path.Bucket == b {
+		o, err := store.Cast[model.Object](rec)
+		if err != nil {
+			return false, err
+		}
+		if o.Path.Bucket == b {
 			return true, nil
 		}
 	}
@@ -411,7 +453,7 @@ func (v view) Operation(ctx context.Context, id model.OperationID) (model.Operat
 	if err != nil {
 		return model.Operation{}, err
 	}
-	return rec.(model.Operation), nil
+	return store.Cast[model.Operation](rec)
 }
 
 func (v view) ListOperations(ctx context.Context, f store.OperationFilter, after model.OperationID, limit int) ([]model.Operation, error) {
@@ -422,7 +464,7 @@ func (v view) ListOperations(ctx context.Context, f store.OperationFilter, after
 	return store.PageOperations(all, f, after, limit), nil
 }
 
-func (v view) Runnable(ctx context.Context, now time.Time, limit int) ([]model.Operation, error) {
+func (v view) Runnable(ctx context.Context, now time.Time, limit int) (out []model.Operation, err error) {
 	if limit <= 0 {
 		limit = 1000000
 	}
@@ -433,22 +475,28 @@ func (v view) Runnable(ctx context.Context, now time.Time, limit int) ([]model.O
 		ORDER BY s.not_before, s.id
 		LIMIT ?`, unixMicro(now), limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: runnable: %w", err)
 	}
-	defer rows.Close()
-	var out []model.Operation
+	defer closeInto(rows, &err)
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("sqlite: scan runnable: %w", err)
 		}
 		rec, err := model.UnmarshalRecord(payload)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, rec.(model.Operation))
+		op, err := store.Cast[model.Operation](rec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, op)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: runnable: %w", err)
+	}
+	return out, nil
 }
 
 func (v view) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
@@ -460,7 +508,10 @@ func (v view) InFlight(ctx context.Context, ref model.Ref) (bool, error) {
 		SELECT COUNT(*) FROM op_refs r
 		JOIN op_sched s ON s.id = r.op
 		WHERE r.ref = ? AND s.terminal = 0`, ref.String()).Scan(&n)
-	return n > 0, err
+	if err != nil {
+		return false, fmt.Errorf("sqlite: in flight: %w", err)
+	}
+	return n > 0, nil
 }
 
 func (v view) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord, error) {
@@ -468,7 +519,7 @@ func (v view) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord,
 	if err != nil {
 		return model.TokenRecord{}, err
 	}
-	return rec.(model.TokenRecord), nil
+	return store.Cast[model.TokenRecord](rec)
 }
 
 func (v view) ops(ctx context.Context) ([]model.Operation, error) {
@@ -478,7 +529,11 @@ func (v view) ops(ctx context.Context) ([]model.Operation, error) {
 	}
 	out := make([]model.Operation, 0, len(all))
 	for _, rec := range all {
-		out = append(out, rec.(model.Operation))
+		op, err := store.Cast[model.Operation](rec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, op)
 	}
 	return out, nil
 }
@@ -494,7 +549,7 @@ func (s *dbStore) Get(ctx context.Context, key model.Key) (model.Record, error) 
 		return nil, model.ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: get %s: %w", kind, err)
 	}
 	return model.UnmarshalRecord(payload)
 }
@@ -564,17 +619,16 @@ func (s *dbStore) ClearRefs(ctx context.Context, id model.OperationID) error {
 	return err
 }
 
-func (s *dbStore) byKind(ctx context.Context, kind string) ([]model.Record, error) {
+func (s *dbStore) byKind(ctx context.Context, kind string) (out []model.Record, err error) {
 	rows, err := s.query().QueryContext(ctx, `SELECT payload FROM records WHERE kind = ?`, kind)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: list %s: %w", kind, err)
 	}
-	defer rows.Close()
-	var out []model.Record
+	defer closeInto(rows, &err)
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("sqlite: scan %s: %w", kind, err)
 		}
 		rec, err := model.UnmarshalRecord(payload)
 		if err != nil {
@@ -582,7 +636,10 @@ func (s *dbStore) byKind(ctx context.Context, kind string) ([]model.Record, erro
 		}
 		out = append(out, rec)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list %s: %w", kind, err)
+	}
+	return out, nil
 }
 
 func (s *dbStore) query() querier {

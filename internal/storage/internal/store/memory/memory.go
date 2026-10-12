@@ -162,13 +162,16 @@ func (v view) Volume(_ context.Context, id model.VolumeID) (model.Volume, error)
 	if err != nil {
 		return model.Volume{}, err
 	}
-	return rec.(model.Volume), nil
+	return store.Cast[model.Volume](rec)
 }
 
 func (v view) ListVolumes(_ context.Context, after model.VolumeID, limit int) ([]model.Volume, error) {
 	var out []model.Volume
 	for _, rec := range v.m.rows["volume"] {
-		vol := rec.(model.Volume)
+		vol, err := store.Cast[model.Volume](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && vol.ID.String() <= after.String() {
 			continue
 		}
@@ -183,13 +186,16 @@ func (v view) Snapshot(_ context.Context, id model.SnapshotID) (model.Snapshot, 
 	if err != nil {
 		return model.Snapshot{}, err
 	}
-	return rec.(model.Snapshot), nil
+	return store.Cast[model.Snapshot](rec)
 }
 
 func (v view) ListSnapshots(_ context.Context, after model.SnapshotID, limit int) ([]model.Snapshot, error) {
 	var out []model.Snapshot
 	for _, rec := range v.m.rows["snapshot"] {
-		s := rec.(model.Snapshot)
+		s, err := store.Cast[model.Snapshot](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && s.ID.String() <= after.String() {
 			continue
 		}
@@ -204,13 +210,16 @@ func (v view) Bucket(_ context.Context, name model.BucketName) (model.Bucket, er
 	if err != nil {
 		return model.Bucket{}, err
 	}
-	return rec.(model.Bucket), nil
+	return store.Cast[model.Bucket](rec)
 }
 
 func (v view) ListBuckets(_ context.Context, after model.BucketName, limit int) ([]model.Bucket, error) {
 	var out []model.Bucket
 	for _, rec := range v.m.rows["bucket"] {
-		b := rec.(model.Bucket)
+		b, err := store.Cast[model.Bucket](rec)
+		if err != nil {
+			return nil, err
+		}
 		if after.String() != "" && b.Name.String() <= after.String() {
 			continue
 		}
@@ -225,13 +234,16 @@ func (v view) Object(_ context.Context, p model.ObjectPath) (model.Object, error
 	if err != nil {
 		return model.Object{}, err
 	}
-	return rec.(model.Object), nil
+	return store.Cast[model.Object](rec)
 }
 
 func (v view) ListObjects(_ context.Context, b model.BucketName, prefix string, after model.ObjectKey, limit int) ([]model.Object, error) {
 	var out []model.Object
 	for _, rec := range v.m.rows["object"] {
-		o := rec.(model.Object)
+		o, err := store.Cast[model.Object](rec)
+		if err != nil {
+			return nil, err
+		}
 		if o.Path.Bucket != b || !strings.HasPrefix(o.Path.Key.String(), prefix) {
 			continue
 		}
@@ -246,7 +258,11 @@ func (v view) ListObjects(_ context.Context, b model.BucketName, prefix string, 
 
 func (v view) HasObjects(_ context.Context, b model.BucketName) (bool, error) {
 	for _, rec := range v.m.rows["object"] {
-		if rec.(model.Object).Path.Bucket == b {
+		o, err := store.Cast[model.Object](rec)
+		if err != nil {
+			return false, err
+		}
+		if o.Path.Bucket == b {
 			return true, nil
 		}
 	}
@@ -258,16 +274,24 @@ func (v view) Operation(_ context.Context, id model.OperationID) (model.Operatio
 	if err != nil {
 		return model.Operation{}, err
 	}
-	return rec.(model.Operation), nil
+	return store.Cast[model.Operation](rec)
 }
 
 func (v view) ListOperations(_ context.Context, f store.OperationFilter, after model.OperationID, limit int) ([]model.Operation, error) {
-	return store.PageOperations(v.allOps(), f, after, limit), nil
+	all, err := v.allOps()
+	if err != nil {
+		return nil, err
+	}
+	return store.PageOperations(all, f, after, limit), nil
 }
 
 func (v view) Runnable(_ context.Context, now time.Time, limit int) ([]model.Operation, error) {
+	all, err := v.allOps()
+	if err != nil {
+		return nil, err
+	}
 	var out []model.Operation
-	for _, op := range v.allOps() {
+	for _, op := range all {
 		terminal, notBefore := op.Schedule()
 		if terminal || notBefore.After(now) {
 			continue
@@ -294,7 +318,11 @@ func (v view) InFlight(_ context.Context, ref model.Ref) (bool, error) {
 		if !ok {
 			continue
 		}
-		if !rec.(model.Operation).Terminal() {
+		op, err := store.Cast[model.Operation](rec)
+		if err != nil {
+			return false, err
+		}
+		if !op.Terminal() {
 			return true, nil
 		}
 	}
@@ -306,15 +334,19 @@ func (v view) Token(_ context.Context, tok model.TokenKey) (model.TokenRecord, e
 	if err != nil {
 		return model.TokenRecord{}, err
 	}
-	return rec.(model.TokenRecord), nil
+	return store.Cast[model.TokenRecord](rec)
 }
 
-func (v view) allOps() []model.Operation {
+func (v view) allOps() ([]model.Operation, error) {
 	out := make([]model.Operation, 0, len(v.m.rows["operation"]))
 	for _, rec := range v.m.rows["operation"] {
-		out = append(out, rec.(model.Operation))
+		op, err := store.Cast[model.Operation](rec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, op)
 	}
-	return out
+	return out, nil
 }
 
 func (m *mem) Get(_ context.Context, key model.Key) (model.Record, error) {
