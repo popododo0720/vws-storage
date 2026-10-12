@@ -1,6 +1,6 @@
 // Command vws-storage serves the storage control plane over gRPC.
-// The object backend is the in-process fake. The block backend is the fake or
-// Kubernetes, chosen by -block-backend.
+// -block-backend picks the fake or Kubernetes. -object-backend picks the
+// in-process fake or an S3-compatible endpoint (Ceph RGW or MinIO).
 package main
 
 import (
@@ -22,6 +22,7 @@ import (
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/backend/kube"
+	"github.com/popododo0720/vws-storage/internal/backend/s3"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/server"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -47,6 +48,10 @@ func run(args []string) error {
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
 	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for ssd volumes")
 	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots")
+	objectBackend := fs.String("object-backend", "fake", "object backend: fake or s3")
+	s3Profile := fs.String("s3-profile", string(s3.RGW), "endpoint profile for -object-backend=s3: rgw or minio")
+	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint URL for -object-backend=s3")
+	s3Region := fs.String("s3-region", "", "S3 region; empty uses the profile default")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -67,18 +72,26 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	objs := fake.NewObjects(fake.ObjectOptions{BaseURL: "http://" + *objectAddr})
-	httpLn, err := net.Listen("tcp", *objectAddr)
+	objs, err := openObjects(*objectBackend, *objectAddr, *s3Profile, *s3Endpoint, *s3Region)
 	if err != nil {
 		return err
 	}
-	httpSrv := &http.Server{Handler: objs.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	httpErr := make(chan error, 1)
-	go func() { httpErr <- httpSrv.Serve(httpLn) }()
-	stopHTTP := func() {
-		shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shut)
+	stopHTTP := func() {}
+	objectAt := *s3Endpoint
+	if objs.handler != nil {
+		httpLn, err := net.Listen("tcp", *objectAddr)
+		if err != nil {
+			return err
+		}
+		httpSrv := &http.Server{Handler: objs.handler, ReadHeaderTimeout: 10 * time.Second}
+		go func() { httpErr <- httpSrv.Serve(httpLn) }()
+		stopHTTP = func() {
+			shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(shut)
+		}
+		objectAt = httpLn.Addr().String()
 	}
 
 	store := storage.Memory()
@@ -86,7 +99,7 @@ func run(args []string) error {
 		store = storage.SQLite(*db)
 	}
 	svc, err := storage.Open(context.Background(), storage.Options{
-		Store: store, Block: block, Object: objs, Signer: objs, Zones: zones,
+		Store: store, Block: block, Object: objs.object, Signer: objs.signer, Zones: zones,
 	})
 	if err != nil {
 		stopHTTP()
@@ -107,7 +120,7 @@ func run(args []string) error {
 	server.Register(gs, svc, server.Config{Projects: projects})
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
-	log.Printf("grpc %s object %s", grpcLn.Addr(), httpLn.Addr())
+	log.Printf("grpc %s object %s", grpcLn.Addr(), objectAt)
 
 	var serveErr error
 	select {
@@ -129,6 +142,39 @@ func run(args []string) error {
 }
 
 const defaultZones = "vws-1a"
+
+type objects struct {
+	object  backend.Object
+	signer  backend.Signer
+	handler http.Handler // serves the fake's presigned URLs. nil for s3.
+}
+
+// openObjects reads the S3 keys from VWS_S3_ACCESS_KEY and VWS_S3_SECRET_KEY,
+// so a secret never appears in the process arguments.
+func openObjects(name, fakeAddr, profile, endpoint, region string) (objects, error) {
+	switch name {
+	case "fake":
+		o := fake.NewObjects(fake.ObjectOptions{BaseURL: "http://" + fakeAddr})
+		return objects{object: o, signer: o, handler: o.Handler()}, nil
+	case "s3":
+		cfg, err := s3.ProfileConfig(s3.Profile(profile))
+		if err != nil {
+			return objects{}, err
+		}
+		cfg.Endpoint = endpoint
+		if region != "" {
+			cfg.Region = region
+		}
+		cfg.AccessKey, cfg.SecretKey = os.Getenv("VWS_S3_ACCESS_KEY"), os.Getenv("VWS_S3_SECRET_KEY")
+		d, err := s3.Open(cfg)
+		if err != nil {
+			return objects{}, err
+		}
+		return objects{object: d, signer: d}, nil
+	default:
+		return objects{}, fmt.Errorf("%w: object backend %q", model.ErrInvalidArgument, name)
+	}
+}
 
 func openBlock(name string, cfg kube.Config) (backend.Block, error) {
 	switch name {

@@ -17,12 +17,18 @@ go run ./cmd/vws-storage
 | `-zones` | `vws-1a` | Comma-separated zone names |
 | `-projects` | empty | Comma-separated project ids. Empty accepts any valid project id |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
+| `-object-backend` | `fake` | `fake` or `s3` |
+| `-s3-profile` | `rgw` | `rgw` or `minio`. Both default to path-style addressing and region `us-east-1` |
+| `-s3-endpoint` | empty | S3 endpoint URL for `s3` |
+| `-s3-region` | profile default | S3 region |
 | `-block-backend` | `fake` | `fake` or `kube` |
 | `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
 | `-kube-namespace` | `default` | namespace for claims and snapshots |
 | `-kube-class-standard` | `ceph-block` | StorageClass for `standard` volumes |
 | `-kube-class-ssd` | `ceph-block` | StorageClass for `ssd` volumes |
 | `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots |
+
+S3 keys come from `VWS_S3_ACCESS_KEY` and `VWS_S3_SECRET_KEY`, never from flags.
 
 One process may open a given SQLite file.
 
@@ -41,6 +47,16 @@ One process may open a given SQLite file.
 - The tests install the external-snapshotter `VolumeSnapshot` CRD from `testdata` (v8.2.0).
 
 The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p path`). Without it the package skips.
+
+## S3 object backend
+
+`internal/backend/s3` implements `backend.Object` and `backend.Signer` for Ceph RGW and MinIO with one driver. `cmd/vws-storage -object-backend=s3` selects it. The contract is the existing one. Bytes move by presigned URL. The driver creates and deletes buckets, `Stat`s a generation, and deletes a generation. Listing, `request_id` replay, and the md5 the API reports stay in the engine and store.
+
+- A VWS bucket maps to the S3 bucket `vws-` plus a hash of its full name. An object generation is the key `<generation>/<key>`.
+- `PresignPut` signs `Content-Length`, `If-None-Match: *`, and `x-amz-checksum-sha256` when a digest is given. The locator carries these headers and the client must send them. The expiry is rounded down to whole seconds.
+- `Stat` reads the SHA-256 from the stored checksum and the MD5 from the ETag. The ETag is the payload MD5 only for a single-part upload without server-side encryption. Otherwise MD5 is zero.
+- `CreateBucket`, `DeleteBucket`, and `DeleteObject` are safe to repeat. A bucket that still holds objects is `ErrBusy`.
+- Tests use an in-process S3 server (gofakes3). `TestLiveEndpoint` runs against a real endpoint when `VWS_S3_TEST_ENDPOINT`, `VWS_S3_TEST_PROFILE`, and the two key variables are set, and skips otherwise.
 
 ## Operations
 

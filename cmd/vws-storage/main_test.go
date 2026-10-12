@@ -32,3 +32,28 @@ func TestBlockBackendSelection(t *testing.T) {
 		t.Fatalf("fake: %v", err)
 	}
 }
+
+func TestObjectBackendSelection(t *testing.T) {
+	t.Setenv("VWS_S3_ACCESS_KEY", "")
+	t.Setenv("VWS_S3_SECRET_KEY", "")
+	for name, args := range map[string][]string{
+		"unknown backend": {"-object-backend=nope"},
+		"unknown profile": {"-object-backend=s3", "-s3-profile=ceph", "-s3-endpoint=http://127.0.0.1:1"},
+		"no endpoint":     {"-object-backend=s3"},
+		"no keys":         {"-object-backend=s3", "-s3-endpoint=http://127.0.0.1:1"},
+	} {
+		if err := run(args); err == nil {
+			t.Fatalf("%s: run succeeded", name)
+		}
+	}
+	t.Setenv("VWS_S3_ACCESS_KEY", "k")
+	t.Setenv("VWS_S3_SECRET_KEY", "s")
+	o, err := openObjects("s3", "", "minio", "http://127.0.0.1:1", "")
+	if err != nil || o.handler != nil || o.object == nil || o.signer == nil {
+		t.Fatalf("s3: %+v %v", o, err)
+	}
+	f, err := openObjects("fake", "127.0.0.1:0", "", "", "")
+	if err != nil || f.handler == nil {
+		t.Fatalf("fake: %+v %v", f, err)
+	}
+}
