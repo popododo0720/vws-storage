@@ -72,8 +72,11 @@ func TestExpandGrowsAndRejectsShrink(t *testing.T) {
 	if !errors.Is(err, backend.ErrNotFound) {
 		t.Fatalf("absent: %v", err)
 	}
-	spec.Size = 4 * model.GiB
 	if err := b.CreateVolume(ctx, id, spec); err != nil {
-		t.Fatalf("create after expand with the grown spec: %v", err)
+		t.Fatalf("create with the original size after expand: %v", err)
+	}
+	spec.Size = 8 * model.GiB
+	if err := b.CreateVolume(ctx, id, spec); !errors.Is(err, backend.ErrConflict) {
+		t.Fatalf("create larger than the volume: %v", err)
 	}
 }
