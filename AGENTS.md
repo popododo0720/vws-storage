@@ -53,3 +53,36 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | `Object.etag`은 동시성 토큰이고 md5가 아니다 | `status.md5`는 `Object.MD5`, etag는 `Meta.Version`. `TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5` |
 | 같은 `request_id`의 WriteObject는 다시 쓰지 않는다 | `Service.Submit`의 토큰 조회가 admit보다 먼저다. `TestWriteObjectIsIdempotentOnRequestID` |
 | 볼륨은 늘리기만 한다 | `AvailableVolume.Expand`가 축소를 거절한다. `TestExpandGrowsOnlyAndStoresSizeOnCompletion`, `TestUpdateVolumeExpandsAndRejectsShrink` |
+
+## Insider-risk guardrails
+
+봇도 내부자 위험이다. 아래는 예외 없는 규칙이다. 설계는 popododo0720/vws-deploy#33이다.
+
+1. **검증 독립**: 중요 결과(머지, 보안, 데이터)는 작성한 봇/모델이 스스로 검증하지 않는다. 검증은 작성 봇이 아닌 다른 봇(또는 사람)이 한다. 프로세스 규칙이고 CI로 강제할 수 없다.
+2. **기록**: 모든 변경은 이슈 → PR(`Closes #N`) → 커밋으로 남긴다. 작업 로그는 PR 본문과 이슈 코멘트에 사람이 읽을 수 있게 쓴다. force-push와 히스토리 재작성은 금지다. 사용자가 승인하면 예외다.
+3. **실패 테스트**: 새 기능은 정상 경로만 테스트하지 않는다. 전원 차단과 재시작, 멱등 재실행, 악성·경계 입력을 최소 한 개씩 포함하거나 불가 사유를 PR에 적는다.
+4. **최소 권한**: main에 직접 푸시하지 않는다. 모든 변경은 main에서 딴 독립 브랜치의 단일 PR이다. 스택 PR과 로컬 머지는 금지다. 토큰은 해당 레포 범위만 쓴다. RBAC은 서비스 코드가 실제로 호출하는 리소스만 허용하고, 가능하면 네임스페이스 범위의 Role을 쓴다.
+5. **감사 분리**: 작성 봇, 검증 봇, 머지 판단은 서로 다르다. 작성 봇은 자기 PR을 머지하지 않는다. 머지는 base가 main이고 head 커밋의 CI가 전부 success일 때만 한다.
+6. **격리·비상정지**: 봇 즉시 중단은 사용자 요청이나 오케스트레이터가 해당 봇 세션을 중단하고 토큰을 폐기하는 것이다(`gh auth`, PAT revoke). 위험 작업은 샌드박스(박스, 임시 클러스터)에서만 한다. 운영 클러스터에 접근하지 않는다.
+7. **사고 공개**: 규칙 위반과 사고는 숨기지 않고 이슈에 `원인 / 영향 / 조치 / 재발방지`로 기록한다. 라벨은 `incident`다.
+
+### vws-storage 항목
+
+**멱등성 테스트.** Expand, Restore, Delete는 같은 요청을 다시 보내도 같은 결과여야 한다. 아래는 지금 있는 테스트와 없는 것이다.
+
+| 대상 | 있는 테스트 | 없는 것 |
+| --- | --- | --- |
+| Expand | `TestExpandVolumeGrowsOnceAndRejectsShrink`, `TestExpandGrowsAndRejectsShrink`(kube) | 같은 클라이언트 토큰의 Expand 재전송을 직접 보는 테스트 |
+| Restore(스냅샷에서 볼륨 생성) | `TestRestoreUsesSnapshotDataSourceOnlyWhenReady`, `TestCreateVolumeIsIdempotent` | 같은 스냅샷 복원 요청의 재호출을 직접 보는 테스트 |
+| Delete | `TestDeleteVolumeIsIdempotent`, `TestDeleteSnapshotIsIdempotent`, `TestDeleteReplayAndRecreate`, `TestDeleteFailureRestoresVolume` | 없음 |
+
+**악성 입력 테스트.** 크기와 이름은 경계에서 파싱하고 거절한다.
+
+| 대상 | 있는 테스트 | 없는 것 |
+| --- | --- | --- |
+| 크기 | `TestWriteObjectSizeLimitBoundary`(4194304 B 경계), 축소 Expand 거절 | 볼륨 크기 0과 매우 큰 값의 거절을 직접 보는 테스트 |
+| 이름 | `TestResourceNamesRoundTrip`, `TestObjectNameRoundTrip` | 경로 탈출 문자(`..`, `/`)와 매우 긴 이름의 거절 |
+
+없는 테스트는 이 PR로 쓰지 않았다. 후속 이슈로 올린다.
+
+**삭제·복원의 검증자.** 데이터를 잃을 수 있는 작업은 삭제와 복원이다. 이 둘을 바꾸는 PR은 작성 봇과 다른 봇(또는 사람)이 검증한 뒤에만 머지한다. 검증자는 테스트가 통과했다는 말만 믿지 않고, 삭제가 스냅샷을 지우지 않는 것(`TestVolumeDeleteKeepsItsAvailableSnapshot`)과 복원이 준비된 스냅샷에서만 일어나는 것(`TestRestoreUsesSnapshotDataSourceOnlyWhenReady`)을 코드에서 직접 확인한다. 작성 봇이 쓴 "검증했다"는 문장은 검증으로 치지 않는다. 운영 클러스터에서 삭제나 복원을 시험하지 않는다.
