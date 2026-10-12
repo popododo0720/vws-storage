@@ -108,11 +108,14 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	pvcs := b.kc.CoreV1().PersistentVolumeClaims(b.ns)
 	_, err := pvcs.Create(ctx, pvc, metav1.CreateOptions{})
 	if !apierrors.IsAlreadyExists(err) {
-		return err
+		if err != nil {
+			return fmt.Errorf("kube: create claim: %w", err)
+		}
+		return nil
 	}
 	cur, err := pvcs.Get(ctx, pvc.Name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("kube: get claim: %w", err)
 	}
 	if cur.Annotations[zoneAnnotation] != spec.Zone.String() ||
 		cur.Annotations[sourceAnnotation] != from.String() ||
@@ -131,7 +134,7 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("kube: get claim: %w", err)
 	}
 	have := cur.Spec.Resources.Requests.Storage().Value()
 	switch {
@@ -141,15 +144,17 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 		return nil
 	}
 	cur.Spec.Resources.Requests[corev1.ResourceStorage] = *resource.NewQuantity(int64(size), resource.BinarySI)
-	_, err = pvcs.Update(ctx, cur, metav1.UpdateOptions{})
-	return err
+	if _, err = pvcs.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("kube: expand claim: %w", err)
+	}
+	return nil
 }
 
 // DeleteVolume deletes the claim. An absent claim is not an error.
 func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Delete(ctx, pvcName(id), metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("kube: delete claim: %w", err)
 	}
-	return err
+	return nil
 }

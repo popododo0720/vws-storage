@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,7 +64,7 @@ func (b *Block) Calls() []Call {
 // CreateVolume implements backend.Block.
 func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	b.mu.Lock()
 	if err, ok := b.fail["CreateVolume"]; ok {
@@ -106,7 +107,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 // DeleteVolume implements backend.Block.
 func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	b.mu.Lock()
 	if err, ok := b.fail["DeleteVolume"]; ok {
@@ -128,7 +129,7 @@ func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 // Expand implements backend.Block.
 func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -152,7 +153,7 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 // CreateSnapshot implements backend.Block.
 func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -180,7 +181,7 @@ func (b *Block) SnapshotObjectName(id model.SnapshotID) string { return "fake-" 
 // DeleteSnapshot implements backend.Block.
 func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -249,7 +250,7 @@ func NewObjects(opts ObjectOptions) *Objects {
 // CreateBucket implements backend.Object.
 func (o *Objects) CreateBucket(ctx context.Context, name model.BucketName) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	o.mu.Lock()
 	o.bucket[name] = struct{}{}
@@ -260,7 +261,7 @@ func (o *Objects) CreateBucket(ctx context.Context, name model.BucketName) error
 // DeleteBucket implements backend.Object.
 func (o *Objects) DeleteBucket(ctx context.Context, name model.BucketName) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -280,7 +281,7 @@ func (o *Objects) DeleteBucket(ctx context.Context, name model.BucketName) error
 // Stat implements backend.Object.
 func (o *Objects) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedObject, error) {
 	if err := ctx.Err(); err != nil {
-		return model.ObservedObject{}, err
+		return model.ObservedObject{}, fmt.Errorf("fake: %w", err)
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -294,13 +295,13 @@ func (o *Objects) Stat(ctx context.Context, ref model.ObjectRef) (model.Observed
 // DeleteObject implements backend.Object.
 func (o *Objects) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("fake: %w", err)
 	}
 	if o.deleteWait != nil {
 		select {
 		case <-o.deleteWait:
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("fake: %w", ctx.Err())
 		}
 	}
 	o.mu.Lock()
@@ -401,7 +402,9 @@ func (o *Objects) Handler() http.Handler {
 		g := o.gens[refKey(ref)]
 		o.mu.Unlock()
 		w.Header().Set("ETag", string(obs.ETag))
-		_, _ = w.Write(g.body)
+		if _, err := w.Write(g.body); err != nil {
+			log.Printf("fake object: write body: %v", err)
+		}
 	})
 	return mux
 }
@@ -418,7 +421,7 @@ func (o *Objects) url(base, op string, ref model.ObjectRef, exp time.Time) strin
 func parseURL(raw string) (model.ObjectRef, time.Time, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return model.ObjectRef{}, time.Time{}, err
+		return model.ObjectRef{}, time.Time{}, fmt.Errorf("fake: parse url: %w", err)
 	}
 	b, err := model.ParseBucketName(u.Query().Get("bucket"))
 	if err != nil {
@@ -434,7 +437,7 @@ func parseURL(raw string) (model.ObjectRef, time.Time, error) {
 	}
 	us, err := strconv.ParseInt(u.Query().Get("exp"), 10, 64)
 	if err != nil {
-		return model.ObjectRef{}, time.Time{}, err
+		return model.ObjectRef{}, time.Time{}, fmt.Errorf("fake: parse exp: %w", err)
 	}
 	return model.ObjectRef{Path: model.ObjectPath{Bucket: b, Key: k}, Generation: g}, time.UnixMicro(us).UTC(), nil
 }
