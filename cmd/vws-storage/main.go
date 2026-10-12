@@ -8,7 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +19,8 @@ import (
 
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
@@ -31,9 +33,9 @@ import (
 )
 
 func main() {
-	log.SetFlags(0)
 	if err := run(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		slog.ErrorContext(context.Background(), "vws-storage exited", slog.String(obs.FieldErr, err.Error()))
+		os.Exit(1)
 	}
 }
 
@@ -74,6 +76,17 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	shutdownObs, err := obs.Setup(context.Background(), obs.ForService(server.Service))
+	if err != nil {
+		return fmt.Errorf("observability: %w", err)
+	}
+	defer func() {
+		shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownObs(shut); err != nil {
+			slog.WarnContext(shut, "observability shutdown", slog.String(obs.FieldErr, err.Error()))
+		}
+	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var lc net.ListenConfig
@@ -96,7 +109,7 @@ func run(args []string) error {
 			shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := httpSrv.Shutdown(shut); err != nil {
-				log.Printf("vws-storage: object http shutdown: %v", err)
+				slog.WarnContext(shut, "object http shutdown", slog.String(obs.FieldErr, err.Error()))
 			}
 		}
 		objectAt = httpLn.Addr().String()
@@ -124,11 +137,7 @@ func run(args []string) error {
 		stopHTTP()
 		return errors.Join(fmt.Errorf("listen %s: %w", *listen, err), closeErr)
 	}
-	gs := grpc.NewServer(
-		grpc.MaxRecvMsgSize(server.MaxRecvMsgSize),
-		grpc.ChainUnaryInterceptor(server.RecoverUnary),
-		grpc.ChainStreamInterceptor(server.RecoverStream),
-	)
+	gs := grpc.NewServer(append(server.Options(), grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))...)
 	server.Register(gs, svc, server.Config{Projects: projects})
 	mon := health.New(health.Options{
 		Targets: healthTargets(svc, block), Period: *healthPeriod, Timeout: *healthTimeout,
@@ -137,7 +146,7 @@ func run(args []string) error {
 	go mon.Run(ctx)
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
-	log.Printf("grpc %s object %s", grpcLn.Addr(), objectAt)
+	slog.InfoContext(ctx, "serving", slog.String("grpc", grpcLn.Addr().String()), slog.String("object", objectAt))
 
 	var serveErr error
 	select {
