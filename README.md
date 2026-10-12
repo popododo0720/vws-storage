@@ -22,12 +22,16 @@ One process may open a given SQLite file.
 
 ## Kubernetes block backend
 
-`internal/backend/kube` serves volumes as PersistentVolumeClaims. It is not wired into `cmd/vws-storage` yet. It implements `CreateVolume` and `DeleteVolume` only. Snapshots are a later change.
+`internal/backend/kube` serves volumes as PersistentVolumeClaims. It is not wired into `cmd/vws-storage` yet. It implements all of `backend.Block`.
 
 - `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `vws-rbd`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
 - `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is not on `backend.Block`, because the engine has no resize transition yet.
-- Image and snapshot sources are `ErrInvalid` here.
+- Image sources are `ErrInvalid` here. Compute images belong to CDI.
+- A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name is a constructor argument.
+- A volume from a snapshot is a PVC with `dataSource` set to that `VolumeSnapshot`. A snapshot that is absent is `ErrNotFound`. One that is not ready is `ErrBusy`, and no claim is created yet.
+- Deleting a volume does not delete its snapshots. The engine admits the delete while a snapshot is Available, and the snapshot can still restore a volume. A snapshot being created blocks the delete. `TestVolumeDeleteKeepsItsAvailableSnapshot` and `TestDeletingSourceVolumeKeepsSnapshot` pin this. A snapshot that is a volume's source cannot be deleted.
+- The tests install the external-snapshotter `VolumeSnapshot` CRD from `testdata` (v8.2.0).
 
 The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p path`). Without it the package skips.
 

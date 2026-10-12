@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -22,19 +23,25 @@ import (
 
 const ns = "default"
 
-var kc kubernetes.Interface
+var (
+	kc  kubernetes.Interface
+	dyn dynamic.Interface
+)
+
+func newBlock(c kube.Classes) *kube.Block { return kube.NewBlock(kc, dyn, ns, c, "vws-snapclass") }
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		os.Stderr.WriteString("KUBEBUILDER_ASSETS unset: skipping envtest tests\n")
 		os.Exit(0)
 	}
-	env := &envtest.Environment{}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{"testdata"}, ErrorIfCRDPathMissing: true}
 	cfg, err := env.Start()
 	if err != nil {
 		panic(err)
 	}
 	kc = kubernetes.NewForConfigOrDie(cfg)
+	dyn = dynamic.NewForConfigOrDie(cfg)
 	expand := true
 	sc := &storagev1.StorageClass{
 		ObjectMeta:           metav1.ObjectMeta{Name: kube.DefaultClasses()[model.VolumeTypeStandard]},
@@ -47,21 +54,6 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = env.Stop()
 	os.Exit(code)
-}
-
-// volumesOnly sends volume calls to kube. Snapshots stay on the fake until
-// kube serves them.
-type volumesOnly struct {
-	backend.Block
-	k *kube.Block
-}
-
-func (v volumesOnly) CreateVolume(ctx context.Context, id model.VolumeID, s model.VolumeSpec) error {
-	return v.k.CreateVolume(ctx, id, s)
-}
-
-func (v volumesOnly) DeleteVolume(ctx context.Context, id model.VolumeID) error {
-	return v.k.DeleteVolume(ctx, id)
 }
 
 func zone(t *testing.T) model.Zone {
@@ -98,6 +90,20 @@ func bind(t *testing.T, id model.VolumeID) {
 	t.Fatal("no claim to bind")
 }
 
+func claimFor(t *testing.T, id model.VolumeID) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	l, err := kc.CoreV1().PersistentVolumeClaims(ns).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range l.Items {
+		if p.Annotations[kube.VolumeAnnotation] == id.String() {
+			return &p
+		}
+	}
+	return nil
+}
+
 func claims(t *testing.T) int {
 	t.Helper()
 	l, err := kc.CoreV1().PersistentVolumeClaims(ns).List(context.Background(), metav1.ListOptions{})
@@ -109,7 +115,7 @@ func claims(t *testing.T) int {
 
 func TestCreateVolumeMapsTypeToStorageClass(t *testing.T) {
 	classes := kube.Classes{model.VolumeTypeStandard: "hdd-class", model.VolumeTypeSSD: "ssd-class"}
-	b := kube.NewBlock(kc, ns, classes)
+	b := newBlock(classes)
 	id := model.NewVolumeID()
 	if err := b.CreateVolume(context.Background(), id, spec(t, model.VolumeTypeSSD, 2*model.GiB)); err != nil {
 		t.Fatal(err)
@@ -134,7 +140,7 @@ func TestCreateVolumeMapsTypeToStorageClass(t *testing.T) {
 }
 
 func TestCreateVolumeRepeatIsOneClaimAndChangedSpecConflicts(t *testing.T) {
-	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	b := newBlock(kube.DefaultClasses())
 	id := model.NewVolumeID()
 	s := spec(t, model.VolumeTypeStandard, model.GiB)
 	before := claims(t)
@@ -154,7 +160,7 @@ func TestCreateVolumeRepeatIsOneClaimAndChangedSpecConflicts(t *testing.T) {
 }
 
 func TestUnknownTypeIsInvalid(t *testing.T) {
-	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	b := newBlock(kube.DefaultClasses())
 	before := claims(t)
 	err := b.CreateVolume(context.Background(), model.NewVolumeID(), spec(t, model.VolumeTypeUnspecified, model.GiB))
 	if !errors.Is(err, backend.ErrInvalid) || !backend.IsPermanent(err) {
@@ -166,7 +172,7 @@ func TestUnknownTypeIsInvalid(t *testing.T) {
 }
 
 func TestExpandGrowsAndRejectsShrink(t *testing.T) {
-	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	b := newBlock(kube.DefaultClasses())
 	ctx := context.Background()
 	id := model.NewVolumeID()
 	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, 2*model.GiB)); err != nil {
@@ -204,7 +210,7 @@ func TestExpandGrowsAndRejectsShrink(t *testing.T) {
 }
 
 func TestDeleteVolumeIsIdempotent(t *testing.T) {
-	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	b := newBlock(kube.DefaultClasses())
 	ctx := context.Background()
 	id := model.NewVolumeID()
 	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, model.GiB)); err != nil {
@@ -224,7 +230,7 @@ func TestCreateVolumeWithSameClientTokenMakesOneClaim(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	objs := fake.NewObjects(fake.ObjectOptions{})
 	svc, err := storage.Open(ctx, storage.Options{
-		Store: storage.Memory(), Block: volumesOnly{Block: fake.NewBlock(), k: kube.NewBlock(kc, ns, kube.DefaultClasses())},
+		Store: storage.Memory(), Block: newBlock(kube.DefaultClasses()),
 		Object: objs, Signer: objs, Zones: []model.Zone{zone(t)},
 	})
 	if err != nil {
