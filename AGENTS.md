@@ -53,6 +53,7 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | `Object.etag`은 동시성 토큰이고 md5가 아니다 | `status.md5`는 `Object.MD5`, etag는 `Meta.Version`. `TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5` |
 | 같은 `request_id`의 WriteObject는 다시 쓰지 않는다 | `Service.Submit`의 토큰 조회가 admit보다 먼저다. `TestWriteObjectIsIdempotentOnRequestID` |
 | 볼륨은 늘리기만 한다 | `AvailableVolume.Expand`가 축소를 거절한다. `TestExpandGrowsOnlyAndStoresSizeOnCompletion`, `TestUpdateVolumeExpandsAndRejectsShrink` |
+| PR은 main을 대상으로 하고 본문에 `Closes #N`이 있으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml`, `.github/workflows/direct-push-watch.yml`, `scripts/guard-agents.sh` | `scripts/guard-agents.sh agents`, `scripts/guard-agents.sh selftest`. 둘 다 `ci.yml`이 부른다 |
 
 ## Insider-risk guardrails
 
@@ -86,3 +87,5 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 없는 테스트는 이 PR로 쓰지 않았다. 후속 이슈로 올린다.
 
 **삭제·복원의 검증자.** 데이터를 잃을 수 있는 작업은 삭제와 복원이다. 이 둘을 바꾸는 PR은 작성 봇과 다른 봇(또는 사람)이 검증한 뒤에만 머지한다. 검증자는 테스트가 통과했다는 말만 믿지 않고, 삭제가 스냅샷을 지우지 않는 것(`TestVolumeDeleteKeepsItsAvailableSnapshot`)과 복원이 준비된 스냅샷에서만 일어나는 것(`TestRestoreUsesSnapshotDataSourceOnlyWhenReady`)을 코드에서 직접 확인한다. 작성 봇이 쓴 "검증했다"는 문장은 검증으로 치지 않는다. 운영 클러스터에서 삭제나 복원을 시험하지 않는다.
+
+이 레포의 서버측 보호는 없다(private, 무료 플랜). 1, 5, 6은 프로세스 규칙이다. `.github/workflows/repo-guard.yml`이 PR의 base가 main인지, 본문에 `Closes #N`이 있는지, 이 섹션의 1~7 항목이 있는지 검사한다. `.github/workflows/direct-push-watch.yml`이 main에 PR 없이 들어온 커밋을 사후에 알린다. 차단이 아니라 탐지다. 검사 코드는 `scripts/guard-agents.sh`이고 `selftest`가 나쁜 입력에서 실제로 실패하는지 본다. 이 검사는 vws-deploy와 같은 파일이므로 고치지 않고 복사한다.
