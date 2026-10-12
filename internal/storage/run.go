@@ -118,6 +118,8 @@ func (s *Service) drive(ctx context.Context, id model.OperationID) error {
 		return s.runVolumeCreation(ctx, op, w)
 	case model.VolumeDeletion:
 		return s.runVolumeDeletion(ctx, op, w)
+	case model.VolumeExpansion:
+		return s.runVolumeExpansion(ctx, op, w)
 	case model.SnapshotCreation:
 		return s.runSnapshotCreation(ctx, op, w)
 	case model.SnapshotDeletion:

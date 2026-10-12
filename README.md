@@ -17,23 +17,46 @@ go run ./cmd/vws-storage
 | `-zones` | `vws-1a` | Comma-separated zone names |
 | `-projects` | empty | Comma-separated project ids. Empty accepts any valid project id |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
+| `-object-backend` | `fake` | `fake` or `s3` |
+| `-s3-profile` | `rgw` | `rgw` or `minio`. Both default to path-style addressing and region `us-east-1` |
+| `-s3-endpoint` | empty | S3 endpoint URL for `s3` |
+| `-s3-region` | profile default | S3 region |
+| `-block-backend` | `fake` | `fake` or `kube` |
+| `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
+| `-kube-namespace` | `default` | namespace for claims and snapshots |
+| `-kube-class-standard` | `ceph-block` | StorageClass for `standard` volumes |
+| `-kube-class-ssd` | `ceph-block` | StorageClass for `ssd` volumes |
+| `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots |
+
+S3 keys come from `VWS_S3_ACCESS_KEY` and `VWS_S3_SECRET_KEY`, never from flags.
 
 One process may open a given SQLite file.
 
 ## Kubernetes block backend
 
-`internal/backend/kube` serves volumes as PersistentVolumeClaims. It is not wired into `cmd/vws-storage` yet. It implements all of `backend.Block`.
+`internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.
 
-- `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `vws-rbd`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
+- `kube.Config` holds the kubeconfig path (empty means in-cluster), the namespace, the class table, and the `VolumeSnapshotClass`. `kube.Open` builds the backend and does not call the API server. Defaults are namespace `default`, StorageClass `ceph-block`, and snapshot class `ceph-block`. They are the names the Rook bundle in vws-deploy creates (provisioner `rook-ceph.rbd.csi.ceph.com`). A class that does not exist leaves the claim Pending.
+- `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `ceph-block`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
-- `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is not on `backend.Block`, because the engine has no resize transition yet.
+- `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is on `backend.Block`. `UpdateVolume` with mask `spec` or `spec.size_gib` submits an `ExpandVolumeRequest`. A smaller size is `INVALID_ARGUMENT` and the same size is a succeeded operation. The row keeps its old size until the backend call succeeds, then takes the new size and a new etag in the write that succeeds the operation.
 - Image sources are `ErrInvalid` here. Compute images belong to CDI.
-- A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name is a constructor argument.
+- A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name comes from `kube.Config`.
 - A volume from a snapshot is a PVC with `dataSource` set to that `VolumeSnapshot`. A snapshot that is absent is `ErrNotFound`. One that is not ready is `ErrBusy`, and no claim is created yet.
 - Deleting a volume does not delete its snapshots. The engine admits the delete while a snapshot is Available, and the snapshot can still restore a volume. A snapshot being created blocks the delete. `TestVolumeDeleteKeepsItsAvailableSnapshot` and `TestDeletingSourceVolumeKeepsSnapshot` pin this. A snapshot that is a volume's source cannot be deleted.
 - The tests install the external-snapshotter `VolumeSnapshot` CRD from `testdata` (v8.2.0).
 
 The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p path`). Without it the package skips.
+
+## S3 object backend
+
+`internal/backend/s3` implements `backend.Object` and `backend.Signer` for Ceph RGW and MinIO with one driver. `cmd/vws-storage -object-backend=s3` selects it. The contract is the existing one. Bytes move by presigned URL. The driver creates and deletes buckets, `Stat`s a generation, and deletes a generation. Listing, `request_id` replay, and the md5 the API reports stay in the engine and store.
+
+- A VWS bucket maps to the S3 bucket `vws-` plus a hash of its full name. An object generation is the key `<generation>/<key>`.
+- `PresignPut` signs `Content-Length`, `If-None-Match: *`, and `x-amz-checksum-sha256` when a digest is given. The locator carries these headers and the client must send them. The expiry is rounded down to whole seconds.
+- `Stat` reads the SHA-256 from the stored checksum and the MD5 from the ETag. The ETag is the payload MD5 only for a single-part upload without server-side encryption. Otherwise MD5 is zero.
+- `CreateBucket`, `DeleteBucket`, and `DeleteObject` are safe to repeat. A bucket that still holds objects is `ErrBusy`.
+- Tests use an in-process S3 server (gofakes3). `TestLiveEndpoint` runs against a real endpoint when `VWS_S3_TEST_ENDPOINT`, `VWS_S3_TEST_PROFILE`, and the two key variables are set, and skips otherwise.
 
 ## Operations
 

@@ -89,6 +89,62 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 	return avail.Delete(st)
 }
 
+// admitExpandVolume grows an available volume. A size equal to the stored one
+// is already true and records a succeeded operation. A smaller size is invalid.
+func (s *Service) admitExpandVolume(ctx context.Context, r store.Reader, st model.Start, req model.ExpandVolumeRequest) (model.Admitted, error) {
+	vol, err := r.Volume(ctx, req.Volume)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if !req.Zone.IsZero() && vol.Spec.Zone != req.Zone {
+		return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrNotFound)
+	}
+	if err := expectVersion(vol.Meta.Version, req.Expected); err != nil {
+		return model.Admitted{}, err
+	}
+	avail, ok := vol.AsAvailable()
+	if !ok {
+		return model.Admitted{}, fmt.Errorf("%w: volume is not available", model.ErrFailedPrecondition)
+	}
+	busy, err := r.InFlight(ctx, req.Volume)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if busy {
+		return model.Admitted{}, fmt.Errorf("%w: volume has operations in flight", model.ErrFailedPrecondition)
+	}
+	switch {
+	case req.Size < vol.Spec.Size:
+		return model.Admitted{}, fmt.Errorf("%w: volume cannot shrink", model.ErrInvalidArgument)
+	case req.Size == vol.Spec.Size:
+		return model.FinishNow(st, model.VolumeExpansion{Volume: vol.ID, Size: req.Size}, vol)
+	}
+	return avail.Expand(st, req.Size)
+}
+
+func (s *Service) runVolumeExpansion(ctx context.Context, op model.Operation, w model.VolumeExpansion) error {
+	callErr := s.block.Expand(ctx, w.Volume, w.Size)
+	return finish(ctx, s, op.ID, callErr,
+		func(run model.RunningOp[model.VolumeExpansion], r store.Reader, now time.Time) (model.Change, error) {
+			vol, err := r.Volume(ctx, w.Volume)
+			if errors.Is(err, model.ErrNotFound) {
+				return run.Fail(model.Status{Code: model.CodeInternal, Message: "volume row missing"}, now), nil
+			}
+			if err != nil {
+				return model.Change{}, err
+			}
+			avail, ok := vol.AsAvailable()
+			if !ok {
+				return run.Fail(model.Status{Code: model.CodeInternal, Message: "volume is not available"}, now), nil
+			}
+			return avail.Expanded(run, now)
+		},
+		func(run model.RunningOp[model.VolumeExpansion], _ store.Reader, st model.Status, now time.Time) (model.Change, error) {
+			return run.Fail(st, now), nil
+		},
+	)
+}
+
 func (s *Service) runVolumeCreation(ctx context.Context, op model.Operation, w model.VolumeCreation) error {
 	if _, ok := model.AsCompensating[model.VolumeCreation](op); ok {
 		return undo(ctx, s, op.ID,

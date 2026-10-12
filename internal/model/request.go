@@ -285,6 +285,16 @@ type DeleteVolumeRequest struct {
 	AllowMissing bool
 }
 
+// ExpandVolumeRequest grows an available volume to Size.
+// Expected is the etag version. Zero means the caller did not send one.
+// Zone is the zone in the resource name. Zero skips that check.
+type ExpandVolumeRequest struct {
+	Volume   VolumeID
+	Zone     Zone
+	Size     Bytes
+	Expected Version
+}
+
 // CreateSnapshotRequest snapshots an available volume.
 // ID is the client-chosen snapshot id. The zero ID asks the engine to mint one.
 // Zone is the zone in the source volume name. Zero skips that check.
@@ -377,6 +387,7 @@ type DeleteObjectRequest struct {
 // Validate implements Request.
 func (r CreateVolumeRequest) Project() Project   { return r.ID.Project() }
 func (r DeleteVolumeRequest) Project() Project   { return r.Volume.Project() }
+func (r ExpandVolumeRequest) Project() Project   { return r.Volume.Project() }
 func (r CreateSnapshotRequest) Project() Project { return r.ID.Project() }
 func (r DeleteSnapshotRequest) Project() Project { return r.Snapshot.Project() }
 func (r CreateBucketRequest) Project() Project   { return r.Bucket.Project() }
@@ -403,6 +414,17 @@ func (r CreateVolumeRequest) Validate() error {
 func (r DeleteVolumeRequest) Validate() error {
 	if r.Volume.IsZero() {
 		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
+	}
+	return nil
+}
+
+// Validate implements Request.
+func (r ExpandVolumeRequest) Validate() error {
+	if r.Volume.IsZero() {
+		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
+	}
+	if r.Size < GiB || r.Size > maxVolume || r.Size%GiB != 0 {
+		return fmt.Errorf("%w: volume size", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -515,6 +537,10 @@ func (r DeleteVolumeRequest) fingerprint() string {
 	return fmt.Sprintf("delete-volume\n%s\n%s\n%d\n%t", r.Volume.String(), r.Zone.String(), r.Expected, r.AllowMissing)
 }
 
+func (r ExpandVolumeRequest) fingerprint() string {
+	return fmt.Sprintf("expand-volume\n%s\n%s\n%d\n%d", r.Volume.String(), r.Zone.String(), r.Size, r.Expected)
+}
+
 func (r CreateSnapshotRequest) fingerprint() string {
 	return "create-snapshot\n" + r.ID.String() + "\n" + r.Source.String() + "\n" + r.Zone.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical() + "\n" + r.Description
 }
@@ -549,6 +575,7 @@ func (r DeleteObjectRequest) fingerprint() string {
 
 func (CreateVolumeRequest) isRequest()   {}
 func (DeleteVolumeRequest) isRequest()   {}
+func (ExpandVolumeRequest) isRequest()   {}
 func (CreateSnapshotRequest) isRequest() {}
 func (DeleteSnapshotRequest) isRequest() {}
 func (CreateBucketRequest) isRequest()   {}

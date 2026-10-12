@@ -1041,3 +1041,68 @@ func TestReadObject(t *testing.T) {
 	_, err = objects.ReadObject(ctx, &storagev1.ReadObjectRequest{Name: writeBucket + "/objects/missing"})
 	wantStatus(t, err, codes.NotFound, "RESOURCE_NOT_FOUND")
 }
+
+func TestUpdateVolumeExpandsAndRejectsShrink(t *testing.T) {
+	vols, _, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	const name = "projects/local/zones/az-1/volumes/data-1"
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 2, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	grow := &storagev1.UpdateVolumeRequest{
+		Volume:     &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 5}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib"}},
+		RequestId:  "44444444-4444-4444-8444-444444444444",
+	}
+	op, err := vols.UpdateVolume(ctx, grow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := vols.UpdateVolume(ctx, grow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetName() != op.GetName() {
+		t.Fatalf("replay %s want %s", again.GetName(), op.GetName())
+	}
+	done := waitOp(t, ops, op.GetName())
+	if done.GetError() != nil {
+		t.Fatalf("operation error %+v", done.GetError())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.GetSpec().GetSizeGib() != 5 || vol.GetStatus().GetSizeGib() != 5 {
+		t.Fatalf("volume %+v", vol)
+	}
+	for _, tc := range []struct {
+		name string
+		req  *storagev1.UpdateVolumeRequest
+		code codes.Code
+	}{
+		{"shrink", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 3}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.InvalidArgument},
+		{"labels", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}}}, codes.Unimplemented},
+		{"no mask", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}}, codes.Unimplemented},
+		{"stale etag", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Etag: "1", Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.Aborted},
+	} {
+		_, err := vols.UpdateVolume(ctx, tc.req)
+		if st, _ := status.FromError(err); st.Code() != tc.code {
+			t.Fatalf("%s: code %v err %v", tc.name, st.Code(), err)
+		}
+	}
+	after, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.GetSpec().GetSizeGib() != 5 {
+		t.Fatalf("size after rejects %d", after.GetSpec().GetSizeGib())
+	}
+}

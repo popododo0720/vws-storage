@@ -82,9 +82,33 @@ func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeReq
 	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// UpdateVolume is not a storage transition.
-func (s *Server) UpdateVolume(context.Context, *storagev1.UpdateVolumeRequest) (*longrunningpb.Operation, error) {
-	return nil, status.Error(codes.Unimplemented, "volume update is not a storage transition")
+// UpdateVolume grows a volume. Only the mask spec or spec.size_gib is served.
+// A size below the stored one is INVALID_ARGUMENT, and the same size is a
+// succeeded operation. Labels and type are not storage transitions.
+func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest) (*longrunningpb.Operation, error) {
+	if !volumeMaskOK(in.GetUpdateMask().GetPaths()) {
+		return nil, status.Error(codes.Unimplemented, "volume field mask")
+	}
+	id, zone, err := s.parseVolumeName(in.GetVolume().GetName())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	size, err := model.VolumeSize(in.GetVolume().GetSpec().GetSizeGib())
+	if err != nil {
+		return nil, toStatus(invalidSpec("size_gib"))
+	}
+	ver, err := expectedVersion(in.GetVolume().GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	req := model.ExpandVolumeRequest{Volume: id, Zone: zone, Size: size, Expected: ver}
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(s.volumeName(zone, id), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
+	}
+	return s.submit(ctx, in.GetRequestId(), req)
 }
 
 // DeleteVolume implements VolumeService.
@@ -529,6 +553,18 @@ func (s *Server) submitUpload(ctx context.Context, requestID string, req model.R
 		}
 	}
 	return s.operation(ctx, op)
+}
+
+func volumeMaskOK(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, p := range paths {
+		if p != "spec" && p != "spec.size_gib" {
+			return false
+		}
+	}
+	return true
 }
 
 func objectMaskOK(paths []string) bool {
