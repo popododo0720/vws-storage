@@ -734,3 +734,42 @@ func TestInvalidBackendArgumentFailsWithInvalidArgument(t *testing.T) {
 		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
 	}
 }
+
+func TestVolumeDeleteKeepsItsAvailableSnapshot(t *testing.T) {
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	ctx := context.Background()
+	volOp, err := svc.Submit(ctx, token(t, "vol"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := waitDone(t, svc, volOp.ID).Target().(model.VolumeID)
+	snapOp, err := svc.Submit(ctx, token(t, "snap"), model.CreateSnapshotRequest{Source: vol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := waitDone(t, svc, snapOp.ID).Target().(model.SnapshotID)
+	delOp, err := svc.Submit(ctx, token(t, "del"), model.DeleteVolumeRequest{Volume: vol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, delOp.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("delete phase %s", got.Phase())
+	}
+	if _, err := svc.Snapshot(ctx, snap); err != nil {
+		t.Fatalf("snapshot after volume delete: %v", err)
+	}
+	src, err := model.FromSnapshot(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := volumeReq(t)
+	req.Spec.Source = src
+	restoreOp, err := svc.Submit(ctx, token(t, "restore"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, svc, restoreOp.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("restore phase %s", got.Phase())
+	}
+}
