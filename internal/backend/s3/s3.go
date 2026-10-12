@@ -195,9 +195,8 @@ func (d *Driver) DeleteBucket(ctx context.Context, name model.BucketName) error 
 // without server-side encryption, and is zero otherwise.
 func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedObject, error) {
 	out, err := d.c.HeadObject(ctx, &awss3.HeadObjectInput{
-		Bucket:       aws.String(d.bucketID(ref.Path.Bucket)),
-		Key:          aws.String(objectKey(ref)),
-		ChecksumMode: "ENABLED",
+		Bucket: aws.String(d.bucketID(ref.Path.Bucket)),
+		Key:    aws.String(objectKey(ref)),
 	})
 	switch code(err) {
 	case "NotFound", "NoSuchKey", "NoSuchBucket":
@@ -212,26 +211,24 @@ func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedO
 		ETag:       model.ETag(strings.Trim(aws.ToString(out.ETag), `"`)),
 		UploadedAt: aws.ToTime(out.LastModified),
 	}
-	if raw, err := base64.StdEncoding.DecodeString(aws.ToString(out.ChecksumSHA256)); err == nil && len(raw) == len(obs.SHA256) {
-		copy(obs.SHA256[:], raw)
-	}
 	if m, err := model.ParseMD5(string(obs.ETag)); err == nil {
 		obs.MD5 = m
 	}
-	if obs.SHA256.IsZero() {
-		sum, err := d.hashObject(ctx, ref, obs)
-		if err != nil {
-			return model.ObservedObject{}, err
-		}
-		obs.SHA256 = sum
+	// The SHA-256 is always computed from the stored bytes. A checksum the
+	// endpoint reports is not used: Ceph RGW stores a wrong
+	// x-amz-checksum-sha256 as sent, so a reported value can be the client's
+	// own unverified claim (D6).
+	sum, err := d.hashObject(ctx, ref, obs)
+	if err != nil {
+		return model.ObservedObject{}, err
 	}
+	obs.SHA256 = sum
 	return obs, nil
 }
 
-// hashObject computes the SHA-256 of the stored bytes. It runs when the
-// endpoint reports none (Ceph RGW), so the digest an object record keeps is
-// always one this process computed from the stored bytes, never a client's
-// claim. The GET is pinned to the ETag HEAD saw; a single-part MD5 ETag is
+// hashObject computes the SHA-256 of the stored bytes, so the digest an
+// object record keeps is always one this process computed, never a client's
+// or the endpoint's claim. The GET is pinned to the ETag HEAD saw; a single-part MD5 ETag is
 // checked against the same stream.
 func (d *Driver) hashObject(ctx context.Context, ref model.ObjectRef, obs model.ObservedObject) (model.Digest, error) {
 	out, err := d.c.GetObject(ctx, &awss3.GetObjectInput{
