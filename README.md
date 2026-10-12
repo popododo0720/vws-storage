@@ -26,7 +26,7 @@ One process may open a given SQLite file.
 
 - `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `vws-rbd`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
-- `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is not on `backend.Block`, because the engine has no resize transition yet.
+- `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is on `backend.Block`. `UpdateVolume` with mask `spec` or `spec.size_gib` submits an `ExpandVolumeRequest`. A smaller size is `INVALID_ARGUMENT` and the same size is a succeeded operation. The row keeps its old size until the backend call succeeds, then takes the new size and a new etag in the write that succeeds the operation.
 - Image sources are `ErrInvalid` here. Compute images belong to CDI.
 - A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name is a constructor argument.
 - A volume from a snapshot is a PVC with `dataSource` set to that `VolumeSnapshot`. A snapshot that is absent is `ErrNotFound`. One that is not ready is `ErrBusy`, and no claim is created yet.
