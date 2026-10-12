@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -154,5 +155,99 @@ func TestDeletingSourceVolumeKeepsSnapshot(t *testing.T) {
 	}
 	if snapshotFor(t, snap) == nil {
 		t.Fatal("snapshot deleted with its volume")
+	}
+}
+
+func setStatus(t *testing.T, id model.SnapshotID, field map[string]any) {
+	t.Helper()
+	vs := snapshotFor(t, id)
+	if vs == nil {
+		t.Fatal("no snapshot")
+	}
+	for k, v := range field {
+		if err := unstructured.SetNestedField(vs.Object, v, "status", k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := dyn.Resource(snapGVR).Namespace(ns).UpdateStatus(context.Background(), vs, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreRejectsSizeBelowRestoreSize(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	_ = b.CreateSnapshot(ctx, snap, newVolume(t, b))
+	setStatus(t, snap, map[string]any{"readyToUse": true, "restoreSize": "2Gi"})
+	src, err := model.FromSnapshot(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := spec(t, model.VolumeTypeStandard, model.GiB)
+	s.Source = src
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(ctx, id, s); !errors.Is(err, backend.ErrInvalid) || !backend.IsPermanent(err) {
+		t.Fatalf("smaller than restoreSize: %v", err)
+	}
+	if claimFor(t, id) != nil {
+		t.Fatal("claim created for a too-small restore")
+	}
+	s.Size = 2 * model.GiB
+	if err := b.CreateVolume(ctx, id, s); err != nil {
+		t.Fatalf("equal to restoreSize: %v", err)
+	}
+}
+
+func TestSnapshotErrorIsRetriedThenFailsPermanently(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	vol := newVolume(t, b)
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	defer kube.SetSnapshotErrorGrace(100 * time.Millisecond)()
+	time.Sleep(150 * time.Millisecond)
+
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "cannot snapshot"}})
+	err := b.CreateSnapshot(ctx, snap, vol)
+	if !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("first sight of an error on an old snapshot: %v", err)
+	}
+	if snapshotFor(t, snap).GetAnnotations()[kube.ErrorSeenAnnotation] == "" {
+		t.Fatal("first observation not recorded")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	err = b.CreateSnapshot(ctx, snap, vol)
+	if err == nil || errors.Is(err, backend.ErrBusy) || !backend.IsPermanent(err) {
+		t.Fatalf("error seen past the grace: %v", err)
+	}
+}
+
+func TestSnapshotErrorClockResetsWhenTheErrorClears(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	vol := newVolume(t, b)
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	defer kube.SetSnapshotErrorGrace(100 * time.Millisecond)()
+
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "cannot snapshot"}})
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	time.Sleep(150 * time.Millisecond)
+	setStatus(t, snap, map[string]any{"error": nil})
+	if err := b.CreateSnapshot(ctx, snap, vol); !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("cleared error: %v", err)
+	}
+	if _, ok := snapshotFor(t, snap).GetAnnotations()[kube.ErrorSeenAnnotation]; ok {
+		t.Fatal("clock kept after the error cleared")
+	}
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "again"}})
+	if err := b.CreateSnapshot(ctx, snap, vol); !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("recurring error restarts the clock: %v", err)
+	}
+	setStatus(t, snap, map[string]any{"readyToUse": true})
+	if err := b.CreateSnapshot(ctx, snap, vol); err != nil {
+		t.Fatalf("recovered snapshot: %v", err)
 	}
 }

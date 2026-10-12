@@ -72,8 +72,12 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	var from model.SnapshotID
 	if snap, ok := spec.Source.Snapshot(); ok {
 		from = snap
-		if err := b.requireReady(ctx, snap); err != nil {
+		vs, err := b.requireReady(ctx, snap)
+		if err != nil {
 			return err
+		}
+		if rs, ok := restoreSize(vs); ok && int64(spec.Size) < rs {
+			return backend.Permanent(fmt.Errorf("%w: volume is smaller than the snapshot (%d bytes)", backend.ErrInvalid, rs))
 		}
 	}
 	pvc := &corev1.PersistentVolumeClaim{

@@ -12,4 +12,6 @@ const (
 	SnapshotAnnotation = annotationPrefix + "snapshot"
 	zoneAnnotation     = annotationPrefix + "zone"
 	sourceAnnotation   = annotationPrefix + "source"
+	// errorSeenAnnotation holds when a VolumeSnapshot first reported status.error.
+	errorSeenAnnotation = annotationPrefix + "error-first-seen"
 )
