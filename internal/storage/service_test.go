@@ -773,3 +773,112 @@ func TestVolumeDeleteKeepsItsAvailableSnapshot(t *testing.T) {
 		t.Fatalf("restore phase %s", got.Phase())
 	}
 }
+
+func TestExpandVolumeGrowsOnceAndRejectsShrink(t *testing.T) {
+	blk := fake.NewBlock()
+	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	ctx := context.Background()
+	volOp, err := svc.Submit(ctx, token(t, "vol"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := waitDone(t, svc, volOp.ID).Target().(model.VolumeID)
+	before, err := svc.Volume(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grow := model.ExpandVolumeRequest{Volume: id, Size: before.Spec.Size + model.GiB}
+	first, err := svc.Submit(ctx, token(t, "grow"), grow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := svc.Submit(ctx, token(t, "grow"), grow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != again.ID {
+		t.Fatalf("same request_id gave operations %s and %s", first.ID, again.ID)
+	}
+	if got := waitDone(t, svc, first.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
+	}
+	after, err := svc.Volume(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Spec.Size != grow.Size || after.Meta.Version != before.Meta.Version+1 {
+		t.Fatalf("size %d version %d", after.Spec.Size, after.Meta.Version)
+	}
+	expands := 0
+	for _, c := range blk.Calls() {
+		if c.Method == "Expand" {
+			expands++
+		}
+	}
+	if expands != 1 {
+		t.Fatalf("backend Expand ran %d times", expands)
+	}
+	_, err = svc.Submit(ctx, token(t, "shrink"), model.ExpandVolumeRequest{Volume: id, Size: before.Spec.Size})
+	if !errors.Is(err, model.ErrInvalidArgument) {
+		t.Fatalf("shrink: %v", err)
+	}
+	same, err := svc.Submit(ctx, token(t, "same"), model.ExpandVolumeRequest{Volume: id, Size: grow.Size})
+	if err != nil || same.Phase() != model.PhaseSucceeded {
+		t.Fatalf("same size: %v %s", err, same.Phase())
+	}
+}
+
+func TestExpandVolumeBackendRejectionKeepsSize(t *testing.T) {
+	blk := fake.NewBlock()
+	blk.FailNext("Expand", backend.Permanent(backend.ErrInvalid))
+	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	ctx := context.Background()
+	volOp, err := svc.Submit(ctx, token(t, "vol"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := waitDone(t, svc, volOp.ID).Target().(model.VolumeID)
+	before, err := svc.Volume(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := svc.Submit(ctx, token(t, "grow"), model.ExpandVolumeRequest{Volume: id, Size: before.Spec.Size + model.GiB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitDone(t, svc, op.ID)
+	if got.Phase() != model.PhaseFailed || got.Err().Code != model.CodeInvalidArgument {
+		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
+	}
+	after, err := svc.Volume(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Spec.Size != before.Spec.Size || after.Meta.Version != before.Meta.Version {
+		t.Fatalf("volume changed: %+v", after)
+	}
+}
+
+func TestExpandVolumeBlocksDeleteWhileInFlight(t *testing.T) {
+	svc, stop := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	volOp, err := svc.Submit(context.Background(), token(t, "vol"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := waitDone(t, svc, volOp.ID).Target().(model.VolumeID)
+	stop()
+	grow, err := svc.Submit(context.Background(), token(t, "grow"), model.ExpandVolumeRequest{Volume: id, Size: 2 * model.GiB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grow.Terminal() {
+		t.Fatal("expansion finished before run")
+	}
+	_, err = svc.Submit(context.Background(), token(t, "del"), model.DeleteVolumeRequest{Volume: id})
+	if !errors.Is(err, model.ErrFailedPrecondition) {
+		t.Fatalf("err %v", err)
+	}
+	svc.Close()
+}
