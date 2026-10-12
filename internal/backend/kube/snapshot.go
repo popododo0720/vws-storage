@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,7 +28,7 @@ func snapshotName(id model.SnapshotID) string {
 // CreateSnapshot creates the VolumeSnapshot and returns ErrBusy until
 // status.readyToUse is true, so the engine retries until the snapshot is usable.
 func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error {
-	_, err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Get(ctx, pvcName(source), metav1.GetOptions{})
+	claim, err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Get(ctx, pvcName(source), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))
 	}
@@ -42,8 +43,9 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 			"name":      snapshotName(id),
 			"namespace": b.ns,
 			"annotations": map[string]any{
-				SnapshotAnnotation: id.String(),
-				sourceAnnotation:   source.String(),
+				SnapshotAnnotation:   id.String(),
+				sourceAnnotation:     source.String(),
+				sourceModeAnnotation: string(claimMode(claim)),
 			},
 		},
 		"spec": map[string]any{
@@ -62,6 +64,24 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 		return fmt.Errorf("kube: create snapshot: %w", err)
 	}
 	return b.ready(ctx, cur)
+}
+
+// claimMode is the claim's volumeMode. An unset mode is Filesystem.
+func claimMode(c *corev1.PersistentVolumeClaim) corev1.PersistentVolumeMode {
+	if c.Spec.VolumeMode == nil {
+		return corev1.PersistentVolumeFilesystem
+	}
+	return *c.Spec.VolumeMode
+}
+
+// restoreMode is the volumeMode for a claim restored from vs: the mode of the
+// claim the snapshot was taken from, so the restored disk is laid out the same
+// way. A snapshot without the annotation predates Block volumes.
+func restoreMode(vs *unstructured.Unstructured) corev1.PersistentVolumeMode {
+	if m := corev1.PersistentVolumeMode(vs.GetAnnotations()[sourceModeAnnotation]); m == corev1.PersistentVolumeBlock {
+		return m
+	}
+	return corev1.PersistentVolumeFilesystem
 }
 
 // SnapshotObjectName is the name of the VolumeSnapshot that backs id.
