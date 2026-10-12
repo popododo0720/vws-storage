@@ -24,7 +24,7 @@ import (
 type Classes map[model.VolumeType]string
 
 // DefaultClass is the StorageClass name every type maps to by default.
-const DefaultClass = "vws-rbd"
+const DefaultClass = "ceph-block"
 
 // DefaultClasses serves every type from the Rook Ceph RBD class.
 func DefaultClasses() Classes {

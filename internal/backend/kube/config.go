@@ -11,7 +11,7 @@ import (
 )
 
 // DefaultSnapshotClass is the VolumeSnapshotClass used when none is configured.
-const DefaultSnapshotClass = "vws-rbd"
+const DefaultSnapshotClass = "ceph-block"
 
 // DefaultNamespace holds the claims when none is configured.
 const DefaultNamespace = "default"
@@ -25,7 +25,7 @@ type Config struct {
 	SnapshotClass string
 }
 
-// DefaultConfig serves every type from the vws-rbd classes in the default namespace.
+// DefaultConfig serves every type from the ceph-block classes in the default namespace.
 func DefaultConfig() Config {
 	return Config{Namespace: DefaultNamespace, Classes: DefaultClasses(), SnapshotClass: DefaultSnapshotClass}
 }
