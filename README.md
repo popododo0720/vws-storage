@@ -20,6 +20,17 @@ go run ./cmd/vws-storage
 
 One process may open a given SQLite file.
 
+## Kubernetes block backend
+
+`internal/backend/kube` serves volumes as PersistentVolumeClaims. It is not wired into `cmd/vws-storage` yet. It implements `CreateVolume` and `DeleteVolume` only. Snapshots are a later change.
+
+- `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `vws-rbd`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
+- The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
+- `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is not on `backend.Block`, because the engine has no resize transition yet.
+- Image and snapshot sources are `ErrInvalid` here.
+
+The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p path`). Without it the package skips.
+
 ## Operations
 
 Mutations return a long-running operation. Poll `GetOperation` until `done` is set. `request_id` is a UUID:

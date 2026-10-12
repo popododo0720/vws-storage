@@ -719,3 +719,18 @@ func reqTarget(t *testing.T, op storage.OperationStatus) model.VolumeID {
 	}
 	return id
 }
+
+func TestInvalidBackendArgumentFailsWithInvalidArgument(t *testing.T) {
+	blk := fake.NewBlock()
+	blk.FailNext("CreateVolume", backend.Permanent(backend.ErrInvalid))
+	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	op, err := svc.Submit(context.Background(), token(t, "invalid-1"), volumeReq(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitDone(t, svc, op.ID)
+	if got.Phase() != model.PhaseFailed || got.Err().Code != model.CodeInvalidArgument {
+		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
+	}
+}

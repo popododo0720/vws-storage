@@ -50,6 +50,9 @@ var (
 	ErrNotFound = errors.New("backend: not found")
 	ErrConflict = errors.New("backend: exists with different arguments")
 	ErrBusy     = errors.New("backend: busy")
+	// ErrInvalid means the arguments can never succeed, such as an unmapped
+	// volume type or a shrink.
+	ErrInvalid = errors.New("backend: invalid argument")
 )
 
 type permanentError struct{ err error }
