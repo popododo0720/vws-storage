@@ -49,6 +49,21 @@ type Monitor struct {
 	mu    sync.Mutex
 	last  map[string]string // service -> failure text, "" when serving
 	ready bool
+	shut  bool
+}
+
+// errNotReady is all Ready says: the failure text stays in the log.
+var errNotReady = errors.New("not ready")
+
+// Ready answers the aggregate readiness (ReadyService) from the last
+// Evaluate, without running a check. It is the HTTP /readyz check.
+func (m *Monitor) Ready(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.ready || m.shut {
+		return errNotReady
+	}
+	return nil
 }
 
 // New returns a Monitor. Every service starts NOT_SERVING until the first Evaluate.
@@ -144,7 +159,12 @@ func (m *Monitor) Run(ctx context.Context) {
 
 // Shutdown answers NOT_SERVING for every name, including liveness, and
 // ignores later updates. Call it before GracefulStop.
-func (m *Monitor) Shutdown() { m.srv.Shutdown() }
+func (m *Monitor) Shutdown() {
+	m.mu.Lock()
+	m.shut = true
+	m.mu.Unlock()
+	m.srv.Shutdown()
+}
 
 // Describe wraps a check's error with what it checks.
 func Describe(what string, c Check) Check {

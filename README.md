@@ -74,6 +74,26 @@ The server answers the standard `grpc.health.v1` service on the gRPC listener.
 
 A background loop evaluates the checks (`-health-period`, default 10s, sooner while something is down; `-health-timeout`, default 3s). `Check` and `Watch` answer from memory. S3 is not checked: an S3 outage must not take the volume services out of rotation. The kube checks read the Namespace, StorageClass and VolumeSnapshotClass, which are cluster-scoped, so the pod's service account needs `get` on them.
 
+### HTTP probes
+
+When `VWS_HEALTH_ADDR` is set, the process also serves HTTP probes on that address (vws-lib `obs.Setup`):
+
+| Path | Answer |
+| --- | --- |
+| `/healthz` | 200 while the process runs; checks nothing |
+| `/readyz` | 200 when `vws.storage.v1.Ready` is SERVING (the same cached verdict as above), 503 otherwise and once shutdown or SIGTERM starts. Telemetry backends (OTLP collector, Sentry) are never checked |
+
+### Environment
+
+| Variable | Effect |
+| --- | --- |
+| `VWS_HEALTH_ADDR` | HTTP probe address, e.g. `0.0.0.0:8086`. Empty serves no HTTP probes |
+| `VWS_LOG_LEVEL`, `VWS_LOG_FORMAT` | slog level (default `info`) and format (`json` or `text`, default `json`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for traces, metrics and logs. Empty exports nothing |
+| `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_TRACES_SAMPLER(_ARG)` | standard OpenTelemetry settings |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | error reports to Sentry when the DSN is set |
+| `VWS_S3_ACCESS_KEY`, `VWS_S3_SECRET_KEY` | S3 keys for `-object-backend=s3` |
+
 ## Operations
 
 Mutations return a long-running operation. Poll `GetOperation` until `done` is set. `request_id` is a UUID:

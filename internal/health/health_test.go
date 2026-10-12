@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +13,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	obshealth "github.com/popododo0720/vws-lib/obs/health"
 
 	"github.com/popododo0720/vws-storage/internal/health"
 )
@@ -166,5 +170,47 @@ func TestRunEvaluatesAtOnceAndStopsWithItsContext(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+// /readyz is the vws-lib handler with the Monitor's cached verdict as its one
+// check: no second readiness logic, and /healthz checks nothing.
+func TestHTTPProbesUseTheMonitorVerdict(t *testing.T) {
+	var f flag
+	m := health.New(health.Options{Targets: []health.Target{{Service: "a", Checks: []health.Check{f.check}}}})
+	h := obshealth.New()
+	h.Register("storage", m.Ready)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	get := func(path string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := get("/readyz"); got != http.StatusServiceUnavailable {
+		t.Fatalf("readyz before Evaluate = %d", got)
+	}
+	m.Evaluate(context.Background())
+	if got := get("/readyz"); got != http.StatusOK {
+		t.Fatalf("readyz ready = %d", got)
+	}
+	f.down.Store(true)
+	m.Evaluate(context.Background())
+	if got, live := get("/readyz"), get("/healthz"); got != http.StatusServiceUnavailable || live != http.StatusOK {
+		t.Fatalf("down: readyz %d healthz %d", got, live)
+	}
+	f.down.Store(false)
+	m.Evaluate(context.Background())
+	m.Shutdown()
+	if got := get("/readyz"); got != http.StatusServiceUnavailable {
+		t.Fatalf("readyz after Shutdown = %d", got)
 	}
 }
