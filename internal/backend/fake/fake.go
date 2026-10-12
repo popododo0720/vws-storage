@@ -79,7 +79,9 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		if hook != nil {
 			hook(call)
 		}
-		if cur != spec {
+		grown := cur
+		grown.Size = spec.Size
+		if grown != spec || cur.Size < spec.Size {
 			return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
 		}
 		return nil
