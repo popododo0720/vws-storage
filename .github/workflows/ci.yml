@@ -16,6 +16,8 @@ jobs:
         with:
           version: v2.14.0
           install-only: true
+      - run: scripts/guard-agents.sh selftest
+      - run: scripts/guard-agents.sh agents
       - run: golangci-lint run
       - run: golangci-lint fmt --diff
       - run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
