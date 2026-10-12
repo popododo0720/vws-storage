@@ -17,18 +17,25 @@ go run ./cmd/vws-storage
 | `-zones` | `vws-1a` | Comma-separated zone names |
 | `-projects` | empty | Comma-separated project ids. Empty accepts any valid project id |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
+| `-block-backend` | `fake` | `fake` or `kube` |
+| `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
+| `-kube-namespace` | `default` | namespace for claims and snapshots |
+| `-kube-class-standard` | `vws-rbd` | StorageClass for `standard` volumes |
+| `-kube-class-ssd` | `vws-rbd` | StorageClass for `ssd` volumes |
+| `-kube-snapshot-class` | `vws-rbd` | VolumeSnapshotClass for snapshots |
 
 One process may open a given SQLite file.
 
 ## Kubernetes block backend
 
-`internal/backend/kube` serves volumes as PersistentVolumeClaims. It is not wired into `cmd/vws-storage` yet. It implements all of `backend.Block`.
+`internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.
 
+- `kube.Config` holds the kubeconfig path (empty means in-cluster), the namespace, the class table, and the `VolumeSnapshotClass`. `kube.Open` builds the backend and does not call the API server. Defaults are namespace `default`, StorageClass `vws-rbd`, and snapshot class `vws-rbd`. These are placeholders until vws-platform fixes the real names.
 - `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `vws-rbd`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
 - `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is on `backend.Block`. `UpdateVolume` with mask `spec` or `spec.size_gib` submits an `ExpandVolumeRequest`. A smaller size is `INVALID_ARGUMENT` and the same size is a succeeded operation. The row keeps its old size until the backend call succeeds, then takes the new size and a new etag in the write that succeeds the operation.
 - Image sources are `ErrInvalid` here. Compute images belong to CDI.
-- A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name is a constructor argument.
+- A snapshot is one `VolumeSnapshot`. `CreateSnapshot` returns `ErrBusy` until `status.readyToUse` is true, so the engine retries and the snapshot row turns Available only when it is usable. Nothing else in the status is read. The `VolumeSnapshotClass` name comes from `kube.Config`.
 - A volume from a snapshot is a PVC with `dataSource` set to that `VolumeSnapshot`. A snapshot that is absent is `ErrNotFound`. One that is not ready is `ErrBusy`, and no claim is created yet.
 - Deleting a volume does not delete its snapshots. The engine admits the delete while a snapshot is Available, and the snapshot can still restore a volume. A snapshot being created blocks the delete. `TestVolumeDeleteKeepsItsAvailableSnapshot` and `TestDeletingSourceVolumeKeepsSnapshot` pin this. A snapshot that is a volume's source cannot be deleted.
 - The tests install the external-snapshotter `VolumeSnapshot` CRD from `testdata` (v8.2.0).
