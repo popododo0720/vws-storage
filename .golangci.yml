@@ -38,6 +38,11 @@ linters:
       key-naming-case: snake
     depguard:
       rules:
+        no-sentry-direct:
+          files: [$all]
+          deny:
+            - pkg: github.com/getsentry/sentry-go
+              desc: use vws-lib/obs/report
         backend:
           list-mode: lax
           files:
