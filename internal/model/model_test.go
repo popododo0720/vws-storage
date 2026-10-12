@@ -883,6 +883,8 @@ func sampleWork(t *testing.T, k Kind, vol Volume, snap Snapshot, bucket Bucket, 
 		return VolumeCreation{Volume: vol.ID, Spec: vol.Spec}
 	case KindDeleteVolume:
 		return VolumeDeletion{Volume: vol.ID}
+	case KindExpandVolume:
+		return VolumeExpansion{Volume: vol.ID, Size: 2 * vol.Spec.Size}
 	case KindCreateSnapshot:
 		return SnapshotCreation{Snapshot: snap.ID, Source: vol.ID}
 	case KindDeleteSnapshot:
@@ -932,5 +934,76 @@ func TestWriteObjectFingerprintCoversBytesAndEtag(t *testing.T) {
 	}
 	if (WriteObjectRequest{Path: req.Path, Size: 0}).Validate() == nil {
 		t.Fatal("a write without a sha256 validated")
+	}
+}
+
+func TestExpandGrowsOnlyAndStoresSizeOnCompletion(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	vol := availableVolume(t, now)
+	avail, ok := vol.AsAvailable()
+	if !ok {
+		t.Fatal("not available")
+	}
+	for _, size := range []Bytes{vol.Spec.Size - GiB, vol.Spec.Size} {
+		if _, err := avail.Expand(Start{Op: NewOperationID(), Now: now}, size); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("size %d: %v", size, err)
+		}
+	}
+	want := vol.Spec.Size + GiB
+	admitted, err := avail.Expand(Start{Op: NewOperationID(), Now: now}, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := admitted.Change.Writes()[0].(Guard); !ok {
+		t.Fatal("admission did not guard the volume row")
+	}
+	run, ok := AsRunning[VolumeExpansion](admitted.Op)
+	if !ok {
+		t.Fatal("not running")
+	}
+	ch, err := avail.Expanded(run, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown := putNext(t, ch, "volume").(Volume)
+	if grown.Spec.Size != want || grown.Meta.Version != vol.Meta.Version+1 {
+		t.Fatalf("size %d version %d", grown.Spec.Size, grown.Meta.Version)
+	}
+	if _, ok := grown.AsAvailable(); !ok {
+		t.Fatalf("state %v", grown.State)
+	}
+	if op := putNext(t, ch, "operation").(Operation); op.Phase() != PhaseSucceeded {
+		t.Fatalf("phase %s", op.Phase())
+	}
+}
+
+func TestExpandRequestValidateAndFingerprint(t *testing.T) {
+	id := NewVolumeID()
+	req := ExpandVolumeRequest{Volume: id, Size: 2 * GiB, Expected: 1}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []ExpandVolumeRequest{{Size: GiB}, {Volume: id, Size: GiB / 2}, {Volume: id, Size: maxVolume + GiB}} {
+		if bad.Validate() == nil {
+			t.Fatalf("%+v validated", bad)
+		}
+	}
+	base, err := HashRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mut := range map[string]func(*ExpandVolumeRequest){
+		"size": func(r *ExpandVolumeRequest) { r.Size = 3 * GiB },
+		"etag": func(r *ExpandVolumeRequest) { r.Expected = 2 },
+	} {
+		other := req
+		mut(&other)
+		got, err := HashRequest(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == base {
+			t.Fatalf("%s change hashed the same", name)
+		}
 	}
 }

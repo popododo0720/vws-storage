@@ -78,6 +78,36 @@ func (a AvailableVolume) Delete(st Start) (Admitted, error) {
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
 
+// Expand admits growing the volume to size. The volume row is guarded and
+// keeps its state until Expanded.
+func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
+	if st.Op.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	if size <= a.v.Spec.Size {
+		return Admitted{}, fmt.Errorf("%w: volume can only grow", ErrInvalidArgument)
+	}
+	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size})
+	ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
+	return Admitted{Change: writes(ws...), Op: op}, nil
+}
+
+// Expanded stores the new size and succeeds the operation. A volume already
+// at least that large only succeeds the operation.
+func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) (Change, error) {
+	if op.Work().Volume != a.v.ID {
+		return Change{}, ErrStale
+	}
+	done := putUpdate(op.Operation(), succeedOp(op.Operation(), now))
+	if a.v.Spec.Size >= op.Work().Size {
+		return writes(guardRec(a.v), done), nil
+	}
+	next := a.v
+	next.Spec.Size = op.Work().Size
+	next.Meta = bump(a.v.Meta, now)
+	return writes(putUpdate(a.v, next), done), nil
+}
+
 // Snapshot admits a snapshot of the volume and guards the volume row.
 func (a AvailableVolume) Snapshot(st Start, id SnapshotID, region Region, labels Labels, description string) (Admitted, error) {
 	if id.IsZero() || st.Op.IsZero() {

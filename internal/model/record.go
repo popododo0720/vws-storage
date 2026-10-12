@@ -144,6 +144,8 @@ const (
 	KindPutObject
 	// KindDeleteObject reclaims an object's bytes.
 	KindDeleteObject
+	// KindExpandVolume grows a volume.
+	KindExpandVolume
 	kindEnd
 )
 
@@ -175,6 +177,8 @@ func (k Kind) String() string {
 		return "put-object"
 	case KindDeleteObject:
 		return "delete-object"
+	case KindExpandVolume:
+		return "expand-volume"
 	default:
 		return ""
 	}
@@ -199,6 +203,13 @@ type VolumeCreation struct {
 type VolumeDeletion struct {
 	Volume VolumeID
 	Zone   Zone
+}
+
+// VolumeExpansion grows Volume to Size. The volume row stays Available and
+// takes the new size in the same write that succeeds the operation.
+type VolumeExpansion struct {
+	Volume VolumeID
+	Size   Bytes
 }
 
 // SnapshotCreation snapshots Source into Snapshot.
@@ -268,6 +279,9 @@ func (VolumeCreation) Kind() Kind { return KindCreateVolume }
 func (VolumeDeletion) Kind() Kind { return KindDeleteVolume }
 
 // Kind implements Work.
+func (VolumeExpansion) Kind() Kind { return KindExpandVolume }
+
+// Kind implements Work.
 func (SnapshotCreation) Kind() Kind { return KindCreateSnapshot }
 
 // Kind implements Work.
@@ -290,6 +304,9 @@ func (w VolumeCreation) Target() Ref { return w.Volume }
 
 // Target implements Work.
 func (w VolumeDeletion) Target() Ref { return w.Volume }
+
+// Target implements Work.
+func (w VolumeExpansion) Target() Ref { return w.Volume }
 
 // Target implements Work.
 func (w SnapshotCreation) Target() Ref { return w.Snapshot }
@@ -323,6 +340,9 @@ func (w VolumeCreation) Refs() []Ref {
 func (w VolumeDeletion) Refs() []Ref { return []Ref{w.Volume} }
 
 // Refs implements Work.
+func (w VolumeExpansion) Refs() []Ref { return []Ref{w.Volume} }
+
+// Refs implements Work.
 func (w SnapshotCreation) Refs() []Ref { return []Ref{w.Snapshot, w.Source} }
 
 // Refs implements Work.
@@ -349,6 +369,7 @@ func (w ObjectPurge) Refs() []Ref {
 
 func (VolumeCreation) isWork()   {}
 func (VolumeDeletion) isWork()   {}
+func (VolumeExpansion) isWork()  {}
 func (SnapshotCreation) isWork() {}
 func (SnapshotDeletion) isWork() {}
 func (BucketCreation) isWork()   {}
