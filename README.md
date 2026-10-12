@@ -23,7 +23,7 @@ go run ./cmd/vws-storage
 | `-s3-region` | profile default | S3 region |
 | `-block-backend` | `fake` | `fake` or `kube` |
 | `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
-| `-kube-namespace` | `default` | namespace for claims and snapshots |
+| `-kube-namespace` | `vws-vms` | namespace for claims and snapshots. It is the VM namespace, because KubeVirt hot-plugs only a claim in the VM's namespace |
 | `-kube-class-standard` | `ceph-block` | StorageClass for `standard` volumes |
 | `-kube-class-ssd` | `ceph-block` | StorageClass for `ssd` volumes |
 | `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots |
@@ -36,7 +36,7 @@ One process may open a given SQLite file.
 
 `internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.
 
-- `kube.Config` holds the kubeconfig path (empty means in-cluster), the namespace, the class table, and the `VolumeSnapshotClass`. `kube.Open` builds the backend and does not call the API server. Defaults are namespace `default`, StorageClass `ceph-block`, and snapshot class `ceph-block`. They are the names the Rook bundle in vws-deploy creates (provisioner `rook-ceph.rbd.csi.ceph.com`). A class that does not exist leaves the claim Pending.
+- `kube.Config` holds the kubeconfig path (empty means in-cluster), the namespace, the class table, and the `VolumeSnapshotClass`. `kube.Open` builds the backend and does not call the API server. Defaults are namespace `vws-vms` (the VM namespace, so KubeVirt can hot-plug the claim), StorageClass `ceph-block`, and snapshot class `ceph-block`. They are the names the Rook bundle in vws-deploy creates (provisioner `rook-ceph.rbd.csi.ceph.com`). A class that does not exist leaves the claim Pending.
 - `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `ceph-block`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
 - `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is on `backend.Block`. `UpdateVolume` with mask `spec` or `spec.size_gib` submits an `ExpandVolumeRequest`. A smaller size is `INVALID_ARGUMENT` and the same size is a succeeded operation. The row keeps its old size until the backend call succeeds, then takes the new size and a new etag in the write that succeeds the operation.

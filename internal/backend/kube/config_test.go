@@ -33,6 +33,7 @@ func writeKubeconfig(t *testing.T) string {
 func TestOpenUsesConfiguredNames(t *testing.T) {
 	cfg := kube.DefaultConfig()
 	cfg.Kubeconfig = writeKubeconfig(t)
+	cfg.Namespace = ns
 	cfg.Classes = kube.Classes{model.VolumeTypeStandard: "slow-class", model.VolumeTypeSSD: "fast-class"}
 	cfg.SnapshotClass = "custom-snapclass"
 	b, err := kube.Open(cfg)
@@ -81,5 +82,23 @@ func TestOpenRejectsIncompleteConfig(t *testing.T) {
 		if _, err := kube.Open(c); err == nil {
 			t.Fatalf("%s: opened", name)
 		}
+	}
+}
+
+// These are the names vws-deploy writes: namespaces.vms in charts/vws/values.yaml and
+// the ceph-block StorageClass and VolumeSnapshotClass of the Rook bundle. Changing a
+// default here means changing them there.
+func TestDefaultConfigNamesMatchVwsDeploy(t *testing.T) {
+	c := kube.DefaultConfig()
+	if c.Namespace != "vws-vms" || c.SnapshotClass != "ceph-block" {
+		t.Fatalf("namespace %q snapshot class %q", c.Namespace, c.SnapshotClass)
+	}
+	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeSSD} {
+		if got := c.Classes[typ]; got != "ceph-block" {
+			t.Errorf("class for %s is %q", typ, got)
+		}
+	}
+	if len(c.Classes) != 2 {
+		t.Errorf("classes %v", c.Classes)
 	}
 }

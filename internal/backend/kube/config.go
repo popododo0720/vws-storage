@@ -13,8 +13,10 @@ import (
 // DefaultSnapshotClass is the VolumeSnapshotClass used when none is configured.
 const DefaultSnapshotClass = "ceph-block"
 
-// DefaultNamespace holds the claims when none is configured.
-const DefaultNamespace = "default"
+// DefaultNamespace is the VM namespace. Claims live there because KubeVirt can
+// hot-plug only a claim that is in the same namespace as the VM. There is no
+// separate volume namespace.
+const DefaultNamespace = "vws-vms"
 
 // Config selects the cluster and every name the backend writes into it.
 type Config struct {
@@ -25,7 +27,7 @@ type Config struct {
 	SnapshotClass string
 }
 
-// DefaultConfig serves every type from the ceph-block classes in the default namespace.
+// DefaultConfig serves every type from the ceph-block classes in the VM namespace.
 func DefaultConfig() Config {
 	return Config{Namespace: DefaultNamespace, Classes: DefaultClasses(), SnapshotClass: DefaultSnapshotClass}
 }
