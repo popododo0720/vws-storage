@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -697,30 +698,22 @@ func listPage[T any](ctx context.Context, size int32, token string, list func(co
 	return list(ctx, model.PageRequest{Size: n, Token: token})
 }
 
-func getBytes(ctx context.Context, loc model.Locator) ([]byte, error) {
+func getBytes(ctx context.Context, loc model.Locator) (body []byte, err error) {
 	method := loc.Method
 	if method == "" {
 		method = http.MethodGet
 	}
-	req, err := http.NewRequestWithContext(ctx, method, loc.URL, http.NoBody)
+	resp, err := doLocator(ctx, method, loc, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range loc.Headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	defer closeBody(resp.Body, &err)
 	if resp.StatusCode/100 != 2 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, errors.New(resp.Status + " " + string(bytes.TrimSpace(msg)))
+		return nil, statusErr(resp)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInlineObject+1))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxInlineObject+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read object bytes: %w", err)
 	}
 	if len(body) > maxInlineObject {
 		return nil, errors.New("payload exceeds the read limit")
@@ -728,26 +721,49 @@ func getBytes(ctx context.Context, loc model.Locator) ([]byte, error) {
 	return body, nil
 }
 
-func putBytes(ctx context.Context, loc model.Locator, body []byte) error {
+func putBytes(ctx context.Context, loc model.Locator, body []byte) (err error) {
 	method := loc.Method
 	if method == "" {
 		method = http.MethodPut
 	}
-	req, err := http.NewRequestWithContext(ctx, method, loc.URL, bytes.NewReader(body))
+	resp, err := doLocator(ctx, method, loc, bytes.NewReader(body))
 	if err != nil {
 		return err
+	}
+	defer closeBody(resp.Body, &err)
+	if resp.StatusCode/100 != 2 {
+		return statusErr(resp)
+	}
+	return nil
+}
+
+func doLocator(ctx context.Context, method string, loc model.Locator, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, loc.URL, body)
+	if err != nil {
+		return nil, fmt.Errorf("build object request: %w", err)
 	}
 	for k, v := range loc.Headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("object request: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return errors.New(resp.Status + " " + string(bytes.TrimSpace(msg)))
+	return resp, nil
+}
+
+// statusErr reports a non-2xx object response with the start of its body.
+// A body that cannot be read is left out of the message.
+func statusErr(resp *http.Response) error {
+	msg, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil {
+		msg = nil
 	}
-	return nil
+	return errors.New(resp.Status + " " + string(bytes.TrimSpace(msg)))
+}
+
+func closeBody(c io.Closer, err *error) {
+	if cerr := c.Close(); cerr != nil {
+		*err = errors.Join(*err, fmt.Errorf("close object response: %w", cerr))
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -491,7 +492,7 @@ func (s *Server) operation(ctx context.Context, st storage.OperationStatus) (*lo
 	}
 	meta, err := anypb.New(md)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pack operation metadata: %w", err)
 	}
 	out := &longrunningpb.Operation{Name: s.opName(op.ID), Metadata: meta, Done: op.Terminal()}
 	if !op.Terminal() {
@@ -502,16 +503,17 @@ func (s *Server) operation(ctx context.Context, st storage.OperationStatus) (*lo
 		return out, nil
 	}
 	msg, err := s.successMessage(ctx, op)
+	if errors.Is(err, errNoResponse) {
+		return out, nil
+	}
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	if msg != nil {
-		body, err := anypb.New(msg)
-		if err != nil {
-			return nil, err
-		}
-		out.Result = &longrunningpb.Operation_Response{Response: body}
+	body, err := anypb.New(msg)
+	if err != nil {
+		return nil, fmt.Errorf("pack response: %w", err)
 	}
+	out.Result = &longrunningpb.Operation_Response{Response: body}
 	return out, nil
 }
 
@@ -549,12 +551,16 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 	}
 }
 
+// errNoResponse means the operation succeeded and has no response body: the
+// row it created is already gone or the work kind has none.
+var errNoResponse = errors.New("operation has no response body")
+
 func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.Message, error) {
 	switch w := op.Work.(type) {
 	case model.VolumeCreation:
 		vol, err := s.svc.Volume(ctx, w.Volume)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil, errNoResponse
 		}
 		if err != nil {
 			return nil, err
@@ -563,7 +569,7 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	case model.VolumeExpansion:
 		vol, err := s.svc.Volume(ctx, w.Volume)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil, errNoResponse
 		}
 		if err != nil {
 			return nil, err
@@ -572,7 +578,7 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	case model.SnapshotCreation:
 		snap, err := s.svc.Snapshot(ctx, w.Snapshot)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil, errNoResponse
 		}
 		if err != nil {
 			return nil, err
@@ -581,7 +587,7 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	case model.BucketCreation:
 		b, err := s.svc.Bucket(ctx, w.Bucket)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil, errNoResponse
 		}
 		if err != nil {
 			return nil, err
@@ -590,14 +596,14 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	case model.ObjectUpload:
 		obj, err := s.svc.Object(ctx, w.Object.Path)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil, errNoResponse
 		}
 		if err != nil {
 			return nil, err
 		}
 		return s.objectMsg(obj), nil
 	default:
-		return nil, nil
+		return nil, errNoResponse
 	}
 }
 
@@ -733,7 +739,7 @@ func stamp(t time.Time) *timestamppb.Timestamp {
 func doneOnly(name string, verb commonv1.OperationVerb) (*longrunningpb.Operation, error) {
 	md, err := anypb.New(&commonv1.OperationMetadata{Resource: name, Verb: verb, CreateTime: timestamppb.Now(), EndTime: timestamppb.Now()})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pack operation metadata: %w", err)
 	}
 	return &longrunningpb.Operation{Metadata: md, Done: true}, nil
 }
@@ -790,17 +796,19 @@ func toStatus(err error) error {
 		return statusError{code: codes.Aborted, reason: "ETAG_MISMATCH", err: err}.grpc()
 	case errors.Is(err, model.ErrFailedPrecondition):
 		reason := "DEPENDENCY_NOT_READY"
-		if strings.Contains(err.Error(), "not empty") || strings.Contains(err.Error(), "sources") {
+		if errors.Is(err, model.ErrDependencyMissing) {
 			reason = "DEPENDENCY_MISSING"
 		}
 		return statusError{code: codes.FailedPrecondition, reason: reason, err: err}.grpc()
 	case errors.Is(err, model.ErrStale):
 		return statusError{code: codes.Aborted, reason: "GENERATION_CONFLICT", err: err}.grpc()
 	default:
-		return status.Error(codes.Internal, err.Error())
+		log.Printf("vws-storage: internal error: %v", err)
+		return status.Error(codes.Internal, "internal error")
 	}
 }
 
+//nolint:wrapcheck // this builds the wire status; wrapping it would change what the client sees
 func (e statusError) grpc() error {
 	st := status.New(e.code, e.err.Error())
 	if e.reason == "" {

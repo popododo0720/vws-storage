@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -97,12 +98,23 @@ func (s *Service) start(ctx context.Context, id model.OperationID, inflight map[
 	delete(hold, id)
 	inflight[id] = struct{}{}
 	go func() {
-		err := s.drive(ctx, id)
+		err := s.driveRecovered(ctx, id)
 		if err != nil && ctx.Err() == nil {
 			log.Printf("vws-storage: operation %s: %v", id, err)
 		}
 		done <- drove{id: id, err: err}
 	}()
+}
+
+// driveRecovered turns a panic in an operation into an error, so one bad
+// operation backs off and retries instead of ending the process.
+func (s *Service) driveRecovered(ctx context.Context, id model.OperationID) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("storage: panic driving operation: %v", r)
+		}
+	}()
+	return s.drive(ctx, id)
 }
 
 func (s *Service) drive(ctx context.Context, id model.OperationID) error {
@@ -156,7 +168,7 @@ func notDue(op model.Operation, now time.Time) bool {
 
 func (s *Service) settle(ctx context.Context, decide func(r store.Reader, now time.Time) (model.Change, error)) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("storage: %w", err)
 	}
 	return s.st.Update(ctx, func(r store.Reader) (model.Change, error) {
 		return decide(r, s.now())
@@ -209,8 +221,8 @@ func finish[W model.Work](
 	onSuccess func(model.RunningOp[W], store.Reader, time.Time) (model.Change, error),
 	onPermanent func(model.RunningOp[W], store.Reader, model.Status, time.Time) (model.Change, error),
 ) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	return s.settle(ctx, func(r store.Reader, now time.Time) (model.Change, error) {
 		cur, err := r.Operation(ctx, id)
@@ -239,12 +251,12 @@ func undo[W model.Creation](
 	undoCall func(context.Context) error,
 	abandon func(store.Reader, model.CompensatingOp[W], time.Time) (model.Change, error),
 ) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	undoErr := undoCall(ctx)
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	return s.settle(ctx, func(r store.Reader, now time.Time) (model.Change, error) {
 		cur, err := r.Operation(ctx, id)

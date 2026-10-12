@@ -380,13 +380,13 @@ func (ObjectPurge) isWork()      {}
 // Check reports whether obs satisfies the upload.
 func (w ObjectUpload) Check(obs ObservedObject) error {
 	if obs.Size != w.Size {
-		return errSentinel("upload size mismatch")
+		return sentinelError("upload size mismatch")
 	}
 	if !w.SHA256.IsZero() && obs.SHA256 != w.SHA256 {
-		return errSentinel("upload checksum mismatch")
+		return sentinelError("upload checksum mismatch")
 	}
 	if obs.ETag == "" || obs.UploadedAt.IsZero() {
-		return errSentinel("incomplete upload observation")
+		return sentinelError("incomplete upload observation")
 	}
 	return nil
 }

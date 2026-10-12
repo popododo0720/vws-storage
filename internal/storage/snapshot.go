@@ -91,7 +91,7 @@ func (s *Service) admitDeleteSnapshot(ctx context.Context, r store.Reader, st mo
 		}
 		for _, vol := range vols {
 			if src, ok := vol.Spec.Source.Snapshot(); ok && src == req.Snapshot {
-				return model.Admitted{}, fmt.Errorf("%w: volume sources snapshot", model.ErrFailedPrecondition)
+				return model.Admitted{}, fmt.Errorf("%w: volume sources snapshot", model.ErrDependencyMissing)
 			}
 			after = vol.ID
 		}

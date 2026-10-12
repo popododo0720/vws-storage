@@ -744,7 +744,7 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 	objs := fake.NewObjects(fake.ObjectOptions{})
 	var httpSrv *http.Server
 	if objectBase != "" {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
