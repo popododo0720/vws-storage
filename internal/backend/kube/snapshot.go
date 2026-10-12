@@ -52,7 +52,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 	cur, err := snaps.Create(ctx, vs, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		cur, err = snaps.Get(ctx, snapshotName(id), metav1.GetOptions{})
-		if err == nil && annotation(cur.GetAnnotations(), sourceAnnotation, legacySourceVolume) != source.String() {
+		if err == nil && cur.GetAnnotations()[sourceAnnotation] != source.String() {
 			return backend.Permanent(fmt.Errorf("%w: snapshot", backend.ErrConflict))
 		}
 	}

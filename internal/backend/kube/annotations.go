@@ -13,18 +13,3 @@ const (
 	zoneAnnotation     = annotationPrefix + "zone"
 	sourceAnnotation   = annotationPrefix + "source"
 )
-
-const (
-	legacyZone           = "vws.storage/zone"
-	legacySourceSnapshot = "vws.storage/source-snapshot"
-	legacySourceVolume   = "vws.storage/source-volume"
-)
-
-// annotation reads key and falls back to its vws.storage/ name, so a repeated
-// create on an object from before the prefix move is still the same resource.
-func annotation(m map[string]string, key, legacy string) string {
-	if v, ok := m[key]; ok {
-		return v
-	}
-	return m[legacy]
-}
