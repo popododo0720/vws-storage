@@ -68,7 +68,9 @@ func pvcName(id model.VolumeID) string {
 	return "vol-" + hex.EncodeToString(sum[:16])
 }
 
-// CreateVolume creates the claim for id. A repeat with the same spec is a no-op.
+// CreateVolume creates the claim for id. A repeat with the same spec is a no-op,
+// including after Expand: a claim at least as large as the request is the same
+// volume, because a volume only grows.
 func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error {
 	class, ok := b.classes[spec.Type]
 	if !ok {
@@ -118,7 +120,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	if cur.Annotations[zoneAnnotation] != spec.Zone.String() ||
 		cur.Annotations[sourceAnnotation] != from.String() ||
 		cur.Spec.StorageClassName == nil || *cur.Spec.StorageClassName != class ||
-		!cur.Spec.Resources.Requests.Storage().Equal(*pvc.Spec.Resources.Requests.Storage()) {
+		cur.Spec.Resources.Requests.Storage().Cmp(*pvc.Spec.Resources.Requests.Storage()) < 0 {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
 	}
 	return nil

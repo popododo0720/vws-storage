@@ -305,3 +305,23 @@ func TestCreateVolumeOverClaimWithoutClassIsConflict(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestCreateVolumeRepeatAfterExpandIsSameVolume(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, 2*model.GiB)); err != nil {
+		t.Fatal(err)
+	}
+	bind(t, id)
+	if err := b.Expand(ctx, id, 4*model.GiB); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, 2*model.GiB)); err != nil {
+		t.Fatalf("repeat with the original size: %v", err)
+	}
+	err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, 8*model.GiB))
+	if !errors.Is(err, backend.ErrConflict) {
+		t.Fatalf("larger than the claim: %v", err)
+	}
+}
