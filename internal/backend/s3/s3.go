@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,6 +46,10 @@ type Config struct {
 	SecretKey string
 	// PathStyle addresses buckets as /bucket instead of bucket.host.
 	PathStyle bool
+	// BucketPrefix goes in front of every S3 bucket name as "<prefix>-",
+	// so several installations can share one RGW. Empty adds nothing. VWS
+	// bucket names in the API never carry it.
+	BucketPrefix string
 }
 
 // ProfileConfig returns the defaults for p. The caller sets Endpoint and keys.
@@ -60,9 +65,10 @@ func ProfileConfig(p Profile) (Config, error) {
 
 // Driver implements backend.Object and backend.Signer.
 type Driver struct {
-	c   *awss3.Client
-	p   *awss3.PresignClient
-	now func() time.Time
+	c      *awss3.Client
+	p      *awss3.PresignClient
+	now    func() time.Time
+	prefix string
 }
 
 var (
@@ -75,6 +81,9 @@ func Open(cfg Config) (*Driver, error) {
 	if cfg.Endpoint == "" || cfg.Region == "" || cfg.AccessKey == "" || cfg.SecretKey == "" {
 		return nil, fmt.Errorf("s3: endpoint, region, and keys are required")
 	}
+	if err := checkBucketPrefix(cfg.BucketPrefix); err != nil {
+		return nil, err
+	}
 	c := awss3.New(awss3.Options{
 		BaseEndpoint: aws.String(cfg.Endpoint),
 		Region:       cfg.Region,
@@ -84,14 +93,44 @@ func Open(cfg Config) (*Driver, error) {
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	})
-	return &Driver{c: c, p: awss3.NewPresignClient(c), now: time.Now}, nil
+	return &Driver{c: c, p: awss3.NewPresignClient(c), now: time.Now, prefix: cfg.BucketPrefix}, nil
+}
+
+// bucketIDLen is the length of an unprefixed S3 bucket name: "vws-" and 40 hex.
+const bucketIDLen = 4 + 40
+
+// maxBucketPrefix is the longest prefix whose "<prefix>-" still fits the
+// 63-character S3 bucket name limit in front of a bucketIDLen name.
+const maxBucketPrefix = 63 - 1 - bucketIDLen
+
+var bucketPrefixRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// checkBucketPrefix rejects a prefix that would make any bucket name invalid
+// in S3: too long, characters outside [a-z0-9-], or a reserved start.
+// Every bucket name has the same length, so checking once covers them all.
+func checkBucketPrefix(p string) error {
+	switch {
+	case p == "":
+		return nil
+	case len(p) > maxBucketPrefix:
+		return fmt.Errorf("%w: s3 bucket prefix %q is longer than %d characters", model.ErrInvalidArgument, p, maxBucketPrefix)
+	case !bucketPrefixRE.MatchString(p):
+		return fmt.Errorf("%w: s3 bucket prefix %q must be lowercase letters, digits and '-', starting with a letter or digit", model.ErrInvalidArgument, p)
+	case strings.HasPrefix(p, "xn--") || strings.HasPrefix(p, "sthree-") || strings.HasPrefix(p, "amzn-s3-demo-"):
+		return fmt.Errorf("%w: s3 bucket prefix %q starts with a prefix S3 reserves", model.ErrInvalidArgument, p)
+	}
+	return nil
 }
 
 // bucketID maps a VWS bucket name to a valid S3 bucket name. The VWS name has
-// slashes and a project, so it is hashed.
-func bucketID(b model.BucketName) string {
+// slashes and a project, so it is hashed. The prefix, if any, comes first.
+func (d *Driver) bucketID(b model.BucketName) string {
 	sum := sha256.Sum256([]byte(b.String()))
-	return "vws-" + hex.EncodeToString(sum[:20])
+	id := "vws-" + hex.EncodeToString(sum[:20])
+	if d.prefix == "" {
+		return id
+	}
+	return d.prefix + "-" + id
 }
 
 // objectKey puts the generation first. A generation is 16 hex characters and
@@ -110,7 +149,7 @@ func code(err error) string {
 
 // CreateBucket creates the bucket. A bucket these credentials already own is success.
 func (d *Driver) CreateBucket(ctx context.Context, name model.BucketName) error {
-	id := aws.String(bucketID(name))
+	id := aws.String(d.bucketID(name))
 	_, err := d.c.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: id})
 	switch code(err) {
 	case "BucketAlreadyOwnedByYou":
@@ -133,7 +172,7 @@ func (d *Driver) CreateBucket(ctx context.Context, name model.BucketName) error 
 // DeleteBucket deletes the bucket. An absent bucket is success and a bucket
 // that still holds objects is ErrBusy.
 func (d *Driver) DeleteBucket(ctx context.Context, name model.BucketName) error {
-	_, err := d.c.DeleteBucket(ctx, &awss3.DeleteBucketInput{Bucket: aws.String(bucketID(name))})
+	_, err := d.c.DeleteBucket(ctx, &awss3.DeleteBucketInput{Bucket: aws.String(d.bucketID(name))})
 	switch code(err) {
 	case "NoSuchBucket":
 		return nil
@@ -152,7 +191,7 @@ func (d *Driver) DeleteBucket(ctx context.Context, name model.BucketName) error 
 // without server-side encryption, and is zero otherwise.
 func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedObject, error) {
 	out, err := d.c.HeadObject(ctx, &awss3.HeadObjectInput{
-		Bucket:       aws.String(bucketID(ref.Path.Bucket)),
+		Bucket:       aws.String(d.bucketID(ref.Path.Bucket)),
 		Key:          aws.String(objectKey(ref)),
 		ChecksumMode: "ENABLED",
 	})
@@ -181,7 +220,7 @@ func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedO
 // DeleteObject deletes one generation. An absent generation is success.
 func (d *Driver) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 	_, err := d.c.DeleteObject(ctx, &awss3.DeleteObjectInput{
-		Bucket: aws.String(bucketID(ref.Path.Bucket)),
+		Bucket: aws.String(d.bucketID(ref.Path.Bucket)),
 		Key:    aws.String(objectKey(ref)),
 	})
 	if err != nil && code(err) != "NoSuchBucket" {
@@ -199,7 +238,7 @@ func (d *Driver) PresignPut(ctx context.Context, ref model.ObjectRef, size model
 		return model.Locator{}, err
 	}
 	in := &awss3.PutObjectInput{
-		Bucket:        aws.String(bucketID(ref.Path.Bucket)),
+		Bucket:        aws.String(d.bucketID(ref.Path.Bucket)),
 		Key:           aws.String(objectKey(ref)),
 		ContentLength: aws.Int64(int64(size)),
 		IfNoneMatch:   aws.String("*"),
@@ -220,7 +259,7 @@ func (d *Driver) PresignGet(ctx context.Context, ref model.ObjectRef, expires ti
 	if err != nil {
 		return model.Locator{}, err
 	}
-	in := &awss3.GetObjectInput{Bucket: aws.String(bucketID(ref.Path.Bucket)), Key: aws.String(objectKey(ref))}
+	in := &awss3.GetObjectInput{Bucket: aws.String(d.bucketID(ref.Path.Bucket)), Key: aws.String(objectKey(ref))}
 	req, err := d.p.PresignGetObject(ctx, in, awss3.WithPresignExpires(ttl))
 	if err != nil {
 		return model.Locator{}, fmt.Errorf("s3: presign get: %w", err)

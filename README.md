@@ -21,6 +21,7 @@ go run ./cmd/vws-storage
 | `-s3-profile` | `rgw` | `rgw` or `minio`. Both default to path-style addressing and region `us-east-1` |
 | `-s3-endpoint` | empty | S3 endpoint URL for `s3` |
 | `-s3-region` | profile default | S3 region |
+| `-s3-bucket-prefix` | empty | prefix for every S3 bucket name: `<prefix>-vws-<40 hex>`. Lowercase letters, digits and `-`, starting with a letter or digit, at most 18 characters so the name fits 63. An invalid prefix fails at startup. API bucket names never carry it |
 | `-block-backend` | `fake` | `fake` or `kube` |
 | `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
 | `-kube-namespace` | `vws-vms` | namespace for claims and snapshots. It is the VM namespace, because KubeVirt hot-plugs only a claim in the VM's namespace |

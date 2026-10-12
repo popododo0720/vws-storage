@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -57,11 +61,11 @@ func TestObjectBackendSelection(t *testing.T) {
 	}
 	t.Setenv("VWS_S3_ACCESS_KEY", "k")
 	t.Setenv("VWS_S3_SECRET_KEY", "s")
-	o, err := openObjects("s3", "", "minio", "http://127.0.0.1:1", "")
+	o, err := openObjects("s3", "", "minio", "http://127.0.0.1:1", "", "")
 	if err != nil || o.handler != nil || o.object == nil || o.signer == nil {
 		t.Fatalf("s3: %+v %v", o, err)
 	}
-	f, err := openObjects("fake", "127.0.0.1:0", "", "", "")
+	f, err := openObjects("fake", "127.0.0.1:0", "", "", "", "")
 	if err != nil || f.handler == nil {
 		t.Fatalf("fake: %+v %v", f, err)
 	}
@@ -129,4 +133,24 @@ func mustZone(t *testing.T) model.Zone {
 		t.Fatal(err)
 	}
 	return z
+}
+
+func TestBadBucketPrefixFailsStartWithoutKeys(t *testing.T) {
+	const ak, sk = "AKIAKEYMUSTNOTLEAK", "secret-must-not-leak"
+	t.Setenv("VWS_S3_ACCESS_KEY", ak)
+	t.Setenv("VWS_S3_SECRET_KEY", sk)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for _, p := range []string{"UPPER", strings.Repeat("a", 19), "x_y"} {
+		err := run([]string{"-object-backend=s3", "-s3-endpoint=http://127.0.0.1:1", "-s3-bucket-prefix=" + p})
+		if err == nil {
+			t.Fatalf("prefix %q: run succeeded", p)
+		}
+		for _, s := range []string{err.Error(), logs.String()} {
+			if strings.Contains(s, ak) || strings.Contains(s, sk) {
+				t.Fatalf("prefix %q: key in %q", p, s)
+			}
+		}
+	}
 }
