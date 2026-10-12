@@ -90,8 +90,6 @@ func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) (*unstruc
 // clears it when a retry succeeds, so a fresh error is not final.
 var snapshotErrorGrace = 10 * time.Minute
 
-const errorSeenAnnotation = "vws.popododo0720.io/error-first-seen"
-
 // ready reads status.readyToUse. A missing field is not ready and is retried.
 // A status.error is retried as ErrBusy until it has been observed for longer
 // than snapshotErrorGrace, then the failure is permanent so the operation
