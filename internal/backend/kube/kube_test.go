@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -276,5 +277,28 @@ func TestCreateVolumeWithSameClientTokenMakesOneClaim(t *testing.T) {
 	}
 	if got := claims(t) - before; got != 1 {
 		t.Fatalf("claims created %d", got)
+	}
+}
+
+func TestCreateVolumeOverClaimWithoutClassIsConflict(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	id := model.NewVolumeID()
+	size := resource.MustParse("1Gi")
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: kube.PVCName(id), Namespace: ns,
+			Annotations: map[string]string{kube.ZoneAnnotation: zone(t).String(), kube.SourceAnnotation: ""},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: size}},
+		},
+	}
+	if _, err := kc.CoreV1().PersistentVolumeClaims(ns).Create(context.Background(), pvc, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	err := b.CreateVolume(context.Background(), id, spec(t, model.VolumeTypeStandard, model.GiB))
+	if !errors.Is(err, backend.ErrConflict) || !backend.IsPermanent(err) {
+		t.Fatalf("err %v", err)
 	}
 }

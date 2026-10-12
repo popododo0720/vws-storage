@@ -114,7 +114,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	}
 	if cur.Annotations[zoneAnnotation] != spec.Zone.String() ||
 		cur.Annotations[sourceAnnotation] != from.String() ||
-		*cur.Spec.StorageClassName != class ||
+		cur.Spec.StorageClassName == nil || *cur.Spec.StorageClassName != class ||
 		!cur.Spec.Resources.Requests.Storage().Equal(*pvc.Spec.Resources.Requests.Storage()) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
 	}
