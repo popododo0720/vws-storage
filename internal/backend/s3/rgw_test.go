@@ -13,6 +13,8 @@ import (
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 
+	"github.com/popododo0720/vws-storage/internal/backend"
+	"github.com/popododo0720/vws-storage/internal/backend/s3"
 	"github.com/popododo0720/vws-storage/internal/model"
 )
 
@@ -38,42 +40,83 @@ func (w noChecksum) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b) //nolint:wrapcheck // test double passes the writer's error through
 }
 
-func TestUploadWithoutReportedChecksumPassesTheCheck(t *testing.T) {
+// flipGet corrupts the last byte of a GET body: stored bytes that no longer
+// match their ETag.
+type flipGet struct{ http.ResponseWriter }
+
+func (w flipGet) Write(b []byte) (int, error) {
+	c := append([]byte(nil), b...)
+	if len(c) > 0 {
+		c[len(c)-1] ^= 0xff
+	}
+	return w.ResponseWriter.Write(c) //nolint:wrapcheck // test double passes the writer's error through
+}
+
+// rgwLike serves gofakes3 the way Ceph RGW 19.2.6 behaves: it keeps no
+// checksum, so it reports none. corrupt flips GET bodies.
+func rgwLike(t *testing.T, corrupt bool) string {
+	t.Helper()
 	inner := gofakes3.New(s3mem.New()).Server()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// RGW 19.2.6 keeps no checksum to report, so the fake never sees one.
 		for k := range r.Header {
 			if strings.HasPrefix(strings.ToLower(k), "x-amz-checksum-") {
 				r.Header.Del(k)
 			}
 		}
-		inner.ServeHTTP(noChecksum{w}, r)
+		var out http.ResponseWriter = noChecksum{w}
+		if corrupt && r.Method == http.MethodGet {
+			out = flipGet{out}
+		}
+		inner.ServeHTTP(out, r)
 	}))
 	t.Cleanup(srv.Close)
-	d := openOn(t, srv.URL, "")
+	return srv.URL
+}
+
+func putVia(t *testing.T, url string, body []byte) (*s3.Driver, model.ObjectRef) {
+	t.Helper()
+	d := openOn(t, url, "")
 	ctx := context.Background()
 	r := ref(t, "logs", "a.txt")
 	if err := d.CreateBucket(ctx, r.Path.Bucket); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte("hello\n")
-	sha := model.Digest(sha256.Sum256(body))
-	loc, err := d.PresignPut(ctx, r, model.Bytes(len(body)), sha, time.Now().Add(time.Minute))
+	loc, err := d.PresignPut(ctx, r, model.Bytes(len(body)), model.Digest(sha256.Sum256(body)), time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := send(t, loc, body); status != http.StatusOK {
 		t.Fatalf("put %d", status)
 	}
-	obs, err := d.Stat(ctx, r)
+	return d, r
+}
+
+// Without a reported checksum, Stat computes the SHA-256 from the stored
+// bytes, so the record keeps a digest this process computed.
+func TestStatComputesSHA256WhenTheEndpointReportsNone(t *testing.T) {
+	body := []byte("hello\n")
+	d, r := putVia(t, rgwLike(t, false), body)
+	obs, err := d.Stat(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !obs.SHA256.IsZero() || obs.MD5 != model.MD5(md5.Sum(body)) {
+	sha := model.Digest(sha256.Sum256(body))
+	if obs.SHA256 != sha || obs.MD5 != model.MD5(md5.Sum(body)) {
 		t.Fatalf("observed %+v", obs)
 	}
-	w := model.ObjectUpload{Object: r, Size: model.Bytes(len(body)), SHA256: sha}
-	if err := w.Check(obs); err != nil {
+	if err := (model.ObjectUpload{Object: r, Size: obs.Size, SHA256: sha}).Check(obs); err != nil {
 		t.Fatalf("check: %v", err)
+	}
+	// A client that claimed another digest fails the check.
+	if err := (model.ObjectUpload{Object: r, Size: obs.Size, SHA256: model.Digest(sha256.Sum256([]byte("x")))}).Check(obs); err == nil {
+		t.Fatal("a false client digest passed")
+	}
+}
+
+func TestStatRejectsBytesThatDoNotMatchTheMD5ETag(t *testing.T) {
+	d, r := putVia(t, rgwLike(t, true), []byte("hello\n"))
+	_, err := d.Stat(context.Background(), r)
+	if err == nil || !backend.IsPermanent(err) {
+		t.Fatalf("err = %v, want a permanent md5 mismatch", err)
 	}
 }
