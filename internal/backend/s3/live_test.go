@@ -18,6 +18,7 @@ import (
 
 // TestLiveEndpoint runs against a real RGW or MinIO. Set VWS_S3_TEST_ENDPOINT,
 // VWS_S3_TEST_PROFILE (rgw or minio), VWS_S3_ACCESS_KEY, and VWS_S3_SECRET_KEY.
+// VWS_S3_TEST_BUCKET_PREFIX, if set, is the -s3-bucket-prefix under test.
 func TestLiveEndpoint(t *testing.T) {
 	endpoint := os.Getenv("VWS_S3_TEST_ENDPOINT")
 	if endpoint == "" {
@@ -28,6 +29,7 @@ func TestLiveEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Endpoint, cfg.AccessKey, cfg.SecretKey = endpoint, os.Getenv("VWS_S3_ACCESS_KEY"), os.Getenv("VWS_S3_SECRET_KEY")
+	cfg.BucketPrefix = os.Getenv("VWS_S3_TEST_BUCKET_PREFIX")
 	d, err := s3.Open(cfg)
 	if err != nil {
 		t.Fatal(err)
