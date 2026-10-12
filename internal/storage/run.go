@@ -196,20 +196,35 @@ func (p retryPolicy) next(attempts int, now time.Time) time.Time {
 
 func (p retryPolicy) uploadPoll(now time.Time) time.Time { return now.Add(p.poll) }
 
+// Operation messages for backend errors. Operation.error is client-visible, so
+// a backend error's text (API server replies, endpoints, paths) goes only to
+// the log. ErrInvalid keeps its text: every ErrInvalid in the backends is a
+// sentence this repository writes about the caller's request, such as "volume
+// cannot shrink", and the caller needs it to fix the request.
+const (
+	msgBackendNotFound = "the backend has no such resource"
+	msgBackendConflict = "the backend resource conflicts with the request"
+	msgBackendBusy     = "the backend is busy; retrying"
+	msgBackendFailed   = "the backend failed"
+)
+
 func statusOf(err error) model.Status {
-	switch {
-	case err == nil:
+	if err == nil {
 		return model.Status{}
-	case errors.Is(err, backend.ErrNotFound):
-		return model.Status{Code: model.CodeNotFound, Message: err.Error()}
-	case errors.Is(err, backend.ErrInvalid):
+	}
+	if errors.Is(err, backend.ErrInvalid) {
 		return model.Status{Code: model.CodeInvalidArgument, Message: err.Error()}
+	}
+	log.Printf("vws-storage: backend error: %v", err)
+	switch {
+	case errors.Is(err, backend.ErrNotFound):
+		return model.Status{Code: model.CodeNotFound, Message: msgBackendNotFound}
 	case errors.Is(err, backend.ErrConflict):
-		return model.Status{Code: model.CodeFailedPrecondition, Message: err.Error()}
+		return model.Status{Code: model.CodeFailedPrecondition, Message: msgBackendConflict}
 	case errors.Is(err, backend.ErrBusy):
-		return model.Status{Code: model.CodeUnavailable, Message: err.Error()}
+		return model.Status{Code: model.CodeUnavailable, Message: msgBackendBusy}
 	default:
-		return model.Status{Code: model.CodeUnavailable, Message: err.Error()}
+		return model.Status{Code: model.CodeUnavailable, Message: msgBackendFailed}
 	}
 }
 
