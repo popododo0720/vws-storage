@@ -931,3 +931,29 @@ func TestPanicInAnOperationIsRetriedNotFatal(t *testing.T) {
 		t.Fatalf("phase %s err %+v", got.Phase(), got.Err())
 	}
 }
+
+func TestHealthyNeedsARunningEngine(t *testing.T) {
+	svc, err := storage.Open(context.Background(), opts(storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if err := svc.Healthy(context.Background()); err == nil {
+		t.Fatal("healthy before Run")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = svc.Run(ctx); close(done) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for svc.Healthy(context.Background()) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not healthy while running")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	if err := svc.Healthy(context.Background()); err == nil {
+		t.Fatal("healthy after Run returned")
+	}
+}
