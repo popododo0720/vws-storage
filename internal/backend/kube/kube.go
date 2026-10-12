@@ -31,16 +31,6 @@ func DefaultClasses() Classes {
 	}
 }
 
-const (
-	// VolumeAnnotation holds the VWS volume name on the PVC.
-	VolumeAnnotation = "vws.storage/volume"
-	zoneAnnotation   = "vws.storage/zone"
-	sourceAnnotation = "vws.storage/source-snapshot"
-	// SnapshotAnnotation holds the VWS snapshot name on the VolumeSnapshot.
-	SnapshotAnnotation       = "vws.storage/snapshot"
-	snapshotSourceAnnotation = "vws.storage/source-volume"
-)
-
 // Block is the PVC-backed volume backend.
 type Block struct {
 	kc            kubernetes.Interface
@@ -112,8 +102,8 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	if err != nil {
 		return err
 	}
-	if cur.Annotations[zoneAnnotation] != spec.Zone.String() ||
-		cur.Annotations[sourceAnnotation] != from.String() ||
+	if annotation(cur.Annotations, zoneAnnotation, legacyZone) != spec.Zone.String() ||
+		annotation(cur.Annotations, sourceAnnotation, legacySourceSnapshot) != from.String() ||
 		*cur.Spec.StorageClassName != class ||
 		!cur.Spec.Resources.Requests.Storage().Equal(*pvc.Spec.Resources.Requests.Storage()) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
