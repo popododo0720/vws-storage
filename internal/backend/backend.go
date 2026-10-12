@@ -15,6 +15,8 @@ import (
 // Create calls are safe to repeat for the same id and the same arguments.
 // A repeat with different arguments is Permanent(ErrConflict).
 // Delete of an absent id returns nil.
+// Expand grows a volume to size. The same size is a no-op, a smaller size is
+// Permanent(ErrInvalid), and an absent id is Permanent(ErrNotFound).
 // An image source is a compute image name on the spec. Storage has not checked
 // that the image exists, that the volume's project may use it, or that the
 // volume size covers it. The adapter decides those. Permanent still drops a
@@ -22,6 +24,7 @@ import (
 type Block interface {
 	CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error
 	DeleteVolume(ctx context.Context, id model.VolumeID) error
+	Expand(ctx context.Context, id model.VolumeID, size model.Bytes) error
 	CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error
 	DeleteSnapshot(ctx context.Context, id model.SnapshotID) error
 }
