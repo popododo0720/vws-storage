@@ -34,16 +34,6 @@ func DefaultClasses() Classes {
 	}
 }
 
-const (
-	// VolumeAnnotation holds the VWS volume name on the PVC.
-	VolumeAnnotation = "vws.storage/volume"
-	zoneAnnotation   = "vws.storage/zone"
-	sourceAnnotation = "vws.storage/source-snapshot"
-	// SnapshotAnnotation holds the VWS snapshot name on the VolumeSnapshot.
-	SnapshotAnnotation       = "vws.storage/snapshot"
-	snapshotSourceAnnotation = "vws.storage/source-volume"
-)
-
 // Block is the PVC-backed volume backend.
 type Block struct {
 	kc            kubernetes.Interface
