@@ -607,7 +607,21 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 	}
 }
 
+// volumeMsg is v with the instance that uses it, read from the backend.
 func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volume {
+	return s.volumeMsgAttached(ctx, v, s.svc.Attachments(ctx, []model.Volume{v}))
+}
+
+// instanceName is the compute instance resource name for an instance id in the
+// volume's project and zone. An attachment never crosses either.
+func instanceName(v model.Volume, id string) string {
+	if id == "" {
+		return ""
+	}
+	return "projects/" + v.ID.Project().String() + "/zones/" + v.Spec.Zone.String() + "/instances/" + id
+}
+
+func (s *Server) volumeMsgAttached(ctx context.Context, v model.Volume, attached map[model.VolumeID]string) *storagev1.Volume {
 	out := &storagev1.Volume{
 		Name: s.volumeName(v.Spec.Zone, v.ID), Generation: int64(v.Meta.Version), Etag: etagOf(v.Meta),
 		Labels: v.Labels.Map(),
@@ -616,6 +630,7 @@ func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volum
 		},
 		Status: &storagev1.VolumeStatus{
 			Observed: observed(v.State, v.Meta.Version), SizeGib: int64(v.Spec.Size / model.GiB), ClaimName: s.svc.ClaimName(v),
+			Instance: instanceName(v, attached[v.ID]),
 		},
 		CreateTime: stamp(v.Meta.CreateTime), UpdateTime: stamp(v.Meta.UpdateTime),
 	}

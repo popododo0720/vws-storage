@@ -172,8 +172,9 @@ func (s *Server) ListVolumes(ctx context.Context, in *storagev1.ListVolumesReque
 		return nil, toStatus(err)
 	}
 	out := &storagev1.ListVolumesResponse{NextPageToken: page.NextToken}
+	attached := s.svc.Attachments(ctx, page.Items)
 	for _, vol := range page.Items {
-		out.Volumes = append(out.Volumes, s.volumeMsg(ctx, vol))
+		out.Volumes = append(out.Volumes, s.volumeMsgAttached(ctx, vol, attached))
 	}
 	return out, nil
 }
