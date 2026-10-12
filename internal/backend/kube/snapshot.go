@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -71,15 +72,15 @@ func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 	return err
 }
 
-func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) error {
+func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) (*unstructured.Unstructured, error) {
 	vs, err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Get(ctx, snapshotName(id), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return backend.Permanent(fmt.Errorf("%w: snapshot", backend.ErrNotFound))
+		return nil, backend.Permanent(fmt.Errorf("%w: snapshot", backend.ErrNotFound))
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return ready(vs)
+	return vs, ready(vs)
 }
 
 // ready reads only status.readyToUse. A missing field is not ready.
@@ -89,4 +90,17 @@ func ready(vs *unstructured.Unstructured) error {
 		return fmt.Errorf("%w: snapshot is not ready", backend.ErrBusy)
 	}
 	return nil
+}
+
+// restoreSize is status.restoreSize in bytes, when the snapshotter reported it.
+func restoreSize(vs *unstructured.Unstructured) (int64, bool) {
+	raw, _, _ := unstructured.NestedString(vs.Object, "status", "restoreSize")
+	if raw == "" {
+		return 0, false
+	}
+	q, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return 0, false
+	}
+	return q.Value(), true
 }
