@@ -2,14 +2,40 @@ version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
+    - contextcheck
     - depguard
     - errcheck
+    - errname
     - errorlint
     - govet
+    - nilerr
+    - nilnil
+    - noctx
     - revive
+    - sloglint
     - staticcheck
     - unused
+    - wrapcheck
   settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    wrapcheck:
+      extra-ignore-sigs:
+        - google.golang.org/grpc/status.Error(
+      ignore-package-globs:
+        - github.com/popododo0720/vws-storage/internal/*
+    sloglint:
+      no-mixed-args: true
+      attr-only: true
+      context: all
+      static-msg: true
+      key-naming-case: snake
     depguard:
       rules:
         backend:
@@ -115,7 +141,6 @@ linters:
       - comments
       - common-false-positives
       - legacy
-      - std-error-handling
     rules:
       - linters:
           - errcheck
