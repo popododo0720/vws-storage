@@ -123,7 +123,10 @@ func (d *Driver) CreateBucket(ctx context.Context, name model.BucketName) error 
 		}
 		return backend.Permanent(fmt.Errorf("%w: bucket", backend.ErrConflict))
 	default:
-		return err
+		if err != nil {
+			return fmt.Errorf("s3: create bucket: %w", err)
+		}
+		return nil
 	}
 }
 
@@ -132,12 +135,15 @@ func (d *Driver) CreateBucket(ctx context.Context, name model.BucketName) error 
 func (d *Driver) DeleteBucket(ctx context.Context, name model.BucketName) error {
 	_, err := d.c.DeleteBucket(ctx, &awss3.DeleteBucketInput{Bucket: aws.String(bucketID(name))})
 	switch code(err) {
-	case "", "NoSuchBucket":
+	case "NoSuchBucket":
 		return nil
 	case "BucketNotEmpty":
 		return backend.ErrBusy
 	default:
-		return err
+		if err != nil {
+			return fmt.Errorf("s3: delete bucket: %w", err)
+		}
+		return nil
 	}
 }
 
@@ -151,11 +157,12 @@ func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedO
 		ChecksumMode: "ENABLED",
 	})
 	switch code(err) {
-	case "":
 	case "NotFound", "NoSuchKey", "NoSuchBucket":
 		return model.ObservedObject{}, backend.ErrNotFound
 	default:
-		return model.ObservedObject{}, err
+		if err != nil {
+			return model.ObservedObject{}, fmt.Errorf("s3: stat object: %w", err)
+		}
 	}
 	obs := model.ObservedObject{
 		Size:       model.Bytes(aws.ToInt64(out.ContentLength)),
@@ -177,10 +184,10 @@ func (d *Driver) DeleteObject(ctx context.Context, ref model.ObjectRef) error {
 		Bucket: aws.String(bucketID(ref.Path.Bucket)),
 		Key:    aws.String(objectKey(ref)),
 	})
-	if code(err) == "NoSuchBucket" {
-		return nil
+	if err != nil && code(err) != "NoSuchBucket" {
+		return fmt.Errorf("s3: delete object: %w", err)
 	}
-	return err
+	return nil
 }
 
 // PresignPut signs a PUT that fixes the body length, carries the SHA-256 when
@@ -202,7 +209,7 @@ func (d *Driver) PresignPut(ctx context.Context, ref model.ObjectRef, size model
 	}
 	req, err := d.p.PresignPutObject(ctx, in, awss3.WithPresignExpires(ttl))
 	if err != nil {
-		return model.Locator{}, err
+		return model.Locator{}, fmt.Errorf("s3: presign put: %w", err)
 	}
 	return d.locator(req, ttl), nil
 }
@@ -216,7 +223,7 @@ func (d *Driver) PresignGet(ctx context.Context, ref model.ObjectRef, expires ti
 	in := &awss3.GetObjectInput{Bucket: aws.String(bucketID(ref.Path.Bucket)), Key: aws.String(objectKey(ref))}
 	req, err := d.p.PresignGetObject(ctx, in, awss3.WithPresignExpires(ttl))
 	if err != nil {
-		return model.Locator{}, err
+		return model.Locator{}, fmt.Errorf("s3: presign get: %w", err)
 	}
 	return d.locator(req, ttl), nil
 }

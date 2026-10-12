@@ -47,15 +47,15 @@ func TestLiveEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp := send(t, loc, []byte("short")); resp.StatusCode < 400 {
-		t.Fatalf("wrong length accepted: %d", resp.StatusCode)
+	if status, _ := send(t, loc, []byte("short")); status < 400 {
+		t.Fatalf("wrong length accepted: %d", status)
 	}
 	bad := bytes.Repeat([]byte("x"), len(body))
-	if resp := send(t, loc, bad); resp.StatusCode < 400 {
-		t.Fatalf("wrong checksum accepted: %d", resp.StatusCode)
+	if status, _ := send(t, loc, bad); status < 400 {
+		t.Fatalf("wrong checksum accepted: %d", status)
 	}
-	if resp := send(t, loc, body); resp.StatusCode != http.StatusOK {
-		t.Fatalf("put status %d", resp.StatusCode)
+	if status, _ := send(t, loc, body); status != http.StatusOK {
+		t.Fatalf("put status %d", status)
 	}
 	obs, err := d.Stat(ctx, r)
 	if err != nil {
@@ -68,8 +68,8 @@ func TestLiveEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp := send(t, again, body); resp.StatusCode < 400 {
-		t.Fatalf("rewrite of one generation accepted: %d", resp.StatusCode)
+	if status, _ := send(t, again, body); status < 400 {
+		t.Fatalf("rewrite of one generation accepted: %d", status)
 	}
 	if err := d.DeleteBucket(ctx, r.Path.Bucket); !errors.Is(err, backend.ErrBusy) {
 		t.Fatalf("non-empty delete: %v", err)
