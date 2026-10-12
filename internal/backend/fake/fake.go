@@ -123,6 +123,30 @@ func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	return nil
 }
 
+// Expand implements backend.Block.
+func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err, ok := b.fail["Expand"]; ok {
+		delete(b.fail, "Expand")
+		return err
+	}
+	spec, ok := b.vols[id]
+	if !ok {
+		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))
+	}
+	if size < spec.Size {
+		return backend.Permanent(fmt.Errorf("%w: volume cannot shrink", backend.ErrInvalid))
+	}
+	spec.Size = size
+	b.vols[id] = spec
+	b.calls = append(b.calls, Call{Method: "Expand", ID: id.String()})
+	return nil
+}
+
 // CreateSnapshot implements backend.Block.
 func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error {
 	if err := ctx.Err(); err != nil {
