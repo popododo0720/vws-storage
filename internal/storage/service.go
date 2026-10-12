@@ -565,3 +565,18 @@ func encodeToken(s string) string {
 	}
 	return base64.RawURLEncoding.EncodeToString([]byte(s))
 }
+
+// Healthy reports whether the engine is running and the store answers. It
+// reads one row and writes nothing.
+func (s *Service) Healthy(ctx context.Context) error {
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	if !running {
+		return errors.New("storage: engine is not running")
+	}
+	if _, err := s.st.Runnable(ctx, s.now(), 1); err != nil {
+		return fmt.Errorf("storage: store: %w", err)
+	}
+	return nil
+}

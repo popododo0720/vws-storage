@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/backend/kube"
 	"github.com/popododo0720/vws-storage/internal/backend/s3"
+	"github.com/popododo0720/vws-storage/internal/health"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/server"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -52,6 +54,8 @@ func run(args []string) error {
 	s3Profile := fs.String("s3-profile", string(s3.RGW), "endpoint profile for -object-backend=s3: rgw or minio")
 	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint URL for -object-backend=s3")
 	s3Region := fs.String("s3-region", "", "S3 region; empty uses the profile default")
+	healthPeriod := fs.Duration("health-period", 10*time.Second, "time between readiness evaluations")
+	healthTimeout := fs.Duration("health-timeout", 3*time.Second, "time one readiness evaluation may take")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -125,6 +129,11 @@ func run(args []string) error {
 		grpc.ChainStreamInterceptor(server.RecoverStream),
 	)
 	server.Register(gs, svc, server.Config{Projects: projects})
+	mon := health.New(health.Options{
+		Targets: healthTargets(svc, block), Period: *healthPeriod, Timeout: *healthTimeout,
+	})
+	healthpb.RegisterHealthServer(gs, mon.Server())
+	go mon.Run(ctx)
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
 	log.Printf("grpc %s object %s", grpcLn.Addr(), objectAt)
@@ -139,6 +148,7 @@ func run(args []string) error {
 		}
 	}
 	stop()
+	mon.Shutdown()
 	gs.GracefulStop()
 	stopHTTP()
 	<-runErr
@@ -146,6 +156,26 @@ func run(args []string) error {
 		serveErr = errors.Join(serveErr, err)
 	}
 	return serveErr
+}
+
+// healthTargets names what each service needs. Every service needs the engine
+// and the store. The block services also need the cluster when the block
+// backend can report it. S3 is not checked: an S3 outage fails object calls
+// with a retryable error and must not take the volume services out of rotation.
+func healthTargets(svc *storage.Service, block backend.Block) []health.Target {
+	common := health.Describe("engine and store", svc.Healthy)
+	blockChecks := []health.Check{common}
+	if r, ok := block.(interface{ Ready(context.Context) error }); ok {
+		blockChecks = append(blockChecks, health.Describe("kube", r.Ready))
+	}
+	var targets []health.Target
+	for _, name := range server.BlockServices {
+		targets = append(targets, health.Target{Service: name, Checks: blockChecks})
+	}
+	for _, name := range server.ObjectServices {
+		targets = append(targets, health.Target{Service: name, Checks: []health.Check{common}})
+	}
+	return targets
 }
 
 const defaultZones = "vws-1a"
