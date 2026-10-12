@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
@@ -34,18 +35,27 @@ const (
 	// VolumeAnnotation holds the VWS volume name on the PVC.
 	VolumeAnnotation = "vws.storage/volume"
 	zoneAnnotation   = "vws.storage/zone"
+	sourceAnnotation = "vws.storage/source-snapshot"
+	// SnapshotAnnotation holds the VWS snapshot name on the VolumeSnapshot.
+	SnapshotAnnotation       = "vws.storage/snapshot"
+	snapshotSourceAnnotation = "vws.storage/source-volume"
 )
 
 // Block is the PVC-backed volume backend.
 type Block struct {
-	kc      kubernetes.Interface
-	ns      string
-	classes Classes
+	kc            kubernetes.Interface
+	dyn           dynamic.Interface
+	ns            string
+	classes       Classes
+	snapshotClass string
 }
 
-// NewBlock returns a backend that creates PVCs in namespace ns.
-func NewBlock(kc kubernetes.Interface, ns string, classes Classes) *Block {
-	return &Block{kc: kc, ns: ns, classes: classes}
+var _ backend.Block = (*Block)(nil)
+
+// NewBlock returns a backend that creates PVCs and VolumeSnapshots in
+// namespace ns. snapshotClass is the VolumeSnapshotClass for new snapshots.
+func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes Classes, snapshotClass string) *Block {
+	return &Block{kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass}
 }
 
 // pvcName is derived from the full volume name, so the same id in two
@@ -61,11 +71,15 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	if !ok {
 		return backend.Permanent(fmt.Errorf("%w: volume type %q", backend.ErrInvalid, spec.Type))
 	}
-	if _, ok := spec.Source.Snapshot(); ok {
-		return backend.Permanent(fmt.Errorf("%w: snapshot source", backend.ErrInvalid))
-	}
 	if _, ok := spec.Source.Image(); ok {
 		return backend.Permanent(fmt.Errorf("%w: image source", backend.ErrInvalid))
+	}
+	var from model.SnapshotID
+	if snap, ok := spec.Source.Snapshot(); ok {
+		from = snap
+		if err := b.requireReady(ctx, snap); err != nil {
+			return err
+		}
 	}
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -74,6 +88,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 			Annotations: map[string]string{
 				VolumeAnnotation: id.String(),
 				zoneAnnotation:   spec.Zone.String(),
+				sourceAnnotation: from.String(),
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -83,6 +98,10 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 				Requests: corev1.ResourceList{corev1.ResourceStorage: *resource.NewQuantity(int64(spec.Size), resource.BinarySI)},
 			},
 		},
+	}
+	if !from.IsZero() {
+		group := snapshotGVR.Group
+		pvc.Spec.DataSource = &corev1.TypedLocalObjectReference{APIGroup: &group, Kind: "VolumeSnapshot", Name: snapshotName(from)}
 	}
 	pvcs := b.kc.CoreV1().PersistentVolumeClaims(b.ns)
 	_, err := pvcs.Create(ctx, pvc, metav1.CreateOptions{})
@@ -94,6 +113,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		return err
 	}
 	if cur.Annotations[zoneAnnotation] != spec.Zone.String() ||
+		cur.Annotations[sourceAnnotation] != from.String() ||
 		*cur.Spec.StorageClassName != class ||
 		!cur.Spec.Resources.Requests.Storage().Equal(*pvc.Spec.Resources.Requests.Storage()) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
