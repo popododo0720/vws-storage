@@ -767,7 +767,7 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 		close(runDone)
 	}()
 	lis := bufconn.Listen(1 << 20)
-	gs := grpc.NewServer(grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))
+	gs := grpc.NewServer(append(server.Options(), grpc.MaxRecvMsgSize(server.MaxRecvMsgSize))...)
 	server.Register(gs, svc, cfg)
 	go func() { _ = gs.Serve(lis) }()
 	conn, err := grpc.NewClient("passthrough:///bufnet",
