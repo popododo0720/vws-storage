@@ -188,6 +188,8 @@ func statusOf(err error) model.Status {
 		return model.Status{}
 	case errors.Is(err, backend.ErrNotFound):
 		return model.Status{Code: model.CodeNotFound, Message: err.Error()}
+	case errors.Is(err, backend.ErrInvalid):
+		return model.Status{Code: model.CodeInvalidArgument, Message: err.Error()}
 	case errors.Is(err, backend.ErrConflict):
 		return model.Status{Code: model.CodeFailedPrecondition, Message: err.Error()}
 	case errors.Is(err, backend.ErrBusy):
