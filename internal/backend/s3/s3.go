@@ -8,11 +8,13 @@ package s3
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // md5 checks the S3 ETag, not a secret
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -214,7 +216,48 @@ func (d *Driver) Stat(ctx context.Context, ref model.ObjectRef) (model.ObservedO
 	if m, err := model.ParseMD5(string(obs.ETag)); err == nil {
 		obs.MD5 = m
 	}
+	if obs.SHA256.IsZero() {
+		sum, err := d.hashObject(ctx, ref, obs)
+		if err != nil {
+			return model.ObservedObject{}, err
+		}
+		obs.SHA256 = sum
+	}
 	return obs, nil
+}
+
+// hashObject computes the SHA-256 of the stored bytes. It runs when the
+// endpoint reports none (Ceph RGW), so the digest an object record keeps is
+// always one this process computed from the stored bytes, never a client's
+// claim. The GET is pinned to the ETag HEAD saw; a single-part MD5 ETag is
+// checked against the same stream.
+func (d *Driver) hashObject(ctx context.Context, ref model.ObjectRef, obs model.ObservedObject) (model.Digest, error) {
+	out, err := d.c.GetObject(ctx, &awss3.GetObjectInput{
+		Bucket:  aws.String(d.bucketID(ref.Path.Bucket)),
+		Key:     aws.String(objectKey(ref)),
+		IfMatch: aws.String(`"` + string(obs.ETag) + `"`),
+	})
+	switch code(err) {
+	case "NotFound", "NoSuchKey", "NoSuchBucket":
+		return model.Digest{}, backend.ErrNotFound
+	default:
+		if err != nil {
+			return model.Digest{}, fmt.Errorf("s3: read object for sha256: %w", err)
+		}
+	}
+	defer out.Body.Close() //nolint:errcheck // read-only body
+	sh, m5 := sha256.New(), md5.New()
+	n, err := io.Copy(io.MultiWriter(sh, m5), out.Body)
+	if err != nil {
+		return model.Digest{}, fmt.Errorf("s3: read object for sha256: %w", err)
+	}
+	if model.Bytes(n) != obs.Size {
+		return model.Digest{}, errors.New("s3: object changed while hashing")
+	}
+	if obs.MD5 != (model.MD5{}) && model.MD5(m5.Sum(nil)) != obs.MD5 {
+		return model.Digest{}, backend.Permanent(errors.New("s3: stored bytes do not match the md5 etag"))
+	}
+	return model.Digest(sh.Sum(nil)), nil
 }
 
 // DeleteObject deletes one generation. An absent generation is success.
