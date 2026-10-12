@@ -426,7 +426,7 @@ func (s *Server) ReadObject(ctx context.Context, in *storagev1.ReadObjectRequest
 			return nil, status.Error(codes.FailedPrecondition, "stored payload exceeds the read limit")
 		}
 		body, err := getBytes(ctx, loc)
-		if err == nil && model.Bytes(len(body)) == obj.Size && sha256.Sum256(body) == [32]byte(obj.SHA256) {
+		if err == nil && storedBytes(obj, body) {
 			return &storagev1.ReadObjectResponse{Contents: body, Object: s.objectMsg(obj)}, nil
 		}
 		if ctx.Err() != nil {
@@ -438,6 +438,20 @@ func (s *Server) ReadObject(ctx context.Context, in *storagev1.ReadObjectRequest
 		lastErr = errors.New("stored payload changed during read")
 	}
 	return nil, status.Error(codes.Unavailable, lastErr.Error())
+}
+
+// storedBytes reports whether body is the payload obj records. A record
+// committed without a SHA-256 (an RGW upload before the backend computed one)
+// is checked against its single-part MD5 ETag instead. A record with neither
+// is never accepted.
+func storedBytes(obj model.Object, body []byte) bool {
+	if model.Bytes(len(body)) != obj.Size {
+		return false
+	}
+	if !obj.SHA256.IsZero() {
+		return sha256.Sum256(body) == [32]byte(obj.SHA256)
+	}
+	return obj.MD5 != (model.MD5{}) && md5.Sum(body) == [16]byte(obj.MD5) //nolint:gosec // md5 checks the S3 ETag
 }
 
 // DeleteObject implements ObjectService.
