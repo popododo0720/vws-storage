@@ -382,12 +382,26 @@ func (w ObjectUpload) Check(obs ObservedObject) error {
 	if obs.Size != w.Size {
 		return sentinelError("upload size mismatch")
 	}
-	if !w.SHA256.IsZero() && obs.SHA256 != w.SHA256 {
-		return sentinelError("upload checksum mismatch")
-	}
 	if obs.ETag == "" || obs.UploadedAt.IsZero() {
 		return sentinelError("incomplete upload observation")
 	}
+	if w.SHA256.IsZero() {
+		return nil
+	}
+	switch {
+	case !obs.SHA256.IsZero():
+		if obs.SHA256 != w.SHA256 {
+			return sentinelError("upload checksum mismatch")
+		}
+	case obs.MD5 == MD5{}:
+		// No SHA-256 and an ETag that is not an MD5, such as a multipart
+		// "<hex>-N" ETag. Nothing ties the bytes to the request.
+		return sentinelError("upload checksum not verifiable")
+	}
+	// Some servers (Ceph RGW 19.2) store no SHA-256 to report. The upload
+	// carried x-amz-checksum-sha256 in its signed request, the size matches, and
+	// the ETag is a single-part MD5. A writer that holds the bytes compares
+	// that MD5 (see server.putBytes); ReadObject checks the SHA-256 on read.
 	return nil
 }
 
