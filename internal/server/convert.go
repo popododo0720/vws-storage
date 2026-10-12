@@ -608,7 +608,9 @@ func (s *Server) volumeMsg(ctx context.Context, v model.Volume) *storagev1.Volum
 		Spec: &storagev1.VolumeSpec{
 			SizeGib: int64(v.Spec.Size / model.GiB), Type: protoVolumeType(v.Spec.Type),
 		},
-		Status:     &storagev1.VolumeStatus{Observed: observed(v.State, v.Meta.Version), SizeGib: int64(v.Spec.Size / model.GiB)},
+		Status: &storagev1.VolumeStatus{
+			Observed: observed(v.State, v.Meta.Version), SizeGib: int64(v.Spec.Size / model.GiB), ClaimName: s.svc.ClaimName(v),
+		},
 		CreateTime: stamp(v.Meta.CreateTime), UpdateTime: stamp(v.Meta.UpdateTime),
 	}
 	if img, ok := v.Spec.Source.Image(); ok {
@@ -634,9 +636,11 @@ func (s *Server) snapshotMsg(ctx context.Context, sn model.Snapshot) *storagev1.
 	}
 	out := &storagev1.Snapshot{
 		Name: s.snapshotName(sn.ID, sn.Region), Generation: int64(sn.Meta.Version), Etag: etagOf(sn.Meta),
-		Labels:     sn.Labels.Map(),
-		Spec:       &storagev1.SnapshotSpec{Volume: volume, Description: sn.Description},
-		Status:     &storagev1.SnapshotStatus{Observed: observed(sn.State, sn.Meta.Version), SizeGib: int64(sn.Size / model.GiB)},
+		Labels: sn.Labels.Map(),
+		Spec:   &storagev1.SnapshotSpec{Volume: volume, Description: sn.Description},
+		Status: &storagev1.SnapshotStatus{
+			Observed: observed(sn.State, sn.Meta.Version), SizeGib: int64(sn.Size / model.GiB), SnapshotObjectName: s.svc.SnapshotObjectName(sn),
+		},
 		CreateTime: stamp(sn.Meta.CreateTime), UpdateTime: stamp(sn.Meta.UpdateTime),
 	}
 	if _, ok := sn.State.(model.Deleting); ok {

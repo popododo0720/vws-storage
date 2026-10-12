@@ -314,6 +314,15 @@ func (s *Service) Volume(ctx context.Context, id model.VolumeID) (model.Volume, 
 	return s.st.Volume(ctx, id)
 }
 
+// ClaimName is the backend object name for v. It is empty while v is Creating,
+// because the object may not exist yet.
+func (s *Service) ClaimName(v model.Volume) string {
+	if _, creating := v.State.(model.Creating); creating {
+		return ""
+	}
+	return s.block.ClaimName(v.ID)
+}
+
 // ListVolumes lists volumes in id order for one project.
 // A non-zero zone keeps only that zone.
 // The page token stays the engine cursor, including across volumes in other zones.
@@ -361,6 +370,14 @@ func (s *Service) ListVolumes(ctx context.Context, project model.Project, zone m
 // Snapshot returns a snapshot.
 func (s *Service) Snapshot(ctx context.Context, id model.SnapshotID) (model.Snapshot, error) {
 	return s.st.Snapshot(ctx, id)
+}
+
+// SnapshotObjectName is the backend object name for sn. It is empty while sn is Creating.
+func (s *Service) SnapshotObjectName(sn model.Snapshot) string {
+	if _, creating := sn.State.(model.Creating); creating {
+		return ""
+	}
+	return s.block.SnapshotObjectName(sn.ID)
 }
 
 // ListSnapshots lists snapshots in id order for one project.
