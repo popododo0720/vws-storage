@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -60,7 +61,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 	if err != nil {
 		return err
 	}
-	return ready(cur)
+	return b.ready(ctx, cur)
 }
 
 // DeleteSnapshot deletes the VolumeSnapshot. An absent one is not an error.
@@ -80,16 +81,57 @@ func (b *Block) requireReady(ctx context.Context, id model.SnapshotID) (*unstruc
 	if err != nil {
 		return nil, err
 	}
-	return vs, ready(vs)
+	return vs, b.ready(ctx, vs)
 }
 
-// ready reads only status.readyToUse. A missing field is not ready.
-func ready(vs *unstructured.Unstructured) error {
-	ok, _, _ := unstructured.NestedBool(vs.Object, "status", "readyToUse")
-	if !ok {
+// snapshotErrorGrace is how long a VolumeSnapshot may keep reporting
+// status.error, counted from when this backend first saw it, before it counts
+// as failed. The snapshotter sets status.error on a transient failure and
+// clears it when a retry succeeds, so a fresh error is not final.
+var snapshotErrorGrace = 10 * time.Minute
+
+const errorSeenAnnotation = "vws.popododo0720.io/error-first-seen"
+
+// ready reads status.readyToUse. A missing field is not ready and is retried.
+// A status.error is retried as ErrBusy until it has been observed for longer
+// than snapshotErrorGrace, then the failure is permanent so the operation
+// fails and the engine deletes the snapshot. The first observation time is an
+// annotation on the VolumeSnapshot, so it survives a restart. It is removed
+// when the error is gone.
+func (b *Block) ready(ctx context.Context, vs *unstructured.Unstructured) error {
+	if ok, _, _ := unstructured.NestedBool(vs.Object, "status", "readyToUse"); ok {
+		return nil
+	}
+	msg, _, _ := unstructured.NestedString(vs.Object, "status", "error", "message")
+	ann := vs.GetAnnotations()
+	if ann == nil {
+		ann = map[string]string{}
+	}
+	if msg == "" {
+		if _, ok := ann[errorSeenAnnotation]; ok {
+			delete(ann, errorSeenAnnotation)
+			if err := b.setAnnotations(ctx, vs, ann); err != nil {
+				return err
+			}
+		}
 		return fmt.Errorf("%w: snapshot is not ready", backend.ErrBusy)
 	}
-	return nil
+	first, err := time.Parse(time.RFC3339Nano, ann[errorSeenAnnotation])
+	if err != nil {
+		ann[errorSeenAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := b.setAnnotations(ctx, vs, ann); err != nil {
+			return err
+		}
+	} else if time.Since(first) > snapshotErrorGrace {
+		return backend.Permanent(fmt.Errorf("kube: snapshot failed: %s", msg))
+	}
+	return fmt.Errorf("%w: snapshot reports an error: %s", backend.ErrBusy, msg)
+}
+
+func (b *Block) setAnnotations(ctx context.Context, vs *unstructured.Unstructured, ann map[string]string) error {
+	vs.SetAnnotations(ann)
+	_, err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Update(ctx, vs, metav1.UpdateOptions{})
+	return err
 }
 
 // restoreSize is status.restoreSize in bytes, when the snapshotter reported it.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -195,5 +196,58 @@ func TestRestoreRejectsSizeBelowRestoreSize(t *testing.T) {
 	s.Size = 2 * model.GiB
 	if err := b.CreateVolume(ctx, id, s); err != nil {
 		t.Fatalf("equal to restoreSize: %v", err)
+	}
+}
+
+func TestSnapshotErrorIsRetriedThenFailsPermanently(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	vol := newVolume(t, b)
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	defer kube.SetSnapshotErrorGrace(100 * time.Millisecond)()
+	time.Sleep(150 * time.Millisecond)
+
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "cannot snapshot"}})
+	err := b.CreateSnapshot(ctx, snap, vol)
+	if !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("first sight of an error on an old snapshot: %v", err)
+	}
+	if snapshotFor(t, snap).GetAnnotations()[kube.ErrorSeenAnnotation] == "" {
+		t.Fatal("first observation not recorded")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	err = b.CreateSnapshot(ctx, snap, vol)
+	if err == nil || errors.Is(err, backend.ErrBusy) || !backend.IsPermanent(err) {
+		t.Fatalf("error seen past the grace: %v", err)
+	}
+}
+
+func TestSnapshotErrorClockResetsWhenTheErrorClears(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	vol := newVolume(t, b)
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	defer kube.SetSnapshotErrorGrace(100 * time.Millisecond)()
+
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "cannot snapshot"}})
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	time.Sleep(150 * time.Millisecond)
+	setStatus(t, snap, map[string]any{"error": nil})
+	if err := b.CreateSnapshot(ctx, snap, vol); !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("cleared error: %v", err)
+	}
+	if _, ok := snapshotFor(t, snap).GetAnnotations()[kube.ErrorSeenAnnotation]; ok {
+		t.Fatal("clock kept after the error cleared")
+	}
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "again"}})
+	if err := b.CreateSnapshot(ctx, snap, vol); !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("recurring error restarts the clock: %v", err)
+	}
+	setStatus(t, snap, map[string]any{"readyToUse": true})
+	if err := b.CreateSnapshot(ctx, snap, vol); err != nil {
+		t.Fatalf("recovered snapshot: %v", err)
 	}
 }
