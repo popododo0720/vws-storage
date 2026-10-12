@@ -54,6 +54,7 @@ func run(args []string) error {
 	s3Profile := fs.String("s3-profile", string(s3.RGW), "endpoint profile for -object-backend=s3: rgw or minio")
 	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint URL for -object-backend=s3")
 	s3Region := fs.String("s3-region", "", "S3 region; empty uses the profile default")
+	s3BucketPrefix := fs.String("s3-bucket-prefix", "", "prefix for every S3 bucket name, as <prefix>-vws-<hash>; empty adds none")
 	healthPeriod := fs.Duration("health-period", 10*time.Second, "time between readiness evaluations")
 	healthTimeout := fs.Duration("health-timeout", 3*time.Second, "time one readiness evaluation may take")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
@@ -77,7 +78,7 @@ func run(args []string) error {
 	defer stop()
 	var lc net.ListenConfig
 
-	objs, err := openObjects(*objectBackend, *objectAddr, *s3Profile, *s3Endpoint, *s3Region)
+	objs, err := openObjects(*objectBackend, *objectAddr, *s3Profile, *s3Endpoint, *s3Region, *s3BucketPrefix)
 	if err != nil {
 		return err
 	}
@@ -188,7 +189,7 @@ type objects struct {
 
 // openObjects reads the S3 keys from VWS_S3_ACCESS_KEY and VWS_S3_SECRET_KEY,
 // so a secret never appears in the process arguments.
-func openObjects(name, fakeAddr, profile, endpoint, region string) (objects, error) {
+func openObjects(name, fakeAddr, profile, endpoint, region, bucketPrefix string) (objects, error) {
 	switch name {
 	case "fake":
 		o := fake.NewObjects(fake.ObjectOptions{BaseURL: "http://" + fakeAddr})
@@ -202,6 +203,7 @@ func openObjects(name, fakeAddr, profile, endpoint, region string) (objects, err
 		if region != "" {
 			cfg.Region = region
 		}
+		cfg.BucketPrefix = bucketPrefix
 		cfg.AccessKey, cfg.SecretKey = os.Getenv("VWS_S3_ACCESS_KEY"), os.Getenv("VWS_S3_SECRET_KEY")
 		d, err := s3.Open(cfg)
 		if err != nil {
