@@ -21,6 +21,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/popododo0720/vws-lib/obs"
+	obshealth "github.com/popododo0720/vws-lib/obs/health"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
@@ -143,6 +144,8 @@ func run(args []string) error {
 		Targets: healthTargets(svc, block), Period: *healthPeriod, Timeout: *healthTimeout,
 	})
 	healthpb.RegisterHealthServer(gs, mon.Server())
+	// obs.Setup serves /healthz and /readyz on VWS_HEALTH_ADDR; /readyz reads the same verdict.
+	obshealth.Default().Register("storage", mon.Ready)
 	go mon.Run(ctx)
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
