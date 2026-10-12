@@ -1,10 +1,19 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
+	"google.golang.org/grpc"
+
+	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/backend/kube"
+	"github.com/popododo0720/vws-storage/internal/model"
+	"github.com/popododo0720/vws-storage/internal/server"
+	"github.com/popododo0720/vws-storage/internal/storage"
 )
 
 func TestDefaultZoneIsVWS1A(t *testing.T) {
@@ -56,4 +65,68 @@ func TestObjectBackendSelection(t *testing.T) {
 	if err != nil || f.handler == nil {
 		t.Fatalf("fake: %+v %v", f, err)
 	}
+}
+
+func TestHealthTargetsCoverEveryRegisteredService(t *testing.T) {
+	svc, err := storage.Open(context.Background(), storage.Options{
+		Store: storage.Memory(), Block: fake.NewBlock(), Object: fake.NewObjects(fake.ObjectOptions{}),
+		Signer: fake.NewObjects(fake.ObjectOptions{}), Zones: []model.Zone{mustZone(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	gs := grpc.NewServer()
+	server.Register(gs, svc, server.Config{})
+	var want []string
+	for name := range gs.GetServiceInfo() {
+		want = append(want, name)
+	}
+	var got []string
+	for _, tg := range healthTargets(svc, fake.NewBlock()) {
+		got = append(got, tg.Service)
+	}
+	sort.Strings(want)
+	sort.Strings(got)
+	if !slices.Equal(want, got) {
+		t.Fatalf("health targets %v, registered services %v", got, want)
+	}
+}
+
+func TestKubeBlockAddsTheClusterCheckToTheBlockServicesOnly(t *testing.T) {
+	svc, err := storage.Open(context.Background(), storage.Options{
+		Store: storage.Memory(), Block: fake.NewBlock(), Object: fake.NewObjects(fake.ObjectOptions{}),
+		Signer: fake.NewObjects(fake.ObjectOptions{}), Zones: []model.Zone{mustZone(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	withKube := map[string]int{}
+	for _, tg := range healthTargets(svc, readyBlock{fake.NewBlock()}) {
+		withKube[tg.Service] = len(tg.Checks)
+	}
+	for _, name := range server.BlockServices {
+		if withKube[name] != 2 {
+			t.Errorf("%s has %d checks, want 2", name, withKube[name])
+		}
+	}
+	for _, name := range server.ObjectServices {
+		if withKube[name] != 1 {
+			t.Errorf("%s has %d checks, want 1", name, withKube[name])
+		}
+	}
+}
+
+type readyBlock struct{ *fake.Block }
+
+func (readyBlock) Ready(context.Context) error { return nil }
+
+func mustZone(t *testing.T) model.Zone {
+	t.Helper()
+	z, err := model.ParseZone("vws-1a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return z
 }

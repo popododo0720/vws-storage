@@ -68,6 +68,20 @@ func Register(gs *grpc.Server, svc *storage.Service, cfg Config) {
 	longrunningpb.RegisterOperationsServer(gs, s)
 }
 
+// BlockServices are the registered services that need the block backend.
+// ObjectServices are the others, with the operations service.
+var (
+	BlockServices = []string{
+		storagev1.VolumeService_ServiceDesc.ServiceName,
+		storagev1.SnapshotService_ServiceDesc.ServiceName,
+	}
+	ObjectServices = []string{
+		storagev1.BucketService_ServiceDesc.ServiceName,
+		storagev1.ObjectService_ServiceDesc.ServiceName,
+		longrunningpb.Operations_ServiceDesc.ServiceName,
+	}
+)
+
 // CreateVolume implements VolumeService.
 func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeRequest) (*longrunningpb.Operation, error) {
 	req, name, err := s.volumeCreate(in)

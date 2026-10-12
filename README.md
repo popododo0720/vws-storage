@@ -60,6 +60,19 @@ The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p p
 - `CreateBucket`, `DeleteBucket`, and `DeleteObject` are safe to repeat. A bucket that still holds objects is `ErrBusy`.
 - Tests use an in-process S3 server (gofakes3). `TestLiveEndpoint` runs against a real endpoint when `VWS_S3_TEST_ENDPOINT`, `VWS_S3_TEST_PROFILE`, and the two key variables are set, and skips otherwise.
 
+## Health
+
+The server answers the standard `grpc.health.v1` service on the gRPC listener.
+
+| Service name | Answer |
+| --- | --- |
+| `""` (empty) | liveness: SERVING while the process runs, no dependency checked, NOT_SERVING once shutdown starts |
+| `vws.storage.v1.VolumeService`, `vws.storage.v1.SnapshotService` | readiness: engine running, store answers, and with `-block-backend=kube` the cluster answers and holds the namespace, the StorageClass of each volume type and the VolumeSnapshotClass |
+| `vws.storage.v1.BucketService`, `vws.storage.v1.ObjectService`, `google.longrunning.Operations` | readiness: engine running and store answers |
+| `vws.storage.v1.Ready` | SERVING only when every service above is. For a probe that names one service |
+
+A background loop evaluates the checks (`-health-period`, default 10s, sooner while something is down; `-health-timeout`, default 3s). `Check` and `Watch` answer from memory. S3 is not checked: an S3 outage must not take the volume services out of rotation. The kube checks read the Namespace, StorageClass and VolumeSnapshotClass, which are cluster-scoped, so the pod's service account needs `get` on them.
+
 ## Operations
 
 Mutations return a long-running operation. Poll `GetOperation` until `done` is set. `request_id` is a UUID:
