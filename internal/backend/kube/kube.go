@@ -23,11 +23,14 @@ import (
 // that decides which CSI driver serves a type.
 type Classes map[model.VolumeType]string
 
+// DefaultClass is the StorageClass name every type maps to by default.
+const DefaultClass = "vws-rbd"
+
 // DefaultClasses serves every type from the Rook Ceph RBD class.
 func DefaultClasses() Classes {
 	return Classes{
-		model.VolumeTypeStandard: "vws-rbd",
-		model.VolumeTypeSSD:      "vws-rbd",
+		model.VolumeTypeStandard: DefaultClass,
+		model.VolumeTypeSSD:      DefaultClass,
 	}
 }
 
