@@ -64,6 +64,9 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 	return b.ready(ctx, cur)
 }
 
+// SnapshotObjectName is the name of the VolumeSnapshot that backs id.
+func (b *Block) SnapshotObjectName(id model.SnapshotID) string { return snapshotName(id) }
+
 // DeleteSnapshot deletes the VolumeSnapshot. An absent one is not an error.
 func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 	err := b.dyn.Resource(snapshotGVR).Namespace(b.ns).Delete(ctx, snapshotName(id), metav1.DeleteOptions{})

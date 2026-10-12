@@ -882,3 +882,34 @@ func TestExpandVolumeBlocksDeleteWhileInFlight(t *testing.T) {
 	}
 	svc.Close()
 }
+
+func TestBackendObjectNamesAreEmptyWhileCreating(t *testing.T) {
+	svc, cancel := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	vid, err := model.ParseVolumeID("data-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, err := model.ParseSnapshotID("snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		state model.Lifecycle
+		want  string
+	}{
+		{model.Creating{}, ""},
+		{model.Available{}, "fake-data-1"},
+		{model.Deleting{}, "fake-data-1"},
+	} {
+		if got := svc.ClaimName(model.Volume{ID: vid, State: tc.state}); got != tc.want {
+			t.Errorf("volume %T: %q want %q", tc.state, got, tc.want)
+		}
+	}
+	if got := svc.SnapshotObjectName(model.Snapshot{ID: sid, State: model.Creating{}}); got != "" {
+		t.Errorf("creating snapshot: %q", got)
+	}
+	if got := svc.SnapshotObjectName(model.Snapshot{ID: sid, State: model.Available{}}); got != "fake-snap-1" {
+		t.Errorf("available snapshot: %q", got)
+	}
+}

@@ -27,6 +27,12 @@ type Block interface {
 	Expand(ctx context.Context, id model.VolumeID, size model.Bytes) error
 	CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error
 	DeleteSnapshot(ctx context.Context, id model.SnapshotID) error
+	// ClaimName and SnapshotObjectName are the names of the objects the
+	// adapter creates for a volume and a snapshot. They are pure functions of
+	// the id, so they never change and need no stored copy. Callers outside
+	// storage use them to find the object.
+	ClaimName(id model.VolumeID) string
+	SnapshotObjectName(id model.SnapshotID) string
 }
 
 // Object is the mutating object backend.

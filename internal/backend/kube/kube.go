@@ -58,6 +58,9 @@ func pvcName(id model.VolumeID) string {
 	return "vol-" + hex.EncodeToString(sum[:16])
 }
 
+// ClaimName is the name of the PVC that backs id, in the configured namespace.
+func (b *Block) ClaimName(id model.VolumeID) string { return pvcName(id) }
+
 // CreateVolume creates the claim for id. A repeat with the same spec is a no-op,
 // including after Expand: a claim at least as large as the request is the same
 // volume, because a volume only grows.

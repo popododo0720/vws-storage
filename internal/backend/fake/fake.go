@@ -171,6 +171,12 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 	return nil
 }
 
+// ClaimName is a stable made-up name. The fake has no cluster object.
+func (b *Block) ClaimName(id model.VolumeID) string { return "fake-" + id.ID() }
+
+// SnapshotObjectName is a stable made-up name. The fake has no cluster object.
+func (b *Block) SnapshotObjectName(id model.SnapshotID) string { return "fake-" + id.ID() }
+
 // DeleteSnapshot implements backend.Block.
 func (b *Block) DeleteSnapshot(ctx context.Context, id model.SnapshotID) error {
 	if err := ctx.Err(); err != nil {

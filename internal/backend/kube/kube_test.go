@@ -325,3 +325,22 @@ func TestCreateVolumeRepeatAfterExpandIsSameVolume(t *testing.T) {
 		t.Fatalf("larger than the claim: %v", err)
 	}
 }
+
+func TestClaimAndSnapshotObjectNamesMatchTheObjectsCreated(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	vol := newVolume(t, b)
+	pvc := claimFor(t, vol)
+	if pvc == nil || b.ClaimName(vol) != pvc.Name {
+		t.Fatalf("ClaimName %q, claim %v", b.ClaimName(vol), pvc)
+	}
+	if _, err := kc.CoreV1().PersistentVolumeClaims(ns).Get(ctx, b.ClaimName(vol), metav1.GetOptions{}); err != nil {
+		t.Fatalf("no claim named %q: %v", b.ClaimName(vol), err)
+	}
+	snap := model.NewSnapshotID()
+	_ = b.CreateSnapshot(ctx, snap, vol)
+	vs := snapshotFor(t, snap)
+	if vs == nil || b.SnapshotObjectName(snap) != vs.GetName() {
+		t.Fatalf("SnapshotObjectName %q, snapshot %v", b.SnapshotObjectName(snap), vs)
+	}
+}

@@ -1106,3 +1106,62 @@ func TestUpdateVolumeExpandsAndRejectsShrink(t *testing.T) {
 		t.Fatalf("size after rejects %d", after.GetSpec().GetSizeGib())
 	}
 }
+
+func TestStatusCarriesBackendObjectNames(t *testing.T) {
+	vols, snaps, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	const volName = "projects/local/zones/az-1/volumes/data-1"
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 2, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: volName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := vol.GetStatus().GetClaimName(); got != "fake-data-1" {
+		t.Fatalf("claim_name %q", got)
+	}
+
+	grow, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
+		Volume:     &storagev1.Volume{Name: volName, Spec: &storagev1.VolumeSpec{SizeGib: 5}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, grow.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	vol, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: volName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := vol.GetStatus().GetClaimName(); got != "fake-data-1" {
+		t.Fatalf("claim_name after expand %q", got)
+	}
+
+	sop, err := snaps.CreateSnapshot(ctx, &storagev1.CreateSnapshotRequest{
+		Parent: "projects/local/regions/local", SnapshotId: "snap-1",
+		Snapshot: &storagev1.Snapshot{Spec: &storagev1.SnapshotSpec{Volume: volName}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, sop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	snap, err := snaps.GetSnapshot(ctx, &storagev1.GetSnapshotRequest{Name: "projects/local/regions/local/snapshots/snap-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.GetStatus().GetSnapshotObjectName(); got != "fake-snap-1" {
+		t.Fatalf("snapshot_object_name %q", got)
+	}
+}
