@@ -1,5 +1,6 @@
 // Command vws-storage serves the storage control plane over gRPC.
-// The block and object backends are the in-process fakes.
+// The object backend is the in-process fake. The block backend is the fake or
+// Kubernetes, chosen by -block-backend.
 package main
 
 import (
@@ -18,7 +19,9 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
+	"github.com/popododo0720/vws-storage/internal/backend/kube"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/server"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -37,6 +40,13 @@ func run(args []string) error {
 	db := fs.String("db", "", "SQLite file; empty keeps state in memory")
 	zonesFlag := fs.String("zones", defaultZones, "comma-separated zone names")
 	projectsFlag := fs.String("projects", "", "comma-separated project ids; empty accepts any valid project")
+	blockBackend := fs.String("block-backend", "fake", "block backend: fake or kube")
+	kubeCfg := kube.DefaultConfig()
+	fs.StringVar(&kubeCfg.Kubeconfig, "kube-config", "", "kubeconfig path for -block-backend=kube; empty uses in-cluster credentials")
+	fs.StringVar(&kubeCfg.Namespace, "kube-namespace", kubeCfg.Namespace, "namespace for volume claims and snapshots")
+	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
+	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for ssd volumes")
+	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -46,6 +56,11 @@ func run(args []string) error {
 		return err
 	}
 	projects, err := parseProjects(*projectsFlag)
+	if err != nil {
+		return err
+	}
+	kubeCfg.Classes = kube.Classes{model.VolumeTypeStandard: *standardClass, model.VolumeTypeSSD: *ssdClass}
+	block, err := openBlock(*blockBackend, kubeCfg)
 	if err != nil {
 		return err
 	}
@@ -71,7 +86,7 @@ func run(args []string) error {
 		store = storage.SQLite(*db)
 	}
 	svc, err := storage.Open(context.Background(), storage.Options{
-		Store: store, Block: fake.NewBlock(), Object: objs, Signer: objs, Zones: zones,
+		Store: store, Block: block, Object: objs, Signer: objs, Zones: zones,
 	})
 	if err != nil {
 		stopHTTP()
@@ -114,6 +129,17 @@ func run(args []string) error {
 }
 
 const defaultZones = "vws-1a"
+
+func openBlock(name string, cfg kube.Config) (backend.Block, error) {
+	switch name {
+	case "fake":
+		return fake.NewBlock(), nil
+	case "kube":
+		return kube.Open(cfg)
+	default:
+		return nil, fmt.Errorf("%w: block backend %q", model.ErrInvalidArgument, name)
+	}
+}
 
 func parseZones(s string) ([]model.Zone, error) {
 	var zones []model.Zone

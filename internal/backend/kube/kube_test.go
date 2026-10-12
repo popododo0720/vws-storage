@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
@@ -26,6 +27,7 @@ const ns = "default"
 var (
 	kc  kubernetes.Interface
 	dyn dynamic.Interface
+	rc  *rest.Config
 )
 
 func newBlock(c kube.Classes) *kube.Block { return kube.NewBlock(kc, dyn, ns, c, "vws-snapclass") }
@@ -40,6 +42,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	rc = cfg
 	kc = kubernetes.NewForConfigOrDie(cfg)
 	dyn = dynamic.NewForConfigOrDie(cfg)
 	expand := true
