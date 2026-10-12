@@ -519,6 +519,11 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 	switch w := op.Work.(type) {
 	case model.VolumeCreation:
 		return s.volumeName(w.Spec.Zone, w.Volume)
+	case model.VolumeExpansion:
+		if vol, err := s.svc.Volume(ctx, w.Volume); err == nil {
+			return s.volumeName(vol.Spec.Zone, w.Volume)
+		}
+		return ""
 	case model.VolumeDeletion:
 		zone := w.Zone
 		if zone.IsZero() {
@@ -547,6 +552,15 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.Message, error) {
 	switch w := op.Work.(type) {
 	case model.VolumeCreation:
+		vol, err := s.svc.Volume(ctx, w.Volume)
+		if errors.Is(err, model.ErrNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return s.volumeMsg(ctx, vol), nil
+	case model.VolumeExpansion:
 		vol, err := s.svc.Volume(ctx, w.Volume)
 		if errors.Is(err, model.ErrNotFound) {
 			return nil, nil
@@ -694,6 +708,8 @@ func verbOf(op model.Operation) commonv1.OperationVerb {
 		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
 	}
 	switch op.Kind() {
+	case model.KindExpandVolume:
+		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
 	case model.KindCreateVolume, model.KindCreateSnapshot, model.KindCreateBucket, model.KindPutObject:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case model.KindDeleteVolume, model.KindDeleteSnapshot, model.KindDeleteBucket, model.KindDeleteObject:
