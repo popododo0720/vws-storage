@@ -1,0 +1,274 @@
+package kube_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/popododo0720/vws-storage/internal/backend"
+	"github.com/popododo0720/vws-storage/internal/backend/fake"
+	"github.com/popododo0720/vws-storage/internal/backend/kube"
+	"github.com/popododo0720/vws-storage/internal/model"
+	"github.com/popododo0720/vws-storage/internal/storage"
+)
+
+const ns = "default"
+
+var kc kubernetes.Interface
+
+func TestMain(m *testing.M) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		os.Stderr.WriteString("KUBEBUILDER_ASSETS unset: skipping envtest tests\n")
+		os.Exit(0)
+	}
+	env := &envtest.Environment{}
+	cfg, err := env.Start()
+	if err != nil {
+		panic(err)
+	}
+	kc = kubernetes.NewForConfigOrDie(cfg)
+	expand := true
+	sc := &storagev1.StorageClass{
+		ObjectMeta:           metav1.ObjectMeta{Name: kube.DefaultClasses()[model.VolumeTypeStandard]},
+		Provisioner:          "rbd.csi.ceph.com",
+		AllowVolumeExpansion: &expand,
+	}
+	if _, err := kc.StorageV1().StorageClasses().Create(context.Background(), sc, metav1.CreateOptions{}); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = env.Stop()
+	os.Exit(code)
+}
+
+// volumesOnly sends volume calls to kube. Snapshots stay on the fake until
+// kube serves them.
+type volumesOnly struct {
+	backend.Block
+	k *kube.Block
+}
+
+func (v volumesOnly) CreateVolume(ctx context.Context, id model.VolumeID, s model.VolumeSpec) error {
+	return v.k.CreateVolume(ctx, id, s)
+}
+
+func (v volumesOnly) DeleteVolume(ctx context.Context, id model.VolumeID) error {
+	return v.k.DeleteVolume(ctx, id)
+}
+
+func zone(t *testing.T) model.Zone {
+	t.Helper()
+	z, err := model.ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return z
+}
+
+func spec(t *testing.T, typ model.VolumeType, size model.Bytes) model.VolumeSpec {
+	return model.VolumeSpec{Size: size, Zone: zone(t), Type: typ, Source: model.NoSource()}
+}
+
+// bind marks the claim Bound. No controller runs in envtest, and the API
+// server only accepts a resize on a bound claim.
+func bind(t *testing.T, id model.VolumeID) {
+	t.Helper()
+	pvcs := kc.CoreV1().PersistentVolumeClaims(ns)
+	l, err := pvcs.List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range l.Items {
+		if p.Annotations[kube.VolumeAnnotation] == id.String() {
+			p.Status.Phase = corev1.ClaimBound
+			if _, err := pvcs.UpdateStatus(context.Background(), &p, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("no claim to bind")
+}
+
+func claims(t *testing.T) int {
+	t.Helper()
+	l, err := kc.CoreV1().PersistentVolumeClaims(ns).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(l.Items)
+}
+
+func TestCreateVolumeMapsTypeToStorageClass(t *testing.T) {
+	classes := kube.Classes{model.VolumeTypeStandard: "hdd-class", model.VolumeTypeSSD: "ssd-class"}
+	b := kube.NewBlock(kc, ns, classes)
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(context.Background(), id, spec(t, model.VolumeTypeSSD, 2*model.GiB)); err != nil {
+		t.Fatal(err)
+	}
+	l, err := kc.CoreV1().PersistentVolumeClaims(ns).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, p := range l.Items {
+		if p.Annotations[kube.VolumeAnnotation] != id.String() {
+			continue
+		}
+		found = true
+		if *p.Spec.StorageClassName != "ssd-class" || p.Spec.Resources.Requests.Storage().Value() != int64(2*model.GiB) {
+			t.Fatalf("class %q size %v", *p.Spec.StorageClassName, p.Spec.Resources.Requests.Storage())
+		}
+	}
+	if !found {
+		t.Fatal("no claim for volume")
+	}
+}
+
+func TestCreateVolumeRepeatIsOneClaimAndChangedSpecConflicts(t *testing.T) {
+	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	id := model.NewVolumeID()
+	s := spec(t, model.VolumeTypeStandard, model.GiB)
+	before := claims(t)
+	for range 2 {
+		if err := b.CreateVolume(context.Background(), id, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := claims(t) - before; got != 1 {
+		t.Fatalf("claims created %d", got)
+	}
+	s.Size = 2 * model.GiB
+	err := b.CreateVolume(context.Background(), id, s)
+	if !errors.Is(err, backend.ErrConflict) || !backend.IsPermanent(err) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestUnknownTypeIsInvalid(t *testing.T) {
+	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	before := claims(t)
+	err := b.CreateVolume(context.Background(), model.NewVolumeID(), spec(t, model.VolumeTypeUnspecified, model.GiB))
+	if !errors.Is(err, backend.ErrInvalid) || !backend.IsPermanent(err) {
+		t.Fatalf("err %v", err)
+	}
+	if claims(t) != before {
+		t.Fatal("claim created")
+	}
+}
+
+func TestExpandGrowsAndRejectsShrink(t *testing.T) {
+	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	ctx := context.Background()
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, 2*model.GiB)); err != nil {
+		t.Fatal(err)
+	}
+	bind(t, id)
+	if err := b.Expand(ctx, id, 4*model.GiB); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Expand(ctx, id, 4*model.GiB); err != nil {
+		t.Fatalf("same size: %v", err)
+	}
+	err := b.Expand(ctx, id, model.GiB)
+	if !errors.Is(err, backend.ErrInvalid) {
+		t.Fatalf("shrink err %v", err)
+	}
+	err = b.Expand(ctx, model.NewVolumeID(), model.GiB)
+	if !errors.Is(err, backend.ErrNotFound) {
+		t.Fatalf("missing err %v", err)
+	}
+	for _, p := range func() []string {
+		l, _ := kc.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+		var out []string
+		for _, c := range l.Items {
+			if c.Annotations[kube.VolumeAnnotation] == id.String() {
+				out = append(out, c.Spec.Resources.Requests.Storage().String())
+			}
+		}
+		return out
+	}() {
+		if p != "4Gi" {
+			t.Fatalf("size %s", p)
+		}
+	}
+}
+
+func TestDeleteVolumeIsIdempotent(t *testing.T) {
+	b := kube.NewBlock(kc, ns, kube.DefaultClasses())
+	ctx := context.Background()
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeStandard, model.GiB)); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := b.DeleteVolume(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.DeleteVolume(ctx, model.NewVolumeID()); err != nil {
+		t.Fatalf("absent: %v", err)
+	}
+}
+
+func TestCreateVolumeWithSameClientTokenMakesOneClaim(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	objs := fake.NewObjects(fake.ObjectOptions{})
+	svc, err := storage.Open(ctx, storage.Options{
+		Store: storage.Memory(), Block: volumesOnly{Block: fake.NewBlock(), k: kube.NewBlock(kc, ns, kube.DefaultClasses())},
+		Object: objs, Signer: objs, Zones: []model.Zone{zone(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = svc.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done; _ = svc.Close() }()
+
+	tok, err := model.ParseClientToken("kube-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := model.CreateVolumeRequest{Spec: spec(t, model.VolumeTypeStandard, model.GiB)}
+	before := claims(t)
+	var ops [2]model.OperationID
+	for i := range ops {
+		op, err := svc.Submit(ctx, tok, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops[i] = op.ID
+	}
+	if ops[0] != ops[1] {
+		t.Fatalf("operations %s %s", ops[0], ops[1])
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		op, err := svc.Operation(ctx, ops[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if op.Terminal() {
+			if op.Phase() != model.PhaseSucceeded {
+				t.Fatalf("phase %s err %+v", op.Phase(), op.Err())
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("operation did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := claims(t) - before; got != 1 {
+		t.Fatalf("claims created %d", got)
+	}
+}
