@@ -90,7 +90,7 @@ func (s *dbStore) Close() error {
 func (s *dbStore) migrate(ctx context.Context) error {
 	// BEGIN IMMEDIATE takes the write lock. locking_mode=EXCLUSIVE keeps it
 	// until the connection closes, so a second process fails here.
-	if _, err := s.sql.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+	if _, err := s.query().ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return fmt.Errorf("sqlite: begin migration: %w", err)
 	}
 	committed := false
@@ -104,22 +104,22 @@ func (s *dbStore) migrate(ctx context.Context) error {
 		}
 	}()
 	var v int
-	if err := s.sql.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+	if err := s.query().QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
 		return fmt.Errorf("sqlite: read schema version: %w", err)
 	}
 	switch v {
 	case 1:
 	case 0:
-		if _, err := s.sql.ExecContext(ctx, schema); err != nil {
+		if _, err := s.query().ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("sqlite: create schema: %w", err)
 		}
-		if _, err := s.sql.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		if _, err := s.query().ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
 			return fmt.Errorf("sqlite: set schema version: %w", err)
 		}
 	default:
 		return errSchema(v)
 	}
-	if _, err := s.sql.ExecContext(ctx, `COMMIT`); err != nil {
+	if _, err := s.query().ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("sqlite: commit migration: %w", err)
 	}
 	committed = true
@@ -135,7 +135,12 @@ func errSchema(v int) error { return schemaError(v) }
 func (s *dbStore) Update(ctx context.Context, fn func(store.Reader) (model.Change, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx, err := s.sql.BeginTx(ctx, nil)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sqlite: %w", err)
+	}
+	// Detached for the same reason as query: a cancel would roll the
+	// transaction back on another goroutine.
+	tx, err := s.sql.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: begin: %w", err)
 	}
@@ -642,11 +647,31 @@ func (s *dbStore) byKind(ctx context.Context, kind string) (out []model.Record, 
 	return out, nil
 }
 
+// query runs statements with the caller's values but without its cancel.
+// modernc.org/sqlite (v1.33.1) drops the rows of a query interrupted by a
+// cancel after its first step without finalizing the statement. Close then
+// leaves the connection open as a zombie that keeps the EXCLUSIVE lock, and the
+// next Open in the process fails with SQLITE_BUSY. Statements here are local
+// and short, so they finish instead.
 func (s *dbStore) query() querier {
 	if s.tx != nil {
-		return s.tx
+		return detached{s.tx}
 	}
-	return s.sql
+	return detached{s.sql}
+}
+
+type detached struct{ q querier }
+
+func (d detached) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return d.q.ExecContext(context.WithoutCancel(ctx), query, args...) //nolint:wrapcheck // callers wrap
+}
+
+func (d detached) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return d.q.QueryContext(context.WithoutCancel(ctx), query, args...) //nolint:wrapcheck // callers wrap
+}
+
+func (d detached) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return d.q.QueryRowContext(context.WithoutCancel(ctx), query, args...)
 }
 
 type querier interface {
