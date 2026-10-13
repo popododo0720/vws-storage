@@ -7,11 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
@@ -155,17 +158,60 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 		return fmt.Errorf("kube: get claim: %w", err)
 	}
 	have := cur.Spec.Resources.Requests.Storage().Value()
+	// The volume size is not the claim request when CDI added its overhead.
+	// Compare with the volume size and keep the overhead on top.
+	logical, err := b.volumeSize(ctx, cur)
+	if err != nil {
+		return err
+	}
 	switch {
-	case int64(size) < have:
+	case int64(size) < logical:
 		return backend.Permanent(fmt.Errorf("%w: volume cannot shrink", backend.ErrInvalid))
-	case int64(size) == have:
+	case int64(size) == logical:
 		return nil
+	}
+	if overhead := have - logical; overhead > 0 {
+		if cur.Annotations == nil {
+			cur.Annotations = map[string]string{}
+		}
+		cur.Annotations[sizeAnnotation] = strconv.FormatInt(int64(size), 10)
+		size += model.Bytes(overhead)
 	}
 	cur.Spec.Resources.Requests[corev1.ResourceStorage] = *resource.NewQuantity(int64(size), resource.BinarySI)
 	if _, err = pvcs.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("kube: expand claim: %w", err)
 	}
 	return nil
+}
+
+// volumeSize is the size of the volume a claim stands for: the size
+// annotation, else in Filesystem mode the request of its DataVolume, else the
+// claim request.
+func (b *Block) volumeSize(ctx context.Context, c *corev1.PersistentVolumeClaim) (int64, error) {
+	if v, ok := c.Annotations[sizeAnnotation]; ok {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, backend.Permanent(fmt.Errorf("%w: claim annotation %s=%q", backend.ErrInvalid, sizeAnnotation, v))
+		}
+		return n, nil
+	}
+	have := c.Spec.Resources.Requests.Storage().Value()
+	if b.mode != corev1.PersistentVolumeFilesystem {
+		return have, nil
+	}
+	dv, err := b.dyn.Resource(dataVolumeGVR).Namespace(b.ns).Get(ctx, c.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+		return have, nil // a restored claim has no DataVolume and no overhead
+	}
+	if err != nil {
+		return 0, fmt.Errorf("kube: get data volume: %w", err)
+	}
+	req, _, _ := unstructured.NestedString(dv.Object, "spec", "storage", "resources", "requests", "storage") //nolint:errcheck // absent is ""
+	q, err := resource.ParseQuantity(req)
+	if err != nil {
+		return 0, backend.Permanent(fmt.Errorf("%w: data volume request %q", backend.ErrInvalid, req))
+	}
+	return q.Value(), nil
 }
 
 // DeleteVolume deletes the claim and, in Filesystem mode, the DataVolume
