@@ -2,6 +2,8 @@ module github.com/popododo0720/vws-storage
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	cloud.google.com/go/longrunning v1.3.0
 	github.com/aws/aws-sdk-go-v2 v1.47.3
