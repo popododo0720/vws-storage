@@ -28,6 +28,9 @@ func snapshotName(id model.SnapshotID) string {
 // CreateSnapshot creates the VolumeSnapshot and returns ErrBusy until
 // status.readyToUse is true, so the engine retries until the snapshot is usable.
 func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error {
+	if b.snapshotClass == "" {
+		return backend.Permanent(fmt.Errorf("%w: this storage backend has no VolumeSnapshotClass", backend.ErrInvalid))
+	}
 	claim, err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Get(ctx, pvcName(source), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))

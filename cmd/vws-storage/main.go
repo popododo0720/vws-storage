@@ -19,6 +19,7 @@ import (
 
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/popododo0720/vws-lib/obs"
 	obshealth "github.com/popododo0720/vws-lib/obs/health"
@@ -52,7 +53,8 @@ func run(args []string) error {
 	fs.StringVar(&kubeCfg.Namespace, "kube-namespace", kubeCfg.Namespace, "namespace for volume claims and snapshots")
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
 	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for ssd volumes")
-	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots")
+	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots; empty disables snapshots")
+	volumeMode := fs.String("kube-volume-mode", string(kubeCfg.VolumeMode), "volumeMode of new volumes: Block, or Filesystem for a provisioner such as NFS (needs CDI)")
 	objectBackend := fs.String("object-backend", "fake", "object backend: fake or s3")
 	s3Profile := fs.String("s3-profile", string(s3.RGW), "endpoint profile for -object-backend=s3: rgw or minio")
 	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint URL for -object-backend=s3")
@@ -72,6 +74,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	kubeCfg.VolumeMode = corev1.PersistentVolumeMode(*volumeMode)
 	kubeCfg.Classes = kube.Classes{model.VolumeTypeStandard: *standardClass, model.VolumeTypeSSD: *ssdClass}
 	block, err := openBlock(*blockBackend, kubeCfg)
 	if err != nil {
@@ -90,6 +93,7 @@ func run(args []string) error {
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	logProvisioners(ctx, block)
 	var lc net.ListenConfig
 
 	objs, err := openObjects(*objectBackend, *objectAddr, *s3Profile, *s3Endpoint, *s3Region, *s3BucketPrefix)
@@ -275,4 +279,18 @@ func parseProjects(s string) ([]model.Project, error) {
 		projects = append(projects, p)
 	}
 	return projects, nil
+}
+
+// logProvisioners records which driver serves each StorageClass, once at
+// startup. Readiness keeps checking them; this line is for the operator.
+func logProvisioners(ctx context.Context, block backend.Block) {
+	p, ok := block.(interface {
+		Provisioners(context.Context) map[string]string
+	})
+	if !ok {
+		return
+	}
+	for class, provisioner := range p.Provisioners(ctx) {
+		slog.InfoContext(ctx, "storage class", slog.String("class", class), slog.String("provisioner", provisioner))
+	}
 }
