@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
@@ -100,7 +102,7 @@ func (s *dbStore) migrate(ctx context.Context) error {
 		}
 		// The rollback must run even when ctx is already cancelled.
 		if _, err := s.sql.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`); err != nil {
-			log.Printf("vws-storage: sqlite: rollback migration: %v", err)
+			slog.ErrorContext(ctx, "sqlite: rollback migration", slog.String(obs.FieldErr, err.Error()))
 		}
 	}()
 	var v int

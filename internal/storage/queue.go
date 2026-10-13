@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs/report"
 
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
@@ -24,7 +26,7 @@ func (s *Service) sampleQueue(ctx context.Context) {
 		ops, err := s.st.ListOperations(ctx, store.OperationFilter{NonTerminal: true}, after, queuePage)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("vws-storage: queue sample: %v", err)
+				_ = report.Error(ctx, fmt.Errorf("storage: queue sample: %w", err)) //nolint:errcheck // reported here; the next tick samples again
 			}
 			return
 		}

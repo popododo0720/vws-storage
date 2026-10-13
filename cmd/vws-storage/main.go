@@ -157,9 +157,15 @@ func run(args []string) error {
 	slog.InfoContext(ctx, "serving", slog.String("grpc", grpcLn.Addr().String()), slog.String("object", objectAt))
 
 	var serveErr error
+	runDone := false
 	select {
 	case <-ctx.Done():
 	case serveErr = <-grpcErr:
+	case serveErr = <-runErr:
+		// The engine stopped while the server was up: nothing would drive
+		// operations, so the process exits instead of serving.
+		runDone = true
+		serveErr = errors.Join(errors.New("storage engine stopped"), serveErr)
 	case err := <-httpErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr = err
@@ -169,7 +175,11 @@ func run(args []string) error {
 	mon.Shutdown()
 	gs.GracefulStop()
 	stopHTTP()
-	<-runErr
+	if !runDone {
+		if err := <-runErr; err != nil {
+			serveErr = errors.Join(serveErr, err)
+		}
+	}
 	if err := svc.Close(); err != nil {
 		serveErr = errors.Join(serveErr, err)
 	}

@@ -9,10 +9,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
@@ -329,7 +331,7 @@ func (s *Service) Attachments(ctx context.Context, vols []model.Volume) map[mode
 	}
 	byClaim, err := a.Attachments(ctx)
 	if err != nil {
-		log.Printf("vws-storage: attachments: %v", err)
+		slog.WarnContext(ctx, "volume attachments unavailable", slog.String(obs.FieldErr, err.Error()))
 		return nil
 	}
 	out := map[model.VolumeID]string{}

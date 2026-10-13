@@ -26,7 +26,7 @@ func TestBackendErrorTextStaysOutOfTheStatus(t *testing.T) {
 		{errors.New("s3: create bucket: " + leak), model.CodeUnavailable},
 	}
 	for _, c := range cases {
-		st := storage.StatusOf(c.err)
+		st := storage.StatusOf(context.Background(), c.err)
 		if st.Code != c.code || st.Message == "" {
 			t.Errorf("%v: status %+v", c.err, st)
 		}
@@ -39,7 +39,7 @@ func TestBackendErrorTextStaysOutOfTheStatus(t *testing.T) {
 }
 
 func TestInvalidArgumentKeepsItsText(t *testing.T) {
-	st := storage.StatusOf(backend.Permanent(fmt.Errorf("%w: volume cannot shrink", backend.ErrInvalid)))
+	st := storage.StatusOf(context.Background(), backend.Permanent(fmt.Errorf("%w: volume cannot shrink", backend.ErrInvalid)))
 	if st.Code != model.CodeInvalidArgument || !strings.Contains(st.Message, "volume cannot shrink") {
 		t.Fatalf("status %+v", st)
 	}
