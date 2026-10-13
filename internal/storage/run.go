@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs"
+	"github.com/popododo0720/vws-lib/obs/report"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
@@ -71,7 +74,7 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) fill(ctx context.Context, inflight map[model.OperationID]struct{}, hold map[model.OperationID]time.Time, done chan drove) {
 	ops, err := s.st.Runnable(ctx, s.now(), s.workers+len(inflight))
 	if err != nil {
-		log.Printf("vws-storage: runnable: %v", err)
+		_ = report.Error(ctx, fmt.Errorf("storage: runnable: %w", err)) //nolint:errcheck // reported here; the next tick retries
 		return
 	}
 	for _, op := range ops {
@@ -102,7 +105,7 @@ func (s *Service) start(ctx context.Context, id model.OperationID, inflight map[
 	go func() {
 		err := s.driveRecovered(ctx, id)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("vws-storage: operation %s: %v", id, err)
+			_ = report.Error(ctx, fmt.Errorf("storage: drive operation: %w", err), slog.String(obs.FieldResourceID, id.String())) //nolint:errcheck // reported here; the operation is held and retried
 		}
 		done <- drove{id: id, err: err}
 	}()
@@ -210,14 +213,16 @@ const (
 	msgBackendFailed   = "the backend failed"
 )
 
-func statusOf(err error) model.Status {
+func statusOf(ctx context.Context, err error) model.Status {
 	if err == nil {
 		return model.Status{}
 	}
 	if errors.Is(err, backend.ErrInvalid) {
 		return model.Status{Code: model.CodeInvalidArgument, Message: err.Error()}
 	}
-	log.Printf("vws-storage: backend error: %v", err)
+	// Not a server fault: the operation records a fixed message and retries
+	// or fails. The backend text goes to the log only.
+	slog.WarnContext(ctx, "backend error", slog.String(obs.FieldErr, err.Error()))
 	switch {
 	case errors.Is(err, backend.ErrNotFound):
 		return model.Status{Code: model.CodeNotFound, Message: msgBackendNotFound}
@@ -254,9 +259,9 @@ func finish[W model.Work](
 		case callErr == nil:
 			return onSuccess(run, r, now)
 		case backend.IsPermanent(callErr):
-			return onPermanent(run, r, statusOf(callErr), now)
+			return onPermanent(run, r, statusOf(ctx, callErr), now)
 		default:
-			return run.Retry(statusOf(callErr), s.policy.next(run.Attempts(), now), now), nil
+			return run.Retry(statusOf(ctx, callErr), s.policy.next(run.Attempts(), now), now), nil
 		}
 	})
 }
@@ -285,7 +290,7 @@ func undo[W model.Creation](
 			return model.Change{}, nil
 		}
 		if undoErr != nil && !backend.IsPermanent(undoErr) {
-			return comp.Retry(statusOf(undoErr), s.policy.next(comp.Attempts(), now), now), nil
+			return comp.Retry(statusOf(ctx, undoErr), s.policy.next(comp.Attempts(), now), now), nil
 		}
 		// A permanent cleanup error still drops the creating row. Leaving it
 		// would pin the name to an operation that will never run again.

@@ -218,9 +218,9 @@ func (s *Service) runObjectUpload(ctx context.Context, op model.Operation, w mod
 		case errors.Is(statErr, backend.ErrNotFound):
 			return model.Compensate(run, model.Status{Code: model.CodeDeadlineExceeded, Message: "upload missed its deadline"}, now), nil
 		case statErr != nil && backend.IsPermanent(statErr):
-			return model.Compensate(run, statusOf(statErr), now), nil
+			return model.Compensate(run, statusOf(ctx, statErr), now), nil
 		case statErr != nil:
-			return run.Retry(statusOf(statErr), s.policy.next(run.Attempts(), now), now), nil //nolint:nilerr // the backend error is recorded on the retry change and the engine retries
+			return run.Retry(statusOf(ctx, statErr), s.policy.next(run.Attempts(), now), now), nil //nolint:nilerr // the backend error is recorded on the retry change and the engine retries
 		}
 		if err := w.Check(obs); err != nil {
 			return model.Compensate(run, model.Status{Code: model.CodeFailedPrecondition, Message: err.Error()}, now), nil //nolint:nilerr // a failed check is recorded on the compensating change
