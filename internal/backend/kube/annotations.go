@@ -14,4 +14,8 @@ const (
 	sourceAnnotation   = annotationPrefix + "source"
 	// errorSeenAnnotation holds when a VolumeSnapshot first reported status.error.
 	errorSeenAnnotation = annotationPrefix + "error-first-seen"
+	// sourceModeAnnotation on a VolumeSnapshot is the volumeMode of the claim
+	// it was taken from. A restore uses the same mode. A snapshot without it
+	// predates Block volumes, so its source was Filesystem.
+	sourceModeAnnotation = annotationPrefix + "source-volume-mode"
 )

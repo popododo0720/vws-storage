@@ -73,12 +73,16 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		return backend.Permanent(fmt.Errorf("%w: image source", backend.ErrInvalid))
 	}
 	var from model.SnapshotID
+	// A new volume is a raw block device: KubeVirt attaches a Block claim as
+	// the disk itself, while a Filesystem claim must hold a disk.img file.
+	mode := corev1.PersistentVolumeBlock
 	if snap, ok := spec.Source.Snapshot(); ok {
 		from = snap
 		vs, err := b.requireReady(ctx, snap)
 		if err != nil {
 			return err
 		}
+		mode = restoreMode(vs)
 		if rs, ok := restoreSize(vs); ok && int64(spec.Size) < rs {
 			return backend.Permanent(fmt.Errorf("%w: volume is smaller than the snapshot (%d bytes)", backend.ErrInvalid, rs))
 		}
@@ -96,6 +100,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			StorageClassName: &class,
+			VolumeMode:       &mode,
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceStorage: *resource.NewQuantity(int64(spec.Size), resource.BinarySI)},
 			},
