@@ -57,7 +57,7 @@ The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p p
 
 - A VWS bucket maps to the S3 bucket `vws-` plus a hash of its full name. An object generation is the key `<generation>/<key>`.
 - `PresignPut` signs `Content-Length`, `If-None-Match: *`, and `x-amz-checksum-sha256` when a digest is given. The locator carries these headers and the client must send them. The expiry is rounded down to whole seconds.
-- `Stat` reads the SHA-256 from the stored checksum and the MD5 from the ETag. The ETag is the payload MD5 only for a single-part upload without server-side encryption. Otherwise MD5 is zero.
+- `Stat` reads the MD5 from the ETag. The ETag is the payload MD5 only for a single-part upload without server-side encryption; otherwise MD5 is zero. `Stat` always reads the stored bytes back, pinned to the ETag with If-Match, and computes the SHA-256 itself. It neither requests nor uses a checksum the endpoint reports, because Ceph RGW keeps a wrong `x-amz-checksum-sha256` as sent and reports it back. On the same read a single-part MD5 ETag is checked, and a mismatch is a permanent error. The record keeps the computed digest, never a client's or the endpoint's claim.
 - `CreateBucket`, `DeleteBucket`, and `DeleteObject` are safe to repeat. A bucket that still holds objects is `ErrBusy`.
 - Tests use an in-process S3 server (gofakes3). `TestLiveEndpoint` runs against a real endpoint when `VWS_S3_TEST_ENDPOINT`, `VWS_S3_TEST_PROFILE`, and the two key variables are set, and skips otherwise.
 
