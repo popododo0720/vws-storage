@@ -35,6 +35,13 @@ type Block interface {
 	SnapshotObjectName(id model.SnapshotID) string
 }
 
+// Attacher is an optional Block capability: it reports which instance uses
+// each claim. The map is claim name to instance id (the last segment of the
+// instance name). A backend without it reports no attachments.
+type Attacher interface {
+	Attachments(ctx context.Context) (map[string]string, error)
+}
+
 // Object is the mutating object backend.
 // Bytes are addressed by ObjectRef. How a generation is stored is private
 // to the adapter.

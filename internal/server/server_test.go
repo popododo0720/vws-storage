@@ -23,6 +23,7 @@ import (
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
 
+	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/server"
@@ -737,6 +738,17 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 	longrunningpb.OperationsClient,
 ) {
 	t.Helper()
+	return dialBlock(t, objectBase, cfg, fake.NewBlock())
+}
+
+func dialBlock(t *testing.T, objectBase string, cfg server.Config, block backend.Block) (
+	storagev1.VolumeServiceClient,
+	storagev1.SnapshotServiceClient,
+	storagev1.BucketServiceClient,
+	storagev1.ObjectServiceClient,
+	longrunningpb.OperationsClient,
+) {
+	t.Helper()
 	zone, err := model.ParseZone("az-1")
 	if err != nil {
 		t.Fatal(err)
@@ -753,7 +765,7 @@ func dialConfig(t *testing.T, objectBase string, cfg server.Config) (
 		go func() { _ = httpSrv.Serve(ln) }()
 	}
 	svc, err := storage.Open(context.Background(), storage.Options{
-		Store: storage.Memory(), Block: fake.NewBlock(), Object: objs, Signer: objs,
+		Store: storage.Memory(), Block: block, Object: objs, Signer: objs,
 		Zones: []model.Zone{zone}, Workers: 2, ScanInterval: 5 * time.Millisecond,
 		RetryBase: time.Millisecond, RetryMax: 5 * time.Millisecond, UploadPoll: 5 * time.Millisecond,
 	})

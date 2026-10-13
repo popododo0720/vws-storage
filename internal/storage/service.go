@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -315,6 +316,31 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 // Volume returns a volume.
 func (s *Service) Volume(ctx context.Context, id model.VolumeID) (model.Volume, error) {
 	return s.st.Volume(ctx, id)
+}
+
+// Attachments returns, for each volume in vols that an instance uses, the
+// instance id. It is read from the backend on each call and never stored:
+// attachment is owned by the instance spec. A backend without attachments, or
+// one that fails to answer, reports none; the error is logged.
+func (s *Service) Attachments(ctx context.Context, vols []model.Volume) map[model.VolumeID]string {
+	a, ok := s.block.(backend.Attacher)
+	if !ok || len(vols) == 0 {
+		return nil
+	}
+	byClaim, err := a.Attachments(ctx)
+	if err != nil {
+		log.Printf("vws-storage: attachments: %v", err)
+		return nil
+	}
+	out := map[model.VolumeID]string{}
+	for _, v := range vols {
+		if name := s.ClaimName(v); name != "" {
+			if inst, ok := byClaim[name]; ok {
+				out[v.ID] = inst
+			}
+		}
+	}
+	return out
 }
 
 // ClaimName is the backend object name for v. It is empty while v is Creating,
