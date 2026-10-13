@@ -18,4 +18,8 @@ const (
 	// it was taken from. A restore uses the same mode. A snapshot without it
 	// predates Block volumes, so its source was Filesystem.
 	sourceModeAnnotation = annotationPrefix + "source-volume-mode"
+	// sizeAnnotation on a claim is the volume size in bytes when the claim
+	// requests more than that: CDI adds the filesystem overhead to the claim
+	// of a Filesystem DataVolume. Expand writes it.
+	sizeAnnotation = annotationPrefix + "size"
 )
