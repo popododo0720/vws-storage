@@ -41,14 +41,24 @@ type Block struct {
 	ns            string
 	classes       Classes
 	snapshotClass string
+	mode          corev1.PersistentVolumeMode
 }
 
 var _ backend.Block = (*Block)(nil)
 
-// NewBlock returns a backend that creates PVCs and VolumeSnapshots in
-// namespace ns. snapshotClass is the VolumeSnapshotClass for new snapshots.
+// NewBlock returns a backend that creates Block-mode PVCs and VolumeSnapshots
+// in namespace ns. snapshotClass is the VolumeSnapshotClass for new
+// snapshots; empty means the backend takes no snapshots.
 func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes Classes, snapshotClass string) *Block {
-	return &Block{kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass}
+	return &Block{kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock}
+}
+
+// WithVolumeMode sets the volumeMode of new empty volumes. Filesystem is for
+// a provisioner that serves only Filesystem (NFS): such a volume is a CDI
+// blank DataVolume, so it holds the disk.img KubeVirt needs.
+func (b *Block) WithVolumeMode(m corev1.PersistentVolumeMode) *Block {
+	b.mode = m
+	return b
 }
 
 // pvcName is derived from the full volume name, so the same id in two
@@ -73,9 +83,9 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		return backend.Permanent(fmt.Errorf("%w: image source", backend.ErrInvalid))
 	}
 	var from model.SnapshotID
-	// A new volume is a raw block device: KubeVirt attaches a Block claim as
-	// the disk itself, while a Filesystem claim must hold a disk.img file.
-	mode := corev1.PersistentVolumeBlock
+	// A Block claim is the disk itself. A Filesystem claim must hold disk.img,
+	// which only a restore (the snapshot has it) or CDI (blankVolume) provides.
+	mode := b.mode
 	if snap, ok := spec.Source.Snapshot(); ok {
 		from = snap
 		vs, err := b.requireReady(ctx, snap)
@@ -86,6 +96,9 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		if rs, ok := restoreSize(vs); ok && int64(spec.Size) < rs {
 			return backend.Permanent(fmt.Errorf("%w: volume is smaller than the snapshot (%d bytes)", backend.ErrInvalid, rs))
 		}
+	}
+	if from.IsZero() && mode == corev1.PersistentVolumeFilesystem {
+		return b.blankVolume(ctx, id, spec, class)
 	}
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -155,8 +168,14 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 	return nil
 }
 
-// DeleteVolume deletes the claim. An absent claim is not an error.
+// DeleteVolume deletes the claim and, in Filesystem mode, the DataVolume
+// that owns it. An absent object is not an error.
 func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
+	if b.mode == corev1.PersistentVolumeFilesystem {
+		if err := b.deleteDataVolume(ctx, id); err != nil {
+			return err
+		}
+	}
 	err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Delete(ctx, pvcName(id), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("kube: delete claim: %w", err)

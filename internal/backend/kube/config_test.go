@@ -72,10 +72,10 @@ func TestOpenRejectsIncompleteConfig(t *testing.T) {
 	cfg := kube.DefaultConfig()
 	cfg.Kubeconfig = writeKubeconfig(t)
 	for name, mut := range map[string]func(*kube.Config){
-		"namespace":     func(c *kube.Config) { c.Namespace = "" },
-		"snapshotClass": func(c *kube.Config) { c.SnapshotClass = "" },
-		"ssdClass":      func(c *kube.Config) { c.Classes = kube.Classes{model.VolumeTypeStandard: "a"} },
-		"kubeconfig":    func(c *kube.Config) { c.Kubeconfig = filepath.Join(t.TempDir(), "missing") },
+		"namespace":  func(c *kube.Config) { c.Namespace = "" },
+		"volumeMode": func(c *kube.Config) { c.VolumeMode = "Raw" },
+		"ssdClass":   func(c *kube.Config) { c.Classes = kube.Classes{model.VolumeTypeStandard: "a"} },
+		"kubeconfig": func(c *kube.Config) { c.Kubeconfig = filepath.Join(t.TempDir(), "missing") },
 	} {
 		c := cfg
 		mut(&c)

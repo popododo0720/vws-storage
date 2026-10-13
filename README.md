@@ -27,7 +27,8 @@ go run ./cmd/vws-storage
 | `-kube-namespace` | `vws-vms` | namespace for claims and snapshots. It is the VM namespace, because KubeVirt hot-plugs only a claim in the VM's namespace |
 | `-kube-class-standard` | `ceph-block` | StorageClass for `standard` volumes |
 | `-kube-class-ssd` | `ceph-block` | StorageClass for `ssd` volumes |
-| `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots |
+| `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots. Empty disables snapshots (`CreateSnapshot` is `INVALID_ARGUMENT`) |
+| `-kube-volume-mode` | `Block` | `volumeMode` of new empty volumes. `Filesystem` for a provisioner that serves only Filesystem, such as NFS. It needs CDI |
 
 S3 keys come from `VWS_S3_ACCESS_KEY` and `VWS_S3_SECRET_KEY`, never from flags.
 
@@ -49,6 +50,7 @@ One process may open a given SQLite file.
 - `VolumeStatus.instance` is the instance whose KubeVirt `VirtualMachine` (label `vws.io/managed=true`, in the claim namespace) lists the claim in `spec.template.spec.volumes`, as boot disk or hot-plugged. It is read on every Get and List (one VM list per call) and never stored, because the instance spec owns the attachment. The name is `projects/{volume project}/zones/{volume zone}/instances/{VM name}`. The service account needs `list` on `virtualmachines.kubevirt.io` in that namespace. Without it, or with any lookup error, the field is empty and the error is logged.
 - `VolumeStatus.claim_name` and `SnapshotStatus.snapshot_object_name` are the PVC and VolumeSnapshot names, from `Block.ClaimName` and `Block.SnapshotObjectName`. They are a pure function of the id, so nothing is stored, they never change, and a volume created before the field existed reports it too. They are empty while the row is Creating. The fake backend returns a made-up `fake-<id>`. `vws-compute` uses the value to find the claim and does not recompute the name.
 - Deleting a volume does not delete its snapshots. The engine admits the delete while a snapshot is Available, and the snapshot can still restore a volume. A snapshot being created blocks the delete. `TestVolumeDeleteKeepsItsAvailableSnapshot` and `TestDeletingSourceVolumeKeepsSnapshot` pin this. A snapshot that is a volume's source cannot be deleted.
+- With `-kube-volume-mode=Filesystem` (NFS), a new empty volume is a CDI `DataVolume` with `source: blank: {}`, named after the claim. CDI writes a sparse `disk.img` owned by uid 107 and sizes the claim for the filesystem overhead. KubeVirt creates a missing `disk.img` only when a VM starts, not on hotplug, so a claim without the image cannot be hot-plugged. `CreateVolume` is `ErrBusy` until the DataVolume phase is `Succeeded`. The DataVolume has `cdi.kubevirt.io/storage.deleteAfterCompletion: "false"` because it owns the claim. `DeleteVolume` deletes the DataVolume and the claim. A restore from a snapshot is still a plain PVC, because the snapshot already holds `disk.img`. `Expand` grows the claim. `disk.img` grows only with KubeVirt's `ExpandDisks` feature gate. The service account needs `create`, `get`, `list` and `delete` on `datavolumes.cdi.kubevirt.io` in the namespace.
 - The tests install the external-snapshotter `VolumeSnapshot` CRD from `testdata` (v8.2.0).
 
 The tests run against envtest. Set `KUBEBUILDER_ASSETS` (`setup-envtest use -p path`). Without it the package skips.
@@ -75,6 +77,34 @@ The server answers the standard `grpc.health.v1` service on the gRPC listener.
 | `vws.storage.v1.Ready` | SERVING only when every service above is. For a probe that names one service |
 
 A background loop evaluates the checks (`-health-period`, default 10s, sooner while something is down; `-health-timeout`, default 3s). `Check` and `Watch` answer from memory. S3 is not checked: an S3 outage must not take the volume services out of rotation. The kube checks read the Namespace, StorageClass and VolumeSnapshotClass, which are cluster-scoped, so the pod's service account needs `get` on them.
+
+### Storage preflight
+
+vws-storage does not install or operate storage. The StorageClasses, the CSI driver behind them, the VolumeSnapshotClass (if one is set) and the storage itself (a Ceph cluster, or an NFS export reachable from every node) must exist before it starts. The kube readiness check is the preflight, both at startup and on every period:
+
+- Each StorageClass must exist. Its provisioner is logged once at startup (`storage class` with `class` and `provisioner`).
+- A provisioner that serves only Filesystem (`nfs.csi.k8s.io`, `smb.csi.k8s.io`) with `-kube-volume-mode=Block` is not ready.
+- A VolumeSnapshotClass that is set must exist, and its `driver` must be the provisioner of one of the StorageClasses.
+- In Filesystem mode, the CDI DataVolume API must answer in the namespace.
+
+Until all of these hold, the volume and snapshot services are NOT_SERVING.
+
+### External storage (generic CSI and NFS)
+
+Any CSI driver that provisions dynamically works through the StorageClass flags. NFS uses [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) with a StorageClass such as:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: nfs-csi}
+provisioner: nfs.csi.k8s.io
+parameters: {server: nas.example, share: /export/vws}
+allowVolumeExpansion: true
+```
+
+Then run with `-kube-class-standard=nfs-csi -kube-class-ssd=nfs-csi -kube-volume-mode=Filesystem`. `-kube-snapshot-class` is the csi-driver-nfs VolumeSnapshotClass, or empty for no snapshots.
+
+iSCSI has no option of its own. The kubernetes-csi `csi-driver-iscsi` only attaches LUNs that already exist and cannot provision them. An iSCSI SAN whose vendor CSI driver provisions dynamically is a generic CSI StorageClass, in Block mode.
 
 ### HTTP probes
 
