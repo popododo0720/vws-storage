@@ -11,42 +11,19 @@ import (
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
 )
 
+// admitPutObject is a strict create (S3 If-None-Match: *). A live object at
+// the path is ALREADY_EXISTS, and so is another create of the path still in
+// flight, whatever the bytes. The only replay is the same request_id with the
+// same request, which Submit answers from the token before admit runs.
 func (s *Service) admitPutObject(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest) (model.Admitted, error) {
-	head, err := r.Object(ctx, req.Path)
+	_, err := r.Object(ctx, req.Path)
 	switch {
 	case err == nil:
-		if !req.Content().Matches(head) {
-			return model.Admitted{}, fmt.Errorf("%w: object", model.ErrAlreadyExists)
-		}
-		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
-			up, is := op.Work.(model.ObjectUpload)
-			return is && up.Replaces.IsZero() && up.Object.Path == req.Path
-		})
-		if err != nil {
-			return model.Admitted{}, err
-		}
-		if ok {
-			return model.NoteExisting(st, op)
-		}
-		busy, err := r.InFlight(ctx, req.Path)
-		if err != nil {
-			return model.Admitted{}, err
-		}
-		if busy {
-			return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
-		}
-		work := model.ObjectUpload{
-			Object:      model.ObjectRef{Path: head.Path, Generation: head.Generation},
-			Size:        head.Size,
-			SHA256:      head.SHA256,
-			ContentType: head.ContentType,
-			Labels:      head.Labels,
-		}
-		return model.FinishNow(st, work, head)
+		return model.Admitted{}, fmt.Errorf("%w: object", model.ErrAlreadyExists)
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
-	return s.admitFirstUpload(ctx, r, st, req)
+	return s.admitFirstUpload(ctx, r, st, req, false)
 }
 
 func (s *Service) admitUpdateObject(ctx context.Context, r store.Reader, st model.Start, req model.UpdateObjectRequest) (model.Admitted, error) {
@@ -59,7 +36,7 @@ func (s *Service) admitUpdateObject(ctx context.Context, r store.Reader, st mode
 		if !req.HasContents {
 			return model.Admitted{}, fmt.Errorf("%w: contents", model.ErrInvalidArgument)
 		}
-		return s.admitFirstUpload(ctx, r, st, req.AsPut())
+		return s.admitFirstUpload(ctx, r, st, req.AsPut(), true)
 	case err != nil:
 		return model.Admitted{}, err
 	}
@@ -121,10 +98,27 @@ func (s *Service) admitUpdateObject(ctx context.Context, r store.Reader, st mode
 	return avail.Replace(st, head, model.NewGeneration(), req, st.Now.Add(s.window))
 }
 
-func (s *Service) admitFirstUpload(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest) (model.Admitted, error) {
+// admitFirstUpload admits the upload of a path that has no object. join lets
+// an upsert (UpdateObject allow_missing) join an in-flight first upload of the
+// same content. A create never joins: the other upload is another writer, so
+// the path is taken (ALREADY_EXISTS).
+func (s *Service) admitFirstUpload(ctx context.Context, r store.Reader, st model.Start, req model.PutObjectRequest, join bool) (model.Admitted, error) {
 	busy, err := r.InFlight(ctx, req.Path)
 	if err != nil {
 		return model.Admitted{}, err
+	}
+	if busy && !join {
+		_, creating, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {
+			up, is := op.Work.(model.ObjectUpload)
+			return is && up.Replaces.IsZero() && up.Object.Path == req.Path
+		})
+		if err != nil {
+			return model.Admitted{}, err
+		}
+		if creating {
+			return model.Admitted{}, fmt.Errorf("%w: object is being created", model.ErrAlreadyExists)
+		}
+		return model.Admitted{}, fmt.Errorf("%w: object has operations in flight", model.ErrFailedPrecondition)
 	}
 	if busy {
 		op, ok, err := findOpen(ctx, r, model.KindPutObject, func(op model.Operation) bool {

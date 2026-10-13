@@ -111,6 +111,7 @@ For `vws-console-api` and other callers. The authority is `third_party/vws-proto
 
 ### Limits
 
+- CreateObject is a strict create, so S3 `If-None-Match: *` maps to it. A live object at the path, or another create of the path still in flight, is `ALREADY_EXISTS`, even with identical bytes. Only the same `request_id` with the same request replays the first operation. UpdateObject with `allow_missing` is the upsert.
 - Payload maximum is **4194304 bytes** (4 MiB, decoded) on CreateObject, UpdateObject, and WriteObject. 4194304 is accepted. 4194305 is `INVALID_ARGUMENT` / `INVALID_SPEC` and stores nothing.
 - The server accepts messages up to 8 MiB (`server.MaxRecvMsgSize`). A larger message is rejected by gRPC itself as `RESOURCE_EXHAUSTED` before this service sees it.
 - gRPC clients default to a 4 MiB receive limit. A client that calls ReadObject on a payload at the limit must raise it (Go: `grpc.MaxCallRecvMsgSize(8<<20)`), or the read fails with `RESOURCE_EXHAUSTED` on the client.
