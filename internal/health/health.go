@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/popododo0720/vws-lib/obs"
 )
 
 // ReadyService is the aggregate readiness name. It is not a registered gRPC service.
@@ -100,7 +102,7 @@ func (m *Monitor) Evaluate(ctx context.Context) {
 			}
 		}
 		err := errors.Join(errs...)
-		m.publish(t.Service, err)
+		m.publish(ctx, t.Service, err)
 		all = all && err == nil
 	}
 	m.srv.SetServingStatus(ReadyService, status(all))
@@ -109,7 +111,7 @@ func (m *Monitor) Evaluate(ctx context.Context) {
 	m.mu.Unlock()
 }
 
-func (m *Monitor) publish(service string, err error) {
+func (m *Monitor) publish(ctx context.Context, service string, err error) {
 	m.srv.SetServingStatus(service, status(err == nil))
 	text := ""
 	if err != nil {
@@ -121,9 +123,9 @@ func (m *Monitor) publish(service string, err error) {
 	m.mu.Unlock()
 	switch {
 	case text != "" && prev == "":
-		log.Printf("vws-storage: health: %s NOT_SERVING: %s", service, text)
+		slog.WarnContext(ctx, "health: not serving", slog.String("service", service), slog.String(obs.FieldErr, text))
 	case text == "" && seen && prev != "":
-		log.Printf("vws-storage: health: %s SERVING", service)
+		slog.InfoContext(ctx, "health: serving", slog.String("service", service))
 	}
 }
 

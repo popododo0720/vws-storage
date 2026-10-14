@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +17,8 @@ import (
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
+
+	libobs "github.com/popododo0720/vws-lib/obs"
 )
 
 // Call is one applied backend call.
@@ -403,7 +405,7 @@ func (o *Objects) Handler() http.Handler {
 		o.mu.Unlock()
 		w.Header().Set("ETag", string(obs.ETag))
 		if _, err := w.Write(g.body); err != nil {
-			log.Printf("fake object: write body: %v", err)
+			slog.ErrorContext(r.Context(), "fake object: write body", slog.String(libobs.FieldErr, err.Error()))
 		}
 	})
 	return mux
