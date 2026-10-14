@@ -22,4 +22,9 @@ const (
 	// requests more than that: CDI adds the filesystem overhead to the claim
 	// of a Filesystem DataVolume. Expand writes it.
 	sizeAnnotation = annotationPrefix + "size"
+	// dvAttemptAnnotation on a DataVolume is which attempt it is (1 is the
+	// first). dvFirstAnnotation is when the first attempt was created
+	// (RFC 3339). A recreate after Failed carries both forward.
+	dvAttemptAnnotation = annotationPrefix + "dv-attempt"
+	dvFirstAnnotation   = annotationPrefix + "dv-first-created"
 )
