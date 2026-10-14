@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,6 +47,14 @@ type Block struct {
 	classes       Classes
 	snapshotClass string
 	mode          corev1.PersistentVolumeMode
+	dvRetries     int
+	dvTimeout     time.Duration
+
+	// carried holds the retry state of a DataVolume deleted after Failed until
+	// its replacement is created. Only for that gap; it is lost on restart,
+	// and then the next attempt counts from 1 again.
+	mu      sync.Mutex
+	carried map[string]dvRetry
 }
 
 var _ backend.Block = (*Block)(nil)
@@ -53,7 +63,18 @@ var _ backend.Block = (*Block)(nil)
 // in namespace ns. snapshotClass is the VolumeSnapshotClass for new
 // snapshots; empty means the backend takes no snapshots.
 func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes Classes, snapshotClass string) *Block {
-	return &Block{kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock}
+	return &Block{
+		kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock,
+		dvRetries: DefaultDataVolumeRetries, dvTimeout: DefaultDataVolumeTimeout, carried: map[string]dvRetry{},
+	}
+}
+
+// WithDataVolumeRetry sets how many times a Failed DataVolume is made again
+// and how long a volume may take to reach Succeeded from its first
+// DataVolume. Past either, CreateVolume fails permanently with ErrGaveUp.
+func (b *Block) WithDataVolumeRetry(retries int, timeout time.Duration) *Block {
+	b.dvRetries, b.dvTimeout = retries, timeout
+	return b
 }
 
 // WithVolumeMode sets the volumeMode of new empty volumes. Filesystem is for
@@ -218,6 +239,9 @@ func (b *Block) volumeSize(ctx context.Context, c *corev1.PersistentVolumeClaim)
 // that owns it. An absent object is not an error.
 func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	if b.mode == corev1.PersistentVolumeFilesystem {
+		b.mu.Lock()
+		delete(b.carried, pvcName(id))
+		b.mu.Unlock()
 		if err := b.deleteDataVolume(ctx, id); err != nil {
 			return err
 		}

@@ -220,6 +220,10 @@ func statusOf(ctx context.Context, err error) model.Status {
 	if errors.Is(err, backend.ErrInvalid) {
 		return model.Status{Code: model.CodeInvalidArgument, Message: err.Error()}
 	}
+	if errors.Is(err, backend.ErrGaveUp) {
+		// The backend wrote the reason for the caller (retry limit or timeout).
+		return model.Status{Code: model.CodeDeadlineExceeded, Message: err.Error()}
+	}
 	// Not a server fault: the operation records a fixed message and retries
 	// or fails. The backend text goes to the log only.
 	slog.WarnContext(ctx, "backend error", slog.String(obs.FieldErr, err.Error()))
