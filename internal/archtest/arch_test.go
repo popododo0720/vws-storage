@@ -1,5 +1,6 @@
 // Package archtest checks the import direction between this repository's
-// packages. It parses the non-test sources and needs no build.
+// packages. It parses the non-test sources and needs no build; files with
+// known debt are inspected down to the exempted calls.
 package archtest
 
 import (
@@ -104,11 +105,61 @@ var ownerRules = []struct {
 	{func(imp string) bool { return imp == "log" }, nil, "logs go through log/slog and vws-lib/obs"},
 }
 
-// knownDebt lists files a named owner rule does not yet hold. Each entry is
-// a violation that was reported, not fixed. Remove an entry with its fix.
-var knownDebt = map[string]string{
+// debt is one reported, unfixed violation of an owner rule. It exempts only
+// the listed uses of the import, counted per enclosing function; any other
+// use, or a missing one, is a violation. Remove an entry with its fix.
+type debt struct {
+	issue string
+	why   string
+	uses  map[string]int // enclosing function -> selector uses of the import
+}
+
+// knownDebt is keyed by "<file> <import>".
+var knownDebt = map[string]debt{
 	// toStatus has no context and 65 callers; slog with context needs it plumbed.
-	server + "/convert.go log": "logs go through log/slog and vws-lib/obs",
+	server + "/convert.go log": {
+		issue: "#96",
+		why:   "logs go through log/slog and vws-lib/obs",
+		uses:  map[string]int{"toStatus": 1},
+	},
+}
+
+// usesOf counts selector uses of the package imported as imp in f, keyed by
+// the enclosing top-level function ("" outside any function).
+func usesOf(f *ast.File, spec *ast.ImportSpec, imp string) map[string]int {
+	name := imp[strings.LastIndex(imp, "/")+1:]
+	if spec.Name != nil {
+		name = spec.Name.Name
+	}
+	uses := map[string]int{}
+	for _, d := range f.Decls {
+		fn := ""
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			fn = fd.Name.Name
+		}
+		ast.Inspect(d, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == name && id.Obj == nil {
+					uses[fn]++
+				}
+			}
+			return true
+		})
+	}
+	return uses
+}
+
+// excused reports whether f's use of imp is exactly a knownDebt entry for r.
+func excused(dir string, f file, spec *ast.ImportSpec, imp, why string) (bool, string) {
+	d, ok := knownDebt[dir+"/"+f.name+" "+imp]
+	if !ok || d.why != why {
+		return false, ""
+	}
+	got := usesOf(f.ast, spec, imp)
+	if reflect.DeepEqual(got, d.uses) {
+		return true, ""
+	}
+	return false, fmt.Sprintf(" (known debt %s allows uses %v in %s, found %v)", d.issue, d.uses, f.name, got)
 }
 
 // constrainedDirs are the directories a rule names. Renaming one would
@@ -143,8 +194,11 @@ func archViolations(pkgs map[string][]file) []string {
 					}
 				}
 				for _, r := range ownerRules {
-					if r.match(imp) && !under(dir, r.owners...) && knownDebt[dir+"/"+f.name+" "+imp] != r.why {
-						bad = append(bad, fmt.Sprintf("%s imports %s: %s", dir, imp, r.why))
+					if !r.match(imp) || under(dir, r.owners...) {
+						continue
+					}
+					if ok, detail := excused(dir, f, spec, imp, r.why); !ok {
+						bad = append(bad, fmt.Sprintf("%s imports %s: %s%s", dir, imp, r.why, detail))
 					}
 				}
 			}
@@ -162,7 +216,7 @@ func loadProduction(t *testing.T, root string) map[string][]file {
 		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
 			return
 		}
-		f, err := parser.ParseFile(fset, rel, data, parser.ImportsOnly)
+		f, err := parser.ParseFile(fset, rel, data, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +243,7 @@ func TestArchitectureRules(t *testing.T) {
 		engine + "/w.go":            imp("storage", module+"/"+server),
 		server + "/s.go":            imp("server", module+"/"+store),
 		server + "/b.go":            imp("server", module+"/"+backend),
-		server + "/convert.go":      imp("server", "log"),
+		server + "/convert.go":      "package server; import \"log\"; func toStatus() { log.Printf(\"\") }",
 		server + "/l.go":            imp("server", "log"),
 		health + "/h.go":            imp("health", module+"/"+engine),
 		"internal/widget/a.go":      imp("widget", "github.com/aws/aws-sdk-go-v2/aws"),
@@ -226,6 +280,17 @@ func TestArchitectureRules(t *testing.T) {
 	sort.Strings(want)
 	if got := archViolations(loadProduction(t, probe)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("probe violations:\n got %q\nwant %q", got, want)
+	}
+
+	// The debt is pinned to its calls: one more use of log anywhere in
+	// convert.go is a violation again.
+	extra := t.TempDir()
+	writeFile(t, filepath.Join(extra, server, "convert.go"),
+		"package server; import \"log\"; func toStatus() { log.Printf(\"\") }; func other() { log.Println() }")
+	wantExtra := []string{server + " imports log: logs go through log/slog and vws-lib/obs" +
+		" (known debt #96 allows uses map[toStatus:1] in convert.go, found map[other:1 toStatus:1])"}
+	if got := archViolations(loadProduction(t, extra)); !reflect.DeepEqual(got, wantExtra) {
+		t.Fatalf("extra-call violations:\n got %q\nwant %q", got, wantExtra)
 	}
 
 	root := repoRoot(t)
