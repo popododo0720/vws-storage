@@ -29,9 +29,10 @@ func (BucketName) isKey()  {}
 func (ObjectPath) isKey()  {}
 func (OperationID) isKey() {}
 
-// Lifecycle is Creating, Available, or Deleting.
+// Lifecycle is Creating, Available, Failed, or Deleting.
 // In-flight states name the one operation driving them.
-// Failure is recorded on the operation, not here.
+// A failed operation is recorded on the operation. Only a volume whose create
+// failed permanently also keeps the failure here, as Failed.
 type Lifecycle interface{ isLifecycle() }
 
 // Creating means Op is creating the resource.
@@ -40,11 +41,21 @@ type Creating struct{ Op OperationID }
 // Available means the backend has the resource.
 type Available struct{}
 
-// Deleting means Op is deleting the resource.
-type Deleting struct{ Op OperationID }
+// Failed means the backend gave up creating the resource. It keeps the
+// reason and may hold backend leftovers; only a delete leaves this state.
+type Failed struct{ Reason Status }
+
+// Deleting means Op is deleting the resource. Failed is the reason the
+// resource was in Failed before, zero if it was Available; a failed delete
+// returns to that state.
+type Deleting struct {
+	Op     OperationID
+	Failed Status
+}
 
 func (Creating) isLifecycle()  {}
 func (Available) isLifecycle() {}
+func (Failed) isLifecycle()    {}
 func (Deleting) isLifecycle()  {}
 
 // Volume is an EBS-like block volume.

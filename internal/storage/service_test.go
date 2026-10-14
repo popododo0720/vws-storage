@@ -201,43 +201,6 @@ func TestCreateVolumeResumesAfterCrash(t *testing.T) {
 	}
 }
 
-func TestFailedCreateLeavesNoVolume(t *testing.T) {
-	blk := fake.NewBlock()
-	blk.FailNext("CreateVolume", backend.Permanent(errors.New("pool full")))
-	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
-	defer cancel()
-	op, err := svc.Submit(context.Background(), token(t, "fail-1"), volumeReq(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := waitDone(t, svc, op.ID)
-	if got.Phase() != model.PhaseFailed {
-		t.Fatalf("phase %s", got.Phase())
-	}
-	if _, err := svc.Volume(context.Background(), got.Target().(model.VolumeID)); !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("volume err %v", err)
-	}
-}
-
-func TestPermanentUndoDropsVolume(t *testing.T) {
-	blk := fake.NewBlock()
-	blk.FailNext("CreateVolume", backend.Permanent(errors.New("pool full")))
-	blk.FailNext("DeleteVolume", backend.Permanent(errors.New("cleanup failed")))
-	svc, cancel := openRunning(t, storage.Memory(), blk, fake.NewObjects(fake.ObjectOptions{}))
-	defer cancel()
-	op, err := svc.Submit(context.Background(), token(t, "undo-1"), volumeReq(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := waitDone(t, svc, op.ID)
-	if got.Phase() != model.PhaseFailed {
-		t.Fatalf("phase %s %+v", got.Phase(), got.Err())
-	}
-	if _, err := svc.Volume(context.Background(), got.Target().(model.VolumeID)); !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("volume err %v", err)
-	}
-}
-
 // errNth cancels its parent on the n-th Err call. Run samples the context
 // more than once per loop, and a cancel between those samples used to drop
 // ctx.Done from the select while no worker remained.

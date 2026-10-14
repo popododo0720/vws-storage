@@ -709,16 +709,21 @@ func protoVolumeType(t model.VolumeType) storagev1.VolumeType {
 
 func observed(state model.Lifecycle, version model.Version) *commonv1.ObservedState {
 	out := &commonv1.ObservedState{}
-	switch state.(type) {
+	switch st := state.(type) {
 	case model.Creating:
 		out.State = commonv1.ReconciliationState_RECONCILIATION_STATE_RECONCILING
 		out.Generation = int64(version) - 1
 	case model.Available:
 		out.State = commonv1.ReconciliationState_RECONCILIATION_STATE_READY
 		out.Generation = int64(version)
+	case model.Failed:
+		out.State = commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR
+		out.Generation = int64(version) - 1
+		out.Message = st.Reason.Message
 	case model.Deleting:
 		out.State = commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING
 		out.Generation = int64(version) - 1
+		out.Message = st.Failed.Message
 	default:
 		out.State = commonv1.ReconciliationState_RECONCILIATION_STATE_UNSPECIFIED
 	}
