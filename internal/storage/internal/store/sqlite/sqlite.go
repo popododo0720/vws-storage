@@ -43,7 +43,10 @@ CREATE TABLE op_refs (
 );
 `
 
-// Open opens path and migrates it to schema version 1.
+// schemaVersion is the PRAGMA user_version this code writes.
+const schemaVersion = 2
+
+// Open opens path and migrates it to schemaVersion.
 // path may be relative. The parent directory is created. The connection is
 // exclusive so a second process fails instead of driving the same operations.
 func Open(ctx context.Context, path string) (store.Store, error) {
@@ -110,16 +113,22 @@ func (s *dbStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("sqlite: read schema version: %w", err)
 	}
 	switch v {
-	case 1:
+	case schemaVersion:
 	case 0:
 		if _, err := s.query().ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("sqlite: create schema: %w", err)
 		}
-		if _, err := s.query().ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
-			return fmt.Errorf("sqlite: set schema version: %w", err)
-		}
+	case 1:
+		// Version 2 adds the "failed" lifecycle and its reason to volume
+		// payloads. Existing rows are valid as they are. The bump makes a
+		// version 1 binary refuse the file at Open rather than on a row.
 	default:
 		return errSchema(v)
+	}
+	if v != schemaVersion {
+		if _, err := s.query().ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+			return fmt.Errorf("sqlite: set schema version: %w", err)
+		}
 	}
 	if _, err := s.query().ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("sqlite: commit migration: %w", err)
