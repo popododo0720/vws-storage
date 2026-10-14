@@ -328,22 +328,24 @@ func workFrom(w workWire) (Work, error) {
 			Labels: labels, Replaces: replaces, Deadline: timeFrom(timeWire(w.Deadline)),
 		}, nil
 	case KindDeleteObject.String():
-		ref, err := objectRefFrom(w)
+		// A delete with allow_missing of an absent object finishes at once
+		// with no generation, and its row must still decode.
+		ref, err := objectPathFrom(w)
 		if err != nil {
 			return nil, err
 		}
-		return ObjectPurge{Object: ref, Reclaim: w.Reclaim}, nil
+		g, err := generationOrZero(w.Generation)
+		if err != nil {
+			return nil, err
+		}
+		return ObjectPurge{Object: ObjectRef{Path: ref, Generation: g}, Reclaim: w.Reclaim}, nil
 	default:
 		return nil, fmt.Errorf("work %q", w.Kind)
 	}
 }
 
 func objectRefFrom(w workWire) (ObjectRef, error) {
-	b, err := ParseBucketName(w.Bucket)
-	if err != nil {
-		return ObjectRef{}, err
-	}
-	k, err := ParseObjectKey(w.Key)
+	p, err := objectPathFrom(w)
 	if err != nil {
 		return ObjectRef{}, err
 	}
@@ -351,7 +353,19 @@ func objectRefFrom(w workWire) (ObjectRef, error) {
 	if err != nil {
 		return ObjectRef{}, err
 	}
-	return ObjectRef{Path: ObjectPath{Bucket: b, Key: k}, Generation: g}, nil
+	return ObjectRef{Path: p, Generation: g}, nil
+}
+
+func objectPathFrom(w workWire) (ObjectPath, error) {
+	b, err := ParseBucketName(w.Bucket)
+	if err != nil {
+		return ObjectPath{}, err
+	}
+	k, err := ParseObjectKey(w.Key)
+	if err != nil {
+		return ObjectPath{}, err
+	}
+	return ObjectPath{Bucket: b, Key: k}, nil
 }
 
 func generationOrZero(s string) (Generation, error) {
