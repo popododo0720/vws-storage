@@ -36,12 +36,16 @@ type Config struct {
 	// take from the first one to Succeeded.
 	DataVolumeRetries int
 	DataVolumeTimeout time.Duration
+	// ImageNamespace holds the CDI DataSources of images (vws-compute
+	// -image-namespace). An image volume clones from there.
+	ImageNamespace string
 }
 
 // DefaultConfig serves every type from the ceph-block classes in the VM namespace.
 func DefaultConfig() Config {
 	return Config{Namespace: DefaultNamespace, Classes: DefaultClasses(), SnapshotClass: DefaultSnapshotClass, VolumeMode: corev1.PersistentVolumeBlock,
 		DataVolumeRetries: DefaultDataVolumeRetries, DataVolumeTimeout: DefaultDataVolumeTimeout,
+		ImageNamespace: DefaultImageNamespace,
 	}
 }
 
@@ -49,6 +53,9 @@ func DefaultConfig() Config {
 func Open(c Config) (*Block, error) {
 	if c.Namespace == "" {
 		return nil, fmt.Errorf("kube: namespace is required")
+	}
+	if c.ImageNamespace == "" {
+		return nil, fmt.Errorf("kube: image namespace is required")
 	}
 	if c.DataVolumeRetries < 0 || c.DataVolumeTimeout <= 0 {
 		return nil, fmt.Errorf("kube: data volume retries must be >= 0 and the timeout > 0")
@@ -75,5 +82,5 @@ func Open(c Config) (*Block, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kube: %w", err)
 	}
-	return NewBlock(kc, dyn, c.Namespace, c.Classes, c.SnapshotClass).WithVolumeMode(c.VolumeMode).WithDataVolumeRetry(c.DataVolumeRetries, c.DataVolumeTimeout), nil
+	return NewBlock(kc, dyn, c.Namespace, c.Classes, c.SnapshotClass).WithVolumeMode(c.VolumeMode).WithDataVolumeRetry(c.DataVolumeRetries, c.DataVolumeTimeout).WithImageNamespace(c.ImageNamespace), nil
 }
