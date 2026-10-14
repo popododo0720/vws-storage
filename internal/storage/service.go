@@ -348,7 +348,9 @@ func (s *Service) Attachments(ctx context.Context, vols []model.Volume) map[mode
 // ClaimName is the backend object name for v. It is empty while v is Creating,
 // because the object may not exist yet.
 func (s *Service) ClaimName(v model.Volume) string {
-	if _, creating := v.State.(model.Creating); creating {
+	switch v.State.(type) {
+	case model.Creating, model.Failed:
+		// No claim to attach: still being made, or never made right.
 		return ""
 	}
 	return s.block.ClaimName(v.ID)

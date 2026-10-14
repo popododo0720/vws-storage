@@ -22,6 +22,9 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 			if _, del := vol.State.(model.Deleting); del || !sameVolumeSpec(vol.Spec, req.Spec) || vol.Labels != req.Labels {
 				return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrAlreadyExists)
 			}
+			if _, failed := vol.State.(model.Failed); failed {
+				return model.Admitted{}, fmt.Errorf("%w: volume failed to create; delete it", model.ErrFailedPrecondition)
+			}
 			var creating model.OperationID
 			if c, ok := vol.State.(model.Creating); ok {
 				creating = c.Op
@@ -75,13 +78,16 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 	if err := expectVersion(vol.Meta.Version, req.Expected); err != nil {
 		return model.Admitted{}, err
 	}
-	avail, ok := vol.AsAvailable()
-	if !ok {
-		return model.Admitted{}, fmt.Errorf("%w: volume is not available", model.ErrFailedPrecondition)
-	}
 	busy, err := r.InFlight(ctx, req.Volume)
 	if err != nil {
 		return model.Admitted{}, err
+	}
+	if failed, ok := vol.AsFailed(); ok && !busy {
+		return failed.Delete(st)
+	}
+	avail, ok := vol.AsAvailable()
+	if !ok {
+		return model.Admitted{}, fmt.Errorf("%w: volume is not available", model.ErrFailedPrecondition)
 	}
 	if busy {
 		return model.Admitted{}, fmt.Errorf("%w: volume has operations in flight", model.ErrFailedPrecondition)
@@ -180,8 +186,22 @@ func (s *Service) runVolumeCreation(ctx context.Context, op model.Operation, w m
 			}
 			return creating.Created(run, now)
 		},
-		func(run model.RunningOp[model.VolumeCreation], _ store.Reader, st model.Status, now time.Time) (model.Change, error) {
-			return model.Compensate(run, st, now), nil
+		// A permanent failure keeps the volume in Failed with the reason, so
+		// GetVolume and ListVolumes show why. Its backend leftovers stay until
+		// DeleteVolume, which removes them as the undo used to.
+		func(run model.RunningOp[model.VolumeCreation], r store.Reader, st model.Status, now time.Time) (model.Change, error) {
+			vol, err := r.Volume(ctx, w.Volume)
+			if errors.Is(err, model.ErrNotFound) {
+				return model.Compensate(run, st, now), nil
+			}
+			if err != nil {
+				return model.Change{}, err
+			}
+			creating, ok := vol.AsCreating()
+			if !ok {
+				return model.Compensate(run, st, now), nil
+			}
+			return creating.Failed(run, st, now)
 		},
 	)
 }
