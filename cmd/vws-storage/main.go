@@ -54,6 +54,8 @@ func run(args []string) error {
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
 	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for ssd volumes")
 	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots; empty disables snapshots")
+	fs.IntVar(&kubeCfg.DataVolumeRetries, "kube-dv-retries", kubeCfg.DataVolumeRetries, "times a Failed CDI DataVolume (Filesystem mode) is deleted and made again")
+	fs.DurationVar(&kubeCfg.DataVolumeTimeout, "kube-dv-timeout", kubeCfg.DataVolumeTimeout, "time from a volume's first CDI DataVolume to Succeeded (Filesystem mode)")
 	volumeMode := fs.String("kube-volume-mode", string(kubeCfg.VolumeMode), "volumeMode of new volumes: Block, or Filesystem for a provisioner such as NFS (needs CDI)")
 	objectBackend := fs.String("object-backend", "fake", "object backend: fake or s3")
 	s3Profile := fs.String("s3-profile", string(s3.RGW), "endpoint profile for -object-backend=s3: rgw or minio")
