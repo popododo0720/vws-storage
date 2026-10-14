@@ -49,6 +49,7 @@ type Block struct {
 	mode          corev1.PersistentVolumeMode
 	dvRetries     int
 	dvTimeout     time.Duration
+	imageNS       string
 
 	// carried holds the retry state of a DataVolume deleted after Failed until
 	// its replacement is created. Only for that gap; it is lost on restart,
@@ -66,6 +67,7 @@ func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes
 	return &Block{
 		kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock,
 		dvRetries: DefaultDataVolumeRetries, dvTimeout: DefaultDataVolumeTimeout, carried: map[string]dvRetry{},
+		imageNS: DefaultImageNamespace,
 	}
 }
 
@@ -74,6 +76,13 @@ func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes
 // DataVolume. Past either, CreateVolume fails permanently with ErrGaveUp.
 func (b *Block) WithDataVolumeRetry(retries int, timeout time.Duration) *Block {
 	b.dvRetries, b.dvTimeout = retries, timeout
+	return b
+}
+
+// WithImageNamespace sets the namespace of the image DataSources an image
+// volume clones from.
+func (b *Block) WithImageNamespace(ns string) *Block {
+	b.imageNS = ns
 	return b
 }
 
@@ -103,8 +112,8 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 	if !ok {
 		return backend.Permanent(fmt.Errorf("%w: volume type %q", backend.ErrInvalid, spec.Type))
 	}
-	if _, ok := spec.Source.Image(); ok {
-		return backend.Permanent(fmt.Errorf("%w: image source", backend.ErrInvalid))
+	if img, ok := spec.Source.Image(); ok {
+		return b.imageVolume(ctx, id, spec, class, img)
 	}
 	var from model.SnapshotID
 	// A Block claim is the disk itself. A Filesystem claim must hold disk.img,
@@ -235,14 +244,16 @@ func (b *Block) volumeSize(ctx context.Context, c *corev1.PersistentVolumeClaim)
 	return q.Value(), nil
 }
 
-// DeleteVolume deletes the claim and, in Filesystem mode, the DataVolume
-// that owns it. An absent object is not an error.
+// DeleteVolume deletes the DataVolume that owns the claim, if any (a
+// Filesystem volume or an image volume), and the claim. An absent object is not an error.
 func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
-	if b.mode == corev1.PersistentVolumeFilesystem {
-		b.mu.Lock()
-		delete(b.carried, pvcName(id))
-		b.mu.Unlock()
-		if err := b.deleteDataVolume(ctx, id); err != nil {
+	b.mu.Lock()
+	delete(b.carried, pvcName(id))
+	b.mu.Unlock()
+	if err := b.deleteDataVolume(ctx, id); err != nil {
+		// In Block mode only an image volume has a DataVolume, and a
+		// deployment that grants no DataVolume access has none of those.
+		if b.mode == corev1.PersistentVolumeFilesystem || !apierrors.IsForbidden(err) {
 			return err
 		}
 	}

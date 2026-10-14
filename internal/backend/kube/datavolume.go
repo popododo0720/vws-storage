@@ -38,6 +38,25 @@ type dvRetry struct {
 	first   time.Time
 }
 
+// dvSource is what a DataVolume fills its claim from.
+type dvSource struct {
+	// field is the DataVolume spec key, "source" or "sourceRef", and value
+	// its content.
+	field string
+	value map[string]any
+	// key names the source for the AlreadyExists comparison: empty for
+	// blank, the image name for a clone.
+	key string
+	// mode is the claim volumeMode.
+	mode corev1.PersistentVolumeMode
+	// annotations are added to the DataVolume.
+	annotations map[string]string
+}
+
+func blankSource() dvSource {
+	return dvSource{field: "source", value: map[string]any{"blank": map[string]any{}}, mode: corev1.PersistentVolumeFilesystem}
+}
+
 // blankVolume creates an empty Filesystem volume as a CDI blank DataVolume of
 // the claim's name. CDI writes a sparse disk.img owned by qemu (uid 107) and
 // sizes the claim for the filesystem overhead. KubeVirt creates a missing
@@ -49,10 +68,16 @@ type dvRetry struct {
 // validation webhook rejects spec updates, so the documented retry is to
 // delete it and create it again. That happens up to dvRetries times, and the
 // whole wait is bounded by dvTimeout from the first DataVolume. Past either,
-// the error is permanent ErrGaveUp, and the engine's compensation deletes the
-// DataVolume and the claim.
+// the error is permanent ErrGaveUp, and the volume is kept in error with the
+// DataVolume and claim until DeleteVolume.
 func (b *Block) blankVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string) error {
-	cur, err := b.createDataVolume(ctx, id, spec, class)
+	return b.dataVolume(ctx, id, spec, class, blankSource())
+}
+
+// dataVolume makes the volume a DataVolume from src and waits for it to
+// Succeed, with the retry and timeout described on blankVolume.
+func (b *Block) dataVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string, src dvSource) error {
+	cur, err := b.createDataVolume(ctx, id, spec, class, src)
 	if err != nil {
 		return err
 	}
@@ -84,7 +109,7 @@ func (b *Block) blankVolume(ctx context.Context, id model.VolumeID, spec model.V
 	if err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Delete(ctx, pvcName(id), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("kube: delete failed claim: %w", err)
 	}
-	if _, err := b.createDataVolume(ctx, id, spec, class); err != nil {
+	if _, err := b.createDataVolume(ctx, id, spec, class, src); err != nil {
 		return err
 	}
 	return fmt.Errorf("%w: data volume Failed; made attempt %d of %d", backend.ErrBusy, r.attempt+1, b.dvRetries+1)
@@ -106,7 +131,7 @@ func retryOf(dv *unstructured.Unstructured) dvRetry {
 
 // createDataVolume creates the blank DataVolume of id, or returns the one
 // that exists if it matches. A new one takes the carried retry state, if any.
-func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string) (*unstructured.Unstructured, error) {
+func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string, src dvSource) (*unstructured.Unstructured, error) {
 	name := pvcName(id)
 	b.mu.Lock()
 	r, ok := b.carried[name]
@@ -126,22 +151,28 @@ func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec mo
 				zoneAnnotation:      spec.Zone.String(),
 				dvAttemptAnnotation: strconv.Itoa(r.attempt),
 				dvFirstAnnotation:   r.first.UTC().Format(time.RFC3339Nano),
+				sourceAnnotation:    src.key,
 				// A completed DataVolume must stay: it owns the claim.
 				"cdi.kubevirt.io/storage.deleteAfterCompletion": "false",
 			},
 		},
 		"spec": map[string]any{
-			"source": map[string]any{"blank": map[string]any{}},
+			src.field: src.value,
 			"storage": map[string]any{
 				"accessModes":      []any{string(corev1.ReadWriteOnce)},
 				"storageClassName": class,
-				"volumeMode":       string(corev1.PersistentVolumeFilesystem),
+				"volumeMode":       string(src.mode),
 				"resources": map[string]any{"requests": map[string]any{
 					"storage": resource.NewQuantity(int64(spec.Size), resource.BinarySI).String(),
 				}},
 			},
 		},
 	}}
+	ann := dv.GetAnnotations()
+	for k, v := range src.annotations {
+		ann[k] = v
+	}
+	dv.SetAnnotations(ann)
 	cur, err := dvs.Create(ctx, dv, metav1.CreateOptions{})
 	if err == nil {
 		b.mu.Lock()
@@ -152,7 +183,8 @@ func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec mo
 		cur, err = dvs.Get(ctx, name, metav1.GetOptions{})
 		if err == nil {
 			got, _, _ := unstructured.NestedString(cur.Object, "spec", "storage", "storageClassName") //nolint:errcheck // absent is ""
-			if cur.GetAnnotations()[zoneAnnotation] != spec.Zone.String() || got != class {
+			// A DataVolume from before the source annotation is a blank one.
+			if cur.GetAnnotations()[zoneAnnotation] != spec.Zone.String() || got != class || cur.GetAnnotations()[sourceAnnotation] != src.key {
 				return nil, backend.Permanent(fmt.Errorf("%w: volume", backend.ErrConflict))
 			}
 		}

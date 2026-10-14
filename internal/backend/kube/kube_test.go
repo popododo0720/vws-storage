@@ -33,12 +33,16 @@ var (
 
 func newBlock(c kube.Classes) *kube.Block { return kube.NewBlock(kc, dyn, ns, c, "vws-snapclass") }
 
+// testEnv is the running envtest, for tests that add a user.
+var testEnv *envtest.Environment
+
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		os.Stderr.WriteString("KUBEBUILDER_ASSETS unset: skipping envtest tests\n")
 		os.Exit(0)
 	}
 	env := &envtest.Environment{CRDDirectoryPaths: []string{"testdata"}, ErrorIfCRDPathMissing: true}
+	testEnv = env
 	cfg, err := env.Start()
 	if err != nil {
 		panic(err)
