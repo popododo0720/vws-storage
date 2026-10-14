@@ -45,6 +45,14 @@ func TestInvalidArgumentKeepsItsText(t *testing.T) {
 	}
 }
 
+// A backend that gave up says why: retry limit or timeout.
+func TestGaveUpKeepsItsText(t *testing.T) {
+	st := storage.StatusOf(context.Background(), backend.Permanent(fmt.Errorf("%w: the CDI DataVolume failed 4 times", backend.ErrGaveUp)))
+	if st.Code != model.CodeDeadlineExceeded || !strings.Contains(st.Message, "failed 4 times") {
+		t.Fatalf("status %+v", st)
+	}
+}
+
 // The text that reaches the client through a failed operation is the fixed one.
 func TestFailedOperationDoesNotCarryBackendText(t *testing.T) {
 	blk := fake.NewBlock()

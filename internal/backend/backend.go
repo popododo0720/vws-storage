@@ -69,6 +69,9 @@ var (
 	// ErrInvalid means the arguments can never succeed, such as an unmapped
 	// volume type or a shrink.
 	ErrInvalid = errors.New("backend: invalid argument")
+	// ErrGaveUp means the backend retried a failing resource up to its limit
+	// and stopped. The message is written by the backend for the caller.
+	ErrGaveUp = errors.New("backend: gave up")
 )
 
 type permanentError struct{ err error }
