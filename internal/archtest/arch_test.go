@@ -1,0 +1,240 @@
+// Package archtest checks the import direction between this repository's
+// packages. It parses the non-test sources and needs no build.
+package archtest
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+const module = "github.com/popododo0720/vws-storage"
+
+const (
+	model   = "internal/model"
+	backend = "internal/backend"
+	engine  = "internal/storage"
+	store   = "internal/storage/internal/store"
+	server  = "internal/server"
+	health  = "internal/health"
+	cmd     = "cmd/vws-storage"
+)
+
+// testSupport lists non-test packages that exist only to serve tests. They
+// are exempt from the production rules, and no other non-test package may
+// import "testing".
+var testSupport = []string{store + "/storetest"}
+
+func under(dir string, roots ...string) bool {
+	for _, r := range roots {
+		if dir == r || strings.HasPrefix(dir, r+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrefix(prefixes ...string) func(string) bool {
+	return func(s string) bool { return under(s, prefixes...) }
+}
+
+// local is the module-relative path of an import of this module, or "".
+func local(imp string) string {
+	if !strings.HasPrefix(imp, module+"/") {
+		return ""
+	}
+	return strings.TrimPrefix(imp, module+"/")
+}
+
+// onlyLocal allows imports of this module from the listed directories only
+// (exact packages, not their children).
+func onlyLocal(allowed ...string) func(string) bool {
+	return func(imp string) bool {
+		l := local(imp)
+		if l == "" {
+			return false
+		}
+		for _, a := range allowed {
+			if l == a {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// packageRules restrict which packages of this module a directory (and the
+// directories under it) may import.
+var packageRules = []struct {
+	dir    string
+	forbid func(imp string) bool
+	why    string
+}{
+	{model, onlyLocal(), "the model imports nothing from this module"},
+	{backend, onlyLocal(model, backend), "a backend sees only the backend contract and the model"},
+	{store, onlyLocal(model, store), "a store sees only the store contract and the model"},
+	{engine, func(imp string) bool {
+		return under(local(imp), server, health, cmd, backend+"/fake", backend+"/kube", backend+"/s3")
+	}, "the engine sees the backend contract, not a backend, and never the server"},
+	{server, onlyLocal(model, engine), "the server calls the engine only: no backend, no store"},
+	{health, onlyLocal(), "health checks are handed in by the process"},
+}
+
+// ownerRules confine an import to the directories that own it.
+var ownerRules = []struct {
+	match  func(imp string) bool
+	owners []string
+	why    string
+}{
+	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
+		[]string{server}, "wire types stay in the server"},
+	{hasPrefix("google.golang.org/grpc"), []string{server, health, cmd}, "gRPC stays at the edge"},
+	{hasPrefix("database/sql", "modernc.org/sqlite"), []string{store + "/sqlite"}, "SQL stays in the SQLite store"},
+	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{backend + "/kube", cmd}, "Kubernetes types stay in the kube backend and its flags"},
+	{hasPrefix("github.com/aws"), []string{backend + "/s3"}, "the AWS SDK stays in the S3 backend"},
+	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
+	{func(imp string) bool { return imp == "log" }, nil, "logs go through log/slog and vws-lib/obs"},
+}
+
+// knownDebt lists files a named owner rule does not yet hold. Each entry is
+// a violation that was reported, not fixed. Remove an entry with its fix.
+var knownDebt = map[string]string{
+	// toStatus has no context and 65 callers; slog with context needs it plumbed.
+	server + "/convert.go log": "logs go through log/slog and vws-lib/obs",
+}
+
+// constrainedDirs are the directories a rule names. Renaming one would
+// silently disable its rule, so each must exist.
+func constrainedDirs() []string {
+	dirs := []string{backend + "/kube", backend + "/s3", backend + "/fake", store + "/sqlite", cmd}
+	for _, r := range packageRules {
+		dirs = append(dirs, r.dir)
+	}
+	return append(dirs, testSupport...)
+}
+
+type file struct {
+	name string
+	ast  *ast.File
+}
+
+// archViolations applies every rule to the non-test files in pkgs, keyed by
+// slash-separated directory relative to the module root.
+func archViolations(pkgs map[string][]file) []string {
+	var bad []string
+	for dir, files := range pkgs {
+		if under(dir, testSupport...) {
+			continue
+		}
+		for _, f := range files {
+			for _, spec := range f.ast.Imports {
+				imp, _ := strconv.Unquote(spec.Path.Value)
+				for _, r := range packageRules {
+					if under(dir, r.dir) && r.forbid(imp) {
+						bad = append(bad, fmt.Sprintf("%s imports %s: %s", dir, imp, r.why))
+					}
+				}
+				for _, r := range ownerRules {
+					if r.match(imp) && !under(dir, r.owners...) && knownDebt[dir+"/"+f.name+" "+imp] != r.why {
+						bad = append(bad, fmt.Sprintf("%s imports %s: %s", dir, imp, r.why))
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+func loadProduction(t *testing.T, root string) map[string][]file {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs := map[string][]file{}
+	err := walkFiles(root, func(rel string, data []byte) {
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
+			return
+		}
+		f, err := parser.ParseFile(fset, rel, data, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.ToSlash(filepath.Dir(rel))
+		pkgs[dir] = append(pkgs[dir], file{name: filepath.Base(rel), ast: f})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkgs
+}
+
+func TestArchitectureRules(t *testing.T) {
+	probe := t.TempDir()
+	imp := func(pkg, path string) string { return "package " + pkg + `; import _ "` + path + `"` }
+	for rel, src := range map[string]string{
+		model + "/m.go":             imp("model", module+"/"+backend),
+		model + "/k.go":             imp("model", "k8s.io/apimachinery/pkg/types"),
+		backend + "/kube/k.go":      imp("kube", module+"/"+engine),
+		backend + "/s3/s.go":        imp("s3", module+"/"+backend+"/kube"),
+		store + "/sqlite/s.go":      imp("sqlite", module+"/"+backend),
+		store + "/memory/m.go":      imp("memory", "database/sql"),
+		engine + "/e.go":            imp("storage", module+"/"+backend+"/kube"),
+		engine + "/w.go":            imp("storage", module+"/"+server),
+		server + "/s.go":            imp("server", module+"/"+store),
+		server + "/b.go":            imp("server", module+"/"+backend),
+		server + "/convert.go":      imp("server", "log"),
+		server + "/l.go":            imp("server", "log"),
+		health + "/h.go":            imp("health", module+"/"+engine),
+		"internal/widget/a.go":      imp("widget", "github.com/aws/aws-sdk-go-v2/aws"),
+		"internal/widget/g.go":      imp("widget", "google.golang.org/grpc"),
+		"internal/widget/p.go":      imp("widget", "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"),
+		"internal/widget/t.go":      imp("widget", "testing"),
+		store + "/storetest/s.go":   imp("storetest", "testing"),
+		store + "/memory/m_test.go": imp("memory", "testing"),
+		backend + "/kube/ok.go":     imp("kube", "k8s.io/client-go/kubernetes"),
+		store + "/sqlite/ok.go":     imp("sqlite", "modernc.org/sqlite"),
+		engine + "/ok.go":           imp("storage", module+"/"+store),
+		cmd + "/main.go":            imp("main", module+"/"+backend+"/kube"),
+	} {
+		writeFile(t, filepath.Join(probe, rel), src)
+	}
+	want := []string{
+		backend + "/kube imports " + module + "/" + engine + ": a backend sees only the backend contract and the model",
+		backend + "/s3 imports " + module + "/" + backend + "/kube: a backend sees only the backend contract and the model",
+		engine + " imports " + module + "/" + backend + "/kube: the engine sees the backend contract, not a backend, and never the server",
+		engine + " imports " + module + "/" + server + ": the engine sees the backend contract, not a backend, and never the server",
+		health + " imports " + module + "/" + engine + ": health checks are handed in by the process",
+		"internal/widget imports github.com/aws/aws-sdk-go-v2/aws: the AWS SDK stays in the S3 backend",
+		"internal/widget imports github.com/popododo0720/vws-proto/gen/go/vws/storage/v1: wire types stay in the server",
+		"internal/widget imports google.golang.org/grpc: gRPC stays at the edge",
+		"internal/widget imports testing: production code does not import testing",
+		model + " imports " + module + "/" + backend + ": the model imports nothing from this module",
+		model + " imports k8s.io/apimachinery/pkg/types: Kubernetes types stay in the kube backend and its flags",
+		server + " imports " + module + "/" + backend + ": the server calls the engine only: no backend, no store",
+		server + " imports " + module + "/" + store + ": the server calls the engine only: no backend, no store",
+		server + " imports log: logs go through log/slog and vws-lib/obs",
+		store + "/memory imports database/sql: SQL stays in the SQLite store",
+		store + "/sqlite imports " + module + "/" + backend + ": a store sees only the store contract and the model",
+	}
+	sort.Strings(want)
+	if got := archViolations(loadProduction(t, probe)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("probe violations:\n got %q\nwant %q", got, want)
+	}
+
+	root := repoRoot(t)
+	for _, dir := range constrainedDirs() {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			t.Errorf("rule directory %s: %v", dir, err)
+		}
+	}
+	for _, v := range archViolations(loadProduction(t, root)) {
+		t.Error(v)
+	}
+}
