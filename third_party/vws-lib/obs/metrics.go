@@ -30,6 +30,10 @@ func Attrs(kv ...string) metric.MeasurementOption {
 	return metric.WithAttributes(set...)
 }
 
+// SecondsBuckets are the bucket boundaries of every histogram in seconds. The SDK default
+// boundaries (0, 5, 10, 25, ... 10000) are meant for milliseconds and put every RPC in le="5".
+var SecondsBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+
 // Metrics holds the instruments of the metric table in the design. One value exists per
 // process; before Setup it records nothing.
 type Metrics struct {
@@ -85,7 +89,8 @@ func newMetrics(meter metric.Meter, service, version, commit string) (*Metrics, 
 		return c
 	}
 	hist := func(name, desc string) metric.Float64Histogram {
-		h, err := meter.Float64Histogram(name, metric.WithDescription(desc), metric.WithUnit("s"))
+		h, err := meter.Float64Histogram(name, metric.WithDescription(desc), metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(SecondsBuckets...))
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -242,4 +247,40 @@ func (m *Metrics) NewCounter(name, description string) (Counter, error) {
 // Add adds n with labels given as key, value pairs.
 func (c Counter) Add(ctx context.Context, n int64, labels ...string) {
 	c.c.Add(ctx, n, Attrs(labels...))
+}
+
+// Histogram is a service-defined histogram. Its name must start with "vws." and its labels must be
+// in the allowlist (Attrs panics otherwise). Use it for a service's own distributions instead of
+// borrowing a built-in instrument such as the reconcile duration.
+type Histogram struct{ h metric.Float64Histogram }
+
+// NewHistogram creates a histogram on the process meter. unit is the UCUM unit of the recorded
+// values ("s" for seconds, "By" for bytes, "1" for a count); empty records no unit. Unit "s" gets
+// SecondsBuckets as bucket boundaries.
+func (m *Metrics) NewHistogram(name, description, unit string) (Histogram, error) {
+	if !strings.HasPrefix(name, MetricPrefix) {
+		return Histogram{}, fmt.Errorf("metric %q must start with %q", name, MetricPrefix)
+	}
+	opts := []metric.Float64HistogramOption{metric.WithDescription(description)}
+	if unit != "" {
+		opts = append(opts, metric.WithUnit(unit))
+	}
+	if unit == "s" {
+		opts = append(opts, metric.WithExplicitBucketBoundaries(SecondsBuckets...))
+	}
+	h, err := m.meter.Float64Histogram(name, opts...)
+	if err != nil {
+		return Histogram{}, fmt.Errorf("create histogram %s: %w", name, err)
+	}
+	return Histogram{h}, nil
+}
+
+// Record records v with labels given as key, value pairs.
+func (h Histogram) Record(ctx context.Context, v float64, labels ...string) {
+	h.h.Record(ctx, v, Attrs(labels...))
+}
+
+// RecordDuration records d in seconds; use it with a histogram created with unit "s".
+func (h Histogram) RecordDuration(ctx context.Context, d time.Duration, labels ...string) {
+	h.Record(ctx, d.Seconds(), labels...)
 }
