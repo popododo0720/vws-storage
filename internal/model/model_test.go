@@ -1027,3 +1027,28 @@ func TestFailedVolumeSurvivesCodec(t *testing.T) {
 		}
 	}
 }
+
+// A purge finished for an absent object has no generation and must decode.
+func TestPurgeWithoutGenerationSurvivesCodec(t *testing.T) {
+	now := time.Date(2026, 10, 14, 1, 2, 3, 0, time.UTC)
+	bucket, err := ParseBucketName("projects/a123456789012/buckets/b-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ParseObjectKey("k/absent.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := Operation{ID: NewOperationID(), Work: ObjectPurge{Object: ObjectRef{Path: ObjectPath{Bucket: bucket, Key: key}}}, State: OpSucceeded{}, Meta: fresh(now)}
+	raw, err := MarshalRecord(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatalf("decode: %v\n%s", err, raw)
+	}
+	if !SameRecord(op, got) {
+		t.Fatalf("round trip\n%s", raw)
+	}
+}
