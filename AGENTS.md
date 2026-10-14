@@ -21,26 +21,36 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 
 쓰기는 `storage.Service.Submit` 하나다. `Submit`은 `store.Update` 안에서 `model.Change`만 적용한다. `Change`의 기록 목록은 비공개라 전이 함수 밖에서 만들 수 없다. 진행은 `storage.Service.Run` 하나다. `Open`은 `Run`을 시작하지 않는다. 재시작 후에 남은 작업도 같은 `Run` 스캔이 맡는다. 서버는 요청을 파싱해서 `Service`만 호출한다. 긴 작업은 `Operation`이고, 클라이언트 토큰이 같다.
 
-두 번째 쓰기 경로를 만들지 않는다. store를 서버나 백엔드에서 갱신하지 않는다. 리소스 상태에 실패를 넣지 않는다. 실패는 `Operation`에만 있다.
+두 번째 쓰기 경로를 만들지 않는다. store를 서버나 백엔드에서 갱신하지 않는다. 실패는 `Operation`에 있다. 예외는 생성이 영구 실패한 볼륨 하나다. 그 볼륨은 이유와 함께 `Failed`(ERROR) 상태로 남는다(#83).
 
 ## 규칙
 
+강제 칸이 `Judgment`인 규칙은 검사가 없다. 작성자와 리뷰어가 지킨다. 그 밖의 강제 칸은 규칙이 깨지면 실패하는 테스트, lint, CI다. 표의 형식과 강제 칸의 테스트 이름은 `internal/archtest` `TestAgentsRuleTable`이 보고, CI 로그에 `Judgment` 행 수를 남긴다.
+
 | 규칙 | 강제 |
 | --- | --- |
+| main에 직접 푸시하지 않는다. 작업은 브랜치에서 한다 | `.github/workflows/direct-push-watch.yml`(사후 탐지) |
+| 커밋은 원자적이다. 한 커밋은 한 변경이고, 그 커밋만으로 빌드가 성립한다 | Judgment |
+| pstack으로 작업한다(architect, interrogate, correct) | Judgment |
 | 원하는 상태는 `model.Change`로만 바뀐다 | `Change`의 기록은 비공개. 전이는 `internal/model` |
-| 저장소 구현은 엔진 안에만 있다 | `internal/storage/internal/store` |
-| 쓰기는 `Service.Submit` | 서버 패키지는 store를 import하지 않는다. depguard `server` |
+| 저장소 구현은 엔진 안에만 있다 | Go `internal` 디렉터리 `internal/storage/internal/store`. store는 store 계약과 모델만 본다: `TestArchitectureRules` |
+| 쓰기는 `Service.Submit` | 서버 패키지는 store를 import하지 않는다. depguard `server`, `TestArchitectureRules` |
 | 진행은 `Service.Run` | `Run`이 이미 돌면 거절한다. `internal/storage` |
-| 모델은 전송, SQL, 백엔드를 모른다 | depguard `model` |
-| 서버는 백엔드를 모른다 | depguard `server` |
-| 엔진은 gRPC, 생성 코드, fake를 모른다 | depguard `engine`, `store`, `backend`. 테스트 파일은 제외 |
+| 모델은 전송, SQL, 백엔드를 모른다. 이 모듈의 어떤 패키지도 import하지 않는다 | depguard `model`, `TestArchitectureRules` |
+| 서버는 엔진과 모델만 import한다. 백엔드도 store도 모른다 | depguard `server`, `TestArchitectureRules` |
+| 엔진은 gRPC, 생성 코드, fake를 모른다. 엔진은 백엔드 계약만 보고 kube, s3, fake 구현과 서버를 import하지 않는다 | depguard `engine`, `store`, `backend`, `TestArchitectureRules`. 테스트 파일은 제외 |
+| 백엔드는 백엔드 계약과 모델만 import한다. 엔진, 서버, 다른 백엔드를 모른다 | depguard `backend`, `TestArchitectureRules` |
+| 헬스는 이 모듈의 패키지를 import하지 않는다. 검사는 프로세스가 넘긴다 | `TestArchitectureRules` |
+| 외부 의존은 주인 패키지에만 있다: 생성 코드와 protobuf는 서버, gRPC는 서버·헬스·`cmd`, SQL은 SQLite store, Kubernetes는 kube 백엔드와 `cmd`, AWS SDK는 s3 백엔드 | `TestArchitectureRules` |
+| 프로덕션 코드는 `testing`을 import하지 않는다. 예외는 `storetest` | `TestArchitectureRules` |
+| 로그는 `log/slog`와 vws-lib `obs`로 남긴다. 표준 `log`는 쓰지 않는다. 남은 예외는 `internal/server/convert.go` `toStatus` 하나다(컨텍스트가 없다) | `TestArchitectureRules`의 `knownDebt`. 그 항목을 지우면 테스트가 막는다 |
 | 이 레포는 proto를 두지 않는다. 생성 코드는 `github.com/popododo0720/vws-proto`이고, 공개 전에는 `replace`가 `./third_party/vws-proto`를 가리킨다 | `internal/policycheck`. lint는 `third_party`를 제외 |
 | 배포 매니페스트, 로고, NOTICE를 두지 않는다 | `internal/policycheck` |
 | 같은 토큰과 같은 요청은 같은 operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |
 | 같은 토큰과 다른 요청은 충돌 | `ErrTokenReused` → gRPC `ABORTED` + `IDEMPOTENCY_CONFLICT` |
 | 재시작 복구는 새 경로가 아니다 | `TestCreateVolumeResumesAfterCrash` |
 | 거절된 `Change`는 저장소를 바꾸지 않는다 | 메모리 `Update`는 사본에 적용한 뒤 바꾼다. `storetest`가 `ErrStale` 이후 행을 다시 읽는다 |
-| 실패한 생성은 `Creating` 행을 남기지 않는다 | 영구적인 정리는 행을 지운다. `TestPermanentUndoDropsVolume` |
+| 영구 실패한 볼륨 생성은 `Creating` 행을 남기지 않는다. 볼륨은 이유와 함께 `Failed`로 남고 DeleteVolume으로 지운다 | `TestPermanentCreateFailureKeepsTheVolumeInError`, `TestVolumeInErrorRefusesWorkAndDeletes` |
 | 리소스 이름은 `Parse(String())`로 돌아온다 | `ParseBucketName`이 `buckets/`를 벗긴다. `TestResourceNamesRoundTrip` |
 | SQLite 파일은 프로세스 하나 | `BEGIN IMMEDIATE`와 `locking_mode=EXCLUSIVE`. `TestSecondOpenFails` |
 | 한 세대의 바이트는 한 번만 쓴다 | `Signer` 계약. fake `Accept`가 다시 쓰기를 거절한다. `TestGenerationIsWrittenOnce` |
@@ -49,11 +59,11 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | 없는 버킷의 오브젝트 목록은 빈 목록이 아니다 | `ListObjects`가 버킷 행을 먼저 읽는다 |
 | 프로젝트는 저장 키다. 요청의 project가 행을 가른다 | `VolumeID.String`이 `projects/{project}/volumes/{id}`. `TestProjectScopedVolumeAndBucket` |
 | 허용 목록에 없는 프로젝트는 그 프로세스의 리소스가 아니다 | `Server.allowProject` → `RESOURCE_NOT_FOUND`. `TestProjectAllowListRejected` |
-| 이미지는 이름만 저장한다. 조회, 복사, 크기 검사를 하지 않는다 | `ImageName`은 `Key`도 `Ref`도 아니다. `TestImageSourceSurvivesCodec`, `TestCreateVolumeFromImage` |
+| 엔진은 이미지를 이름만 저장한다. 조회, 복사, 크기 검사를 하지 않는다. 복제는 kube 백엔드가 CDI DataSource에서 한다(#86) | `ImageName`은 `Key`도 `Ref`도 아니다. `TestImageSourceSurvivesCodec`, `TestCreateVolumeFromImage`, `TestImageVolumeClonesTheImageDataSource` |
 | `Object.etag`은 동시성 토큰이고 md5가 아니다 | `status.md5`는 `Object.MD5`, etag는 `Meta.Version`. `TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5` |
 | 같은 `request_id`의 WriteObject는 다시 쓰지 않는다 | `Service.Submit`의 토큰 조회가 admit보다 먼저다. `TestWriteObjectIsIdempotentOnRequestID` |
 | 볼륨은 늘리기만 한다 | `AvailableVolume.Expand`가 축소를 거절한다. `TestExpandGrowsOnlyAndStoresSizeOnCompletion`, `TestUpdateVolumeExpandsAndRejectsShrink` |
-| PR은 main을 대상으로 하고 본문에 `Closes #N`이 있으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml`, `.github/workflows/direct-push-watch.yml`, `scripts/guard-agents.sh` | `scripts/guard-agents.sh agents`, `scripts/guard-agents.sh selftest`. 둘 다 `ci.yml`이 부른다 |
+| PR은 main을 대상으로 하고 본문에 `Closes #N`이 있으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml`, `.github/workflows/direct-push-watch.yml`, `scripts/guard-agents.sh agents`, `scripts/guard-agents.sh selftest`. 둘 다 `ci.yml`이 부른다 |
 
 ## Insider-risk guardrails
 

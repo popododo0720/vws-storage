@@ -18,6 +18,8 @@ jobs:
           install-only: true
       - run: scripts/guard-agents.sh selftest
       - run: scripts/guard-agents.sh agents
+      # Layer rules and the AGENTS.md rule table; -v puts the Judgment row count in the log.
+      - run: go test -count=1 -v -run 'TestArchitectureRules|TestAgentsRuleTable' ./internal/archtest/
       # vws-lib is private and CI has no token for it: check the vendored copy against VENDOR only.
       - run: VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check
       - run: golangci-lint run
