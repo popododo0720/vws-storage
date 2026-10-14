@@ -1007,3 +1007,23 @@ func TestExpandRequestValidateAndFingerprint(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedVolumeSurvivesCodec(t *testing.T) {
+	now := time.Date(2026, 10, 9, 1, 2, 3, 4000, time.UTC)
+	reason := Status{Code: CodeDeadlineExceeded, Message: "the CDI DataVolume failed 4 times"}
+	for _, st := range []Lifecycle{Failed{Reason: reason}, Deleting{Op: NewOperationID(), Failed: reason}, Deleting{Op: NewOperationID()}} {
+		vol := availableVolume(t, now)
+		vol.State = st
+		raw, err := MarshalRecord(vol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := UnmarshalRecord(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.(Volume).State != st {
+			t.Fatalf("state %#v want %#v\n%s", got.(Volume).State, st, raw)
+		}
+	}
+}

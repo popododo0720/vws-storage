@@ -54,6 +54,50 @@ func (c CreatingVolume) Abandoned(op CompensatingOp[VolumeCreation], now time.Ti
 	return writes(removeRec(c.v), putUpdate(op.Operation(), failOp(op.Operation(), op.Cause(), now))), nil
 }
 
+// Failed keeps a volume whose create failed permanently, in Failed with the
+// cause, and fails the operation. The backend may hold leftovers of the
+// attempt; DeleteVolume removes them.
+func (c CreatingVolume) Failed(op RunningOp[VolumeCreation], cause Status, now time.Time) (Change, error) {
+	if c.st.Op != op.ID() || op.Work().Volume != c.v.ID {
+		return Change{}, ErrStale
+	}
+	if cause.IsZero() {
+		cause = Status{Code: CodeInternal, Message: "unspecified failure"}
+	}
+	next := c.v
+	next.State = Failed{Reason: cause}
+	next.Meta = bump(c.v.Meta, now)
+	return writes(putUpdate(c.v, next), putUpdate(op.Operation(), failOp(op.Operation(), cause, now))), nil
+}
+
+// FailedVolume proves a volume was read in Failed.
+type FailedVolume struct {
+	v  Volume
+	st Failed
+}
+
+// AsFailed narrows v.
+func (v Volume) AsFailed() (FailedVolume, bool) {
+	st, ok := v.State.(Failed)
+	if !ok {
+		return FailedVolume{}, false
+	}
+	return FailedVolume{v: v, st: st}, true
+}
+
+// Delete admits deletion of the volume. A failed delete returns it to Failed.
+func (f FailedVolume) Delete(st Start) (Admitted, error) {
+	if st.Op.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	next := f.v
+	next.State = Deleting{Op: st.Op, Failed: f.st.Reason}
+	next.Meta = bump(f.v.Meta, st.Now)
+	op := newOp(st, VolumeDeletion{Volume: f.v.ID, Zone: f.v.Spec.Zone})
+	ws := withToken(st, []Write{putUpdate(f.v, next), putNew(op)})
+	return Admitted{Change: writes(ws...), Op: op}, nil
+}
+
 // AvailableVolume proves a volume was read in Available.
 type AvailableVolume struct{ v Volume }
 
@@ -145,13 +189,17 @@ func (d DeletingVolume) Deleted(op RunningOp[VolumeDeletion], now time.Time) (Ch
 	return writes(removeRec(d.v), putUpdate(op.Operation(), succeedOp(op.Operation(), now))), nil
 }
 
-// DeleteFailed returns the volume to Available and fails the operation.
+// DeleteFailed returns the volume to the state it was deleted from,
+// Available or Failed, and fails the operation.
 func (d DeletingVolume) DeleteFailed(op RunningOp[VolumeDeletion], cause Status, now time.Time) (Change, error) {
 	if d.st.Op != op.ID() || op.Work().Volume != d.v.ID {
 		return Change{}, ErrStale
 	}
 	next := d.v
 	next.State = Available{}
+	if !d.st.Failed.IsZero() {
+		next.State = Failed{Reason: d.st.Failed}
+	}
 	next.Meta = bump(d.v.Meta, now)
 	return writes(putUpdate(d.v, next), putUpdate(op.Operation(), failOp(op.Operation(), cause, now))), nil
 }

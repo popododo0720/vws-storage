@@ -43,8 +43,10 @@ func metaFrom(w metaWire) Meta {
 }
 
 type lifeWire struct {
-	Kind string `json:"kind"`
-	Op   string `json:"op"`
+	Kind    string `json:"kind"`
+	Op      string `json:"op"`
+	Code    Code   `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 func lifeTo(s Lifecycle) (lifeWire, error) {
@@ -53,8 +55,10 @@ func lifeTo(s Lifecycle) (lifeWire, error) {
 		return lifeWire{Kind: "creating", Op: s.Op.wire()}, nil
 	case Available:
 		return lifeWire{Kind: "available"}, nil
+	case Failed:
+		return lifeWire{Kind: "failed", Code: s.Reason.Code, Message: s.Reason.Message}, nil
 	case Deleting:
-		return lifeWire{Kind: "deleting", Op: s.Op.wire()}, nil
+		return lifeWire{Kind: "deleting", Op: s.Op.wire(), Code: s.Failed.Code, Message: s.Failed.Message}, nil
 	default:
 		return lifeWire{}, fmt.Errorf("lifecycle %T", s)
 	}
@@ -70,12 +74,14 @@ func lifeFrom(w lifeWire) (Lifecycle, error) {
 		return Creating{Op: id}, nil
 	case "available":
 		return Available{}, nil
+	case "failed":
+		return Failed{Reason: Status{Code: w.Code, Message: w.Message}}, nil
 	case "deleting":
 		id, err := ParseOperationID(w.Op)
 		if err != nil {
 			return nil, err
 		}
-		return Deleting{Op: id}, nil
+		return Deleting{Op: id, Failed: Status{Code: w.Code, Message: w.Message}}, nil
 	default:
 		return nil, fmt.Errorf("lifecycle %q", w.Kind)
 	}
