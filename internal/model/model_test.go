@@ -1052,3 +1052,17 @@ func TestPurgeWithoutGenerationSurvivesCodec(t *testing.T) {
 		t.Fatalf("round trip\n%s", raw)
 	}
 }
+
+func TestImageNameSegments(t *testing.T) {
+	img, err := ParseImageName("projects/a123/regions/vws-1/images/ubuntu-24-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Project().String() != "a123" || img.Region().String() != "vws-1" || img.ID() != "ubuntu-24-04" {
+		t.Fatalf("segments %q %q %q", img.Project(), img.Region(), img.ID())
+	}
+	var zero ImageName
+	if !zero.Project().IsZero() || !zero.Region().IsZero() || zero.ID() != "" {
+		t.Fatal("zero name has segments")
+	}
+}
