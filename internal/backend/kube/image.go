@@ -89,7 +89,7 @@ func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.V
 // reason does not tell one project about another's images.
 func (b *Block) checkImageSource(ctx context.Context, img model.ImageName) error {
 	name := img.ID()
-	notFound := backend.Permanent(fmt.Errorf("%w: image %s not found", backend.ErrInvalid, img))
+	notFound := backend.MissingImage(img)
 	ds, err := b.dyn.Resource(dataSourceGVR).Namespace(b.imageNS).Get(ctx, name, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):

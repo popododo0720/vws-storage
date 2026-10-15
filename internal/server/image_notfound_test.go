@@ -3,7 +3,9 @@ package server_test
 import (
 	"context"
 	"testing"
+	"time"
 
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc/codes"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,10 +34,9 @@ var imageDataSourceGVR = schema.GroupVersionResource{Group: "cdi.kubevirt.io", V
 // error: NOT_FOUND, and one message. The message names only the image the
 // caller asked for.
 func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
-	if codes.NotFound != 5 {
-		t.Fatalf("grpc NotFound is %d", codes.NotFound)
-	}
-	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}: "VirtualMachineList",
+	})
 	block := kube.NewBlock(nil, dyn, "volumes", kube.DefaultClasses(), "").WithImageNamespace(imageNamespace)
 	vols, _, _, _, ops := dialBlock(t, "", server.Config{}, block)
 	ctx := context.Background()
@@ -48,7 +49,7 @@ func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		done := waitOp(t, ops, op.GetName())
+		done := waitRefused(ctx, t, ops, op.GetName())
 		st := done.GetError()
 		if st.GetCode() != int32(codes.NotFound) || st.GetMessage() != refusedMessage {
 			t.Fatalf("%s: code %d message %q", id, st.GetCode(), st.GetMessage())
@@ -80,7 +81,7 @@ func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
 	if again.GetName() != firstName {
 		t.Fatalf("replay name %s, want %s", again.GetName(), firstName)
 	}
-	replayed := waitOp(t, ops, again.GetName())
+	replayed := waitRefused(ctx, t, ops, again.GetName())
 	if replayed.GetError().GetCode() != int32(codes.NotFound) || replayed.GetError().GetMessage() != refusedMessage {
 		t.Fatalf("replay code %d message %q", replayed.GetError().GetCode(), replayed.GetError().GetMessage())
 	}
@@ -90,6 +91,23 @@ func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
 
 	relabelDataSource(t, dyn, map[string]string{kube.LabelProject: "a123456789012", kube.LabelRegion: "vws-2"})
 	check("boot-region", "33333333-3333-4333-8333-333333333333")
+}
+
+func waitRefused(ctx context.Context, t *testing.T, ops longrunningpb.OperationsClient, name string) *longrunningpb.Operation {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetDone() {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("operation not done")
+	return nil
 }
 
 func imageVolumeRequest(id, requestID string) *storagev1.CreateVolumeRequest {
@@ -105,13 +123,17 @@ func imageVolumeRequest(id, requestID string) *storagev1.CreateVolumeRequest {
 
 func putDataSource(t *testing.T, dyn dynamic.Interface, labels map[string]string) {
 	t.Helper()
+	lab := map[string]any{}
+	for k, v := range labels {
+		lab[k] = v
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cdi.kubevirt.io/v1beta1",
 		"kind":       "DataSource",
 		"metadata": map[string]any{
 			"name":      refusedImageID,
 			"namespace": imageNamespace,
-			"labels":    labels,
+			"labels":    lab,
 		},
 		"spec": map[string]any{"source": map[string]any{"pvc": map[string]any{"name": refusedImageID, "namespace": imageNamespace}}},
 	}}
