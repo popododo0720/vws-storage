@@ -3,6 +3,7 @@ package kube_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,5 +250,34 @@ func TestSnapshotErrorClockResetsWhenTheErrorClears(t *testing.T) {
 	setStatus(t, snap, map[string]any{"readyToUse": true})
 	if err := b.CreateSnapshot(ctx, snap, vol); err != nil {
 		t.Fatalf("recovered snapshot: %v", err)
+	}
+}
+
+// A restore from a snapshot whose error outlasts the grace fails for good,
+// as CreateSnapshot does, instead of returning ErrBusy forever, and makes no
+// claim (#19).
+func TestRestoreFromAFailedSnapshotIsPermanent(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	ctx := context.Background()
+	snap := model.NewSnapshotID()
+	_ = b.CreateSnapshot(ctx, snap, newVolume(t, b))
+	defer kube.SetSnapshotErrorGrace(100 * time.Millisecond)()
+	setStatus(t, snap, map[string]any{"error": map[string]any{"message": "cannot snapshot"}})
+	src, err := model.FromSnapshot(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := spec(t, model.VolumeTypeStandard, model.GiB)
+	s.Source = src
+	id := model.NewVolumeID()
+	if err := b.CreateVolume(ctx, id, s); !errors.Is(err, backend.ErrBusy) || backend.IsPermanent(err) {
+		t.Fatalf("fresh error: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if err := b.CreateVolume(ctx, id, s); err == nil || errors.Is(err, backend.ErrBusy) || !backend.IsPermanent(err) || !strings.Contains(err.Error(), "cannot snapshot") {
+		t.Fatalf("error past the grace: %v", err)
+	}
+	if claimFor(t, id) != nil {
+		t.Fatal("claim created from a failed snapshot")
 	}
 }
