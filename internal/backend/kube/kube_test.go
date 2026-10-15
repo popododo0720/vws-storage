@@ -348,3 +348,19 @@ func TestClaimAndSnapshotObjectNamesMatchTheObjectsCreated(t *testing.T) {
 		t.Fatalf("SnapshotObjectName %q, snapshot %v", b.SnapshotObjectName(snap), vs)
 	}
 }
+
+// A type may change only to a type served by the same StorageClass (#87).
+func TestRetypeNeedsTheSameStorageClass(t *testing.T) {
+	same := kube.NewBlock(kc, dyn, ns, kube.DefaultClasses(), "")
+	if err := same.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); err != nil {
+		t.Fatalf("same class: %v", err)
+	}
+	split := kube.NewBlock(kc, dyn, ns, kube.Classes{model.VolumeTypeStandard: "hdd", model.VolumeTypeSSD: "nvme"}, "")
+	if err := split.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); !errors.Is(err, backend.ErrInvalid) {
+		t.Fatalf("other class: %v", err)
+	}
+	only := kube.NewBlock(kc, dyn, ns, kube.Classes{model.VolumeTypeStandard: "hdd"}, "")
+	if err := only.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); !errors.Is(err, backend.ErrInvalid) {
+		t.Fatalf("unmapped: %v", err)
+	}
+}

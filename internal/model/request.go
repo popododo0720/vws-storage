@@ -305,6 +305,18 @@ type ExpandVolumeRequest struct {
 	Expected Version
 }
 
+// ModifyVolumeRequest changes an available volume's labels, type, or both.
+// SetLabels replaces the labels with Labels (empty clears them). A zero Type
+// keeps the type. Expected and Zone are as in ExpandVolumeRequest.
+type ModifyVolumeRequest struct {
+	Volume    VolumeID
+	Zone      Zone
+	SetLabels bool
+	Labels    Labels
+	Type      VolumeType
+	Expected  Version
+}
+
 // CreateSnapshotRequest snapshots an available volume.
 // ID is the client-chosen snapshot id. The zero ID asks the engine to mint one.
 // Zone is the zone in the source volume name. Zero skips that check.
@@ -398,6 +410,7 @@ type DeleteObjectRequest struct {
 func (r CreateVolumeRequest) Project() Project   { return r.ID.Project() }
 func (r DeleteVolumeRequest) Project() Project   { return r.Volume.Project() }
 func (r ExpandVolumeRequest) Project() Project   { return r.Volume.Project() }
+func (r ModifyVolumeRequest) Project() Project   { return r.Volume.Project() }
 func (r CreateSnapshotRequest) Project() Project { return r.ID.Project() }
 func (r DeleteSnapshotRequest) Project() Project { return r.Snapshot.Project() }
 func (r CreateBucketRequest) Project() Project   { return r.Bucket.Project() }
@@ -424,6 +437,20 @@ func (r CreateVolumeRequest) Validate() error {
 func (r DeleteVolumeRequest) Validate() error {
 	if r.Volume.IsZero() {
 		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
+	}
+	return nil
+}
+
+// Validate implements Request. A request that changes nothing is invalid.
+func (r ModifyVolumeRequest) Validate() error {
+	if r.Volume.IsZero() {
+		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
+	}
+	if r.Type != VolumeTypeUnspecified && r.Type != VolumeTypeStandard && r.Type != VolumeTypeSSD {
+		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
+	}
+	if !r.SetLabels && r.Type == VolumeTypeUnspecified {
+		return fmt.Errorf("%w: nothing to update", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -551,6 +578,10 @@ func (r ExpandVolumeRequest) fingerprint() string {
 	return fmt.Sprintf("expand-volume\n%s\n%s\n%d\n%d", r.Volume.String(), r.Zone.String(), r.Size, r.Expected)
 }
 
+func (r ModifyVolumeRequest) fingerprint() string {
+	return fmt.Sprintf("modify-volume\n%s\n%s\n%t\n%s\n%d\n%d", r.Volume.String(), r.Zone.String(), r.SetLabels, r.Labels.canonical(), r.Type, r.Expected)
+}
+
 func (r CreateSnapshotRequest) fingerprint() string {
 	return "create-snapshot\n" + r.ID.String() + "\n" + r.Source.String() + "\n" + r.Zone.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical() + "\n" + r.Description
 }
@@ -586,6 +617,7 @@ func (r DeleteObjectRequest) fingerprint() string {
 func (CreateVolumeRequest) isRequest()   {}
 func (DeleteVolumeRequest) isRequest()   {}
 func (ExpandVolumeRequest) isRequest()   {}
+func (ModifyVolumeRequest) isRequest()   {}
 func (CreateSnapshotRequest) isRequest() {}
 func (DeleteSnapshotRequest) isRequest() {}
 func (CreateBucketRequest) isRequest()   {}

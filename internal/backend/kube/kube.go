@@ -58,7 +58,10 @@ type Block struct {
 	carried map[string]dvRetry
 }
 
-var _ backend.Block = (*Block)(nil)
+var (
+	_ backend.Block   = (*Block)(nil)
+	_ backend.Retyper = (*Block)(nil)
+)
 
 // NewBlock returns a backend that creates Block-mode PVCs and VolumeSnapshots
 // in namespace ns. snapshotClass is the VolumeSnapshotClass for new
@@ -92,6 +95,20 @@ func (b *Block) WithImageNamespace(ns string) *Block {
 func (b *Block) WithVolumeMode(m corev1.PersistentVolumeMode) *Block {
 	b.mode = m
 	return b
+}
+
+// Retype implements backend.Retyper. A claim's StorageClass cannot change,
+// so a type change is allowed only when both types map to the same class.
+func (b *Block) Retype(from, to model.VolumeType) error {
+	cf, okf := b.classes[from]
+	ct, okt := b.classes[to]
+	switch {
+	case !okt:
+		return fmt.Errorf("%w: volume type %q", backend.ErrInvalid, to)
+	case !okf || cf != ct:
+		return fmt.Errorf("%w: volume type %q is StorageClass %q, and a claim's StorageClass cannot change", backend.ErrInvalid, to, ct)
+	}
+	return nil
 }
 
 // pvcName is derived from the full volume name, so the same id in two

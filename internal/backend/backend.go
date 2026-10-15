@@ -42,6 +42,14 @@ type Attacher interface {
 	Attachments(ctx context.Context) (map[string]string, error)
 }
 
+// Retyper is an optional Block capability: Retype reports whether a volume
+// stored as type from may be stored as type to with its object left as it is.
+// It reads only configuration. A non-nil error is the reason it may not. A
+// backend without it refuses every type change.
+type Retyper interface {
+	Retype(from, to model.VolumeType) error
+}
+
 // Object is the mutating object backend.
 // Bytes are addressed by ObjectRef. How a generation is stored is private
 // to the adapter.

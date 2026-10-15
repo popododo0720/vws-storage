@@ -152,6 +152,30 @@ func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) 
 	return writes(putUpdate(a.v, next), done), nil
 }
 
+// Modify stores labels and typ on the volume and records the operation as
+// succeeded in the same write: nothing outside the store changes. Values
+// equal to the stored ones only record the operation.
+func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitted, error) {
+	if st.Op.IsZero() {
+		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
+	}
+	if typ != VolumeTypeStandard && typ != VolumeTypeSSD {
+		return Admitted{}, fmt.Errorf("%w: volume type", ErrInvalidArgument)
+	}
+	w := VolumeModification{Volume: a.v.ID, Labels: labels, Type: typ}
+	if a.v.Labels == labels && a.v.Spec.Type == typ {
+		return FinishNow(st, w, a.v)
+	}
+	op := newOp(st, w)
+	op.State = OpSucceeded{}
+	next := a.v
+	next.Labels = labels
+	next.Spec.Type = typ
+	next.Meta = bump(a.v.Meta, st.Now)
+	ws := withToken(st, []Write{putUpdate(a.v, next), putNew(op)})
+	return Admitted{Change: writes(ws...), Op: op}, nil
+}
+
 // Snapshot admits a snapshot of the volume and guards the volume row.
 func (a AvailableVolume) Snapshot(st Start, id SnapshotID, region Region, labels Labels, description string) (Admitted, error) {
 	if id.IsZero() || st.Op.IsZero() {

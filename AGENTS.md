@@ -63,6 +63,7 @@ VWS storage는 EBS 볼륨/스냅샷과 S3 호환 버킷/오브젝트의 제어 �
 | `Object.etag`은 동시성 토큰이고 md5가 아니다 | `status.md5`는 `Object.MD5`, etag는 `Meta.Version`. `TestWriteObjectReplacesPayloadAndKeepsEtagSeparateFromMD5` |
 | 같은 `request_id`의 WriteObject는 다시 쓰지 않는다 | `Service.Submit`의 토큰 조회가 admit보다 먼저다. `TestWriteObjectIsIdempotentOnRequestID` |
 | 볼륨은 늘리기만 한다 | `AvailableVolume.Expand`가 축소를 거절한다. `TestExpandGrowsOnlyAndStoresSizeOnCompletion`, `TestUpdateVolumeExpandsAndRejectsShrink` |
+| 볼륨 라벨과 타입은 승인 쓰기 하나로 바뀌고 백엔드 객체를 건드리지 않는다. 타입은 백엔드가 그대로 둘 수 있을 때만 바뀐다(kube: 같은 StorageClass)(#87) | `AvailableVolume.Modify`, `backend.Retyper`. `TestModifyVolumeSetsLabelsAndTypeAndSurvivesRestart`, `TestRetypeNeedsTheSameStorageClass`, `TestUpdateVolumeSetsLabelsAndType` |
 | PR은 main을 대상으로 하고 본문에 `Closes #N`이 있으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml`, `.github/workflows/direct-push-watch.yml`, `scripts/guard-agents.sh agents`, `scripts/guard-agents.sh selftest`. 둘 다 `ci.yml`이 부른다 |
 
 ## Insider-risk guardrails

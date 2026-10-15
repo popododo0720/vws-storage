@@ -128,6 +128,12 @@ func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	return nil
 }
 
+var _ backend.Retyper = (*Block)(nil)
+
+// Retype implements backend.Retyper. The fake stores no type-specific
+// object, so every type change is allowed.
+func (b *Block) Retype(_, _ model.VolumeType) error { return nil }
+
 // Expand implements backend.Block.
 func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes) error {
 	if err := ctx.Err(); err != nil {

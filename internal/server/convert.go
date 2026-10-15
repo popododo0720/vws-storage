@@ -526,6 +526,11 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 			return s.volumeName(vol.Spec.Zone, w.Volume)
 		}
 		return ""
+	case model.VolumeModification:
+		if vol, err := s.svc.Volume(ctx, w.Volume); err == nil {
+			return s.volumeName(vol.Spec.Zone, w.Volume)
+		}
+		return ""
 	case model.VolumeDeletion:
 		zone := w.Zone
 		if zone.IsZero() {
@@ -555,6 +560,17 @@ func (s *Server) resourceName(ctx context.Context, op model.Operation) string {
 // row it created is already gone or the work kind has none.
 var errNoResponse = errors.New("operation has no response body")
 
+func (s *Server) volumeResponse(ctx context.Context, id model.VolumeID) (proto.Message, error) {
+	vol, err := s.svc.Volume(ctx, id)
+	if errors.Is(err, model.ErrNotFound) {
+		return nil, errNoResponse
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.volumeMsg(ctx, vol), nil
+}
+
 func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.Message, error) {
 	switch w := op.Work.(type) {
 	case model.VolumeCreation:
@@ -567,14 +583,9 @@ func (s *Server) successMessage(ctx context.Context, op model.Operation) (proto.
 		}
 		return s.volumeMsg(ctx, vol), nil
 	case model.VolumeExpansion:
-		vol, err := s.svc.Volume(ctx, w.Volume)
-		if errors.Is(err, model.ErrNotFound) {
-			return nil, errNoResponse
-		}
-		if err != nil {
-			return nil, err
-		}
-		return s.volumeMsg(ctx, vol), nil
+		return s.volumeResponse(ctx, w.Volume)
+	case model.VolumeModification:
+		return s.volumeResponse(ctx, w.Volume)
 	case model.SnapshotCreation:
 		snap, err := s.svc.Snapshot(ctx, w.Snapshot)
 		if errors.Is(err, model.ErrNotFound) {
@@ -738,7 +749,7 @@ func verbOf(op model.Operation) commonv1.OperationVerb {
 		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
 	}
 	switch op.Kind() {
-	case model.KindExpandVolume:
+	case model.KindExpandVolume, model.KindModifyVolume:
 		return commonv1.OperationVerb_OPERATION_VERB_UPDATE
 	case model.KindCreateVolume, model.KindCreateSnapshot, model.KindCreateBucket, model.KindPutObject:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
