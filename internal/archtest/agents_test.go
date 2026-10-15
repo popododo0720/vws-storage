@@ -14,7 +14,7 @@ const judgment = "Judgment"
 
 var testName = regexp.MustCompile("`(Test[A-Za-z0-9_]+)`")
 
-// ruleTableViolations checks the rule table under "## 규칙" in agents: every
+// ruleTableViolations checks the rule table under "## Rules" in agents: every
 // row has a rule and an enforcer, and every test an enforcer names exists in
 // tests. It returns the number of Judgment rows.
 func ruleTableViolations(agents string, tests map[string]bool) (bad []string, judged int) {
@@ -24,10 +24,10 @@ func ruleTableViolations(agents string, tests map[string]bool) (bad []string, ju
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "## ") {
-			in = line == "## 규칙"
+			in = line == "## Rules"
 			continue
 		}
-		if !in || !strings.HasPrefix(line, "|") || strings.HasPrefix(line, "| 규칙 |") || strings.HasPrefix(line, "| ---") {
+		if !in || !strings.HasPrefix(line, "|") || strings.HasPrefix(line, "| Rule |") || strings.HasPrefix(line, "| ---") {
 			continue
 		}
 		rows++
@@ -50,7 +50,7 @@ func ruleTableViolations(agents string, tests map[string]bool) (bad []string, ju
 		}
 	}
 	if rows == 0 {
-		bad = append(bad, "no rule table under ## 규칙")
+		bad = append(bad, "no rule table under ## Rules")
 	}
 	return bad, judged
 }
@@ -74,8 +74,8 @@ func testNames(t *testing.T, root string) map[string]bool {
 }
 
 func TestAgentsRuleTable(t *testing.T) {
-	probe := "# x\n\n## 규칙\n\n| 규칙 | 강제 |\n| --- | --- |\n" +
-		"| a | `TestReal` |\n| b | Judgment |\n| c | |\n| d | `TestGone` |\n| e | f | g |\n\n## 다음\n\n| x | y | z |\n"
+	probe := "# x\n\n## Rules\n\n| Rule | Enforcer |\n| --- | --- |\n" +
+		"| a | `TestReal` |\n| b | Judgment |\n| c | |\n| d | `TestGone` |\n| e | f | g |\n\n## Next\n\n| x | y | z |\n"
 	bad, judged := ruleTableViolations(probe, map[string]bool{"TestReal": true})
 	want := []string{
 		"row 3 has no rule or no enforcer: | c | |",
