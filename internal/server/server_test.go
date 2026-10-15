@@ -175,7 +175,7 @@ func TestCreateVolumeFromImage(t *testing.T) {
 	}
 	vols, _, _, _, ops := dialConfig(t, "", server.Config{Projects: []model.Project{project}})
 	ctx := context.Background()
-	const image = "projects/shared/regions/vws-1/images/ubuntu-24-04"
+	const image = "projects/a123/regions/vws-1/images/ubuntu-24-04"
 	req := &storagev1.CreateVolumeRequest{
 		Parent: "projects/a123/zones/az-1", VolumeId: "boot-1",
 		RequestId: "22222222-2222-4222-8222-222222222222",
@@ -212,7 +212,7 @@ func TestCreateVolumeFromImage(t *testing.T) {
 	if !saw {
 		t.Fatalf("list %+v", listed.GetVolumes())
 	}
-	req.Volume.Spec.Source = &storagev1.VolumeSpec_Image{Image: "projects/shared/regions/vws-1/images/ubuntu-22-04"}
+	req.Volume.Spec.Source = &storagev1.VolumeSpec_Image{Image: "projects/a123/regions/vws-1/images/ubuntu-22-04"}
 	_, err = vols.CreateVolume(ctx, req)
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.Aborted || reasonOf(st) != "IDEMPOTENCY_CONFLICT" {
@@ -252,6 +252,38 @@ func TestCreateVolumeFromImage(t *testing.T) {
 	st, ok = status.FromError(err)
 	if !ok || st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_RESOURCE_ID" {
 		t.Fatalf("empty image code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+}
+
+// Another project's image is not found, with the same answer whether or not
+// it exists, and no volume is made (#89).
+func TestCreateVolumeFromAnotherProjectsImageIsNotFound(t *testing.T) {
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vols, _, _, _, _ := dialConfig(t, "", server.Config{Projects: []model.Project{project}})
+	ctx := context.Background()
+	for _, image := range []string{
+		"projects/b456/regions/vws-1/images/ubuntu-24-04",
+		"projects/shared/regions/vws-1/images/no-such-image",
+	} {
+		_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+			Parent: "projects/a123/zones/az-1", VolumeId: "boot-x",
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+				SizeGib: 1,
+				Type:    storagev1.VolumeType_VOLUME_TYPE_SSD,
+				Source:  &storagev1.VolumeSpec_Image{Image: image},
+			}},
+		})
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.NotFound || reasonOf(st) != "RESOURCE_NOT_FOUND" || strings.Contains(st.Message(), "b456") {
+			t.Fatalf("%s: code %v reason %q msg %q", image, st.Code(), reasonOf(st), st.Message())
+		}
+	}
+	_, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/a123/zones/az-1/volumes/boot-x"})
+	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
+		t.Fatalf("volume made: %v", err)
 	}
 }
 
