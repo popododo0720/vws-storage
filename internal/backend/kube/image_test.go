@@ -38,16 +38,27 @@ func ensureNamespace(t *testing.T, name string) {
 // the image id, in the image namespace, pointing at the image's claim.
 func imageSource(t *testing.T, imageID string) model.Source {
 	t.Helper()
+	ownedDataSource(t, imageID, map[string]any{kube.LabelProject: "a123456789012", kube.LabelRegion: "vws-1"})
+	return imageRef(t, imageID)
+}
+
+// ownedDataSource makes the DataSource with the given owner labels (nil for
+// none).
+func ownedDataSource(t *testing.T, imageID string, labels map[string]any) {
+	t.Helper()
 	ensureNamespace(t, imageNS)
+	meta := map[string]any{"name": imageID, "namespace": imageNS}
+	if labels != nil {
+		meta["labels"] = labels
+	}
 	ds := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cdi.kubevirt.io/v1beta1", "kind": "DataSource",
-		"metadata": map[string]any{"name": imageID, "namespace": imageNS},
+		"metadata": meta,
 		"spec":     map[string]any{"source": map[string]any{"pvc": map[string]any{"name": imageID, "namespace": imageNS}}},
 	}}
 	if _, err := dyn.Resource(dsGVR).Namespace(imageNS).Create(context.Background(), ds, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatal(err)
 	}
-	return imageRef(t, imageID)
 }
 
 func imageRef(t *testing.T, imageID string) model.Source {
@@ -112,6 +123,53 @@ func TestImageVolumeClonesTheImageDataSource(t *testing.T) {
 				t.Fatalf("DataVolume after delete: %v", err)
 			}
 		})
+	}
+}
+
+// A DataSource of another project or region, or with no owner, is not the
+// image: the create fails for good with the same reason as a missing one,
+// and makes no DataVolume (#89).
+func TestImageOfAnotherOwnerIsNotFound(t *testing.T) {
+	b := imageBlock(corev1.PersistentVolumeBlock, 3)
+	for id, labels := range map[string]map[string]any{
+		"img-other-project": {kube.LabelProject: "b999999999999", kube.LabelRegion: "vws-1"},
+		"img-other-region":  {kube.LabelProject: "a123456789012", kube.LabelRegion: "vws-2"},
+		"img-pub-region":    {kube.LabelProject: "b999999999999", kube.LabelRegion: "vws-2", kube.LabelPublic: "true"},
+		"img-unowned":       nil,
+		"img-absent":        {"skip": "true"},
+	} {
+		t.Run(id, func(t *testing.T) {
+			if labels["skip"] == nil {
+				ownedDataSource(t, id, labels)
+			}
+			vol := model.NewVolumeID()
+			err := b.CreateVolume(context.Background(), vol, imageSpec(t, imageRef(t, id)))
+			want := "image projects/a123456789012/regions/vws-1/images/" + id + " not found"
+			if !errors.Is(err, backend.ErrInvalid) || !backend.IsPermanent(err) || !strings.HasSuffix(err.Error(), want) {
+				t.Fatalf("got %v", err)
+			}
+			if _, err := dyn.Resource(dvGVR).Namespace(ns).Get(context.Background(), b.ClaimName(vol), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("DataVolume made: %v", err)
+			}
+		})
+	}
+}
+
+// A public DataSource of another project in the same region is cloned under
+// the caller's own image name, as an AWS public AMI is.
+func TestPublicImageOfAnotherProjectIsCloned(t *testing.T) {
+	b := imageBlock(corev1.PersistentVolumeBlock, 3)
+	ownedDataSource(t, "img-public001", map[string]any{kube.LabelProject: "b999999999999", kube.LabelRegion: "vws-1", kube.LabelPublic: "true"})
+	vol := model.NewVolumeID()
+	if err := b.CreateVolume(context.Background(), vol, imageSpec(t, imageRef(t, "img-public001"))); err != nil && (backend.IsPermanent(err) || !errors.Is(err, backend.ErrBusy)) {
+		t.Fatalf("public clone refused: %v", err)
+	}
+	dv, err := dyn.Resource(dvGVR).Namespace(ns).Get(context.Background(), b.ClaimName(vol), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("no DataVolume: %v", err)
+	}
+	if ref, _, _ := unstructured.NestedStringMap(dv.Object, "spec", "sourceRef"); ref["name"] != "img-public001" {
+		t.Fatalf("sourceRef %v", ref)
 	}
 }
 
