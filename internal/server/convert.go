@@ -320,6 +320,11 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 		if err != nil {
 			return model.CreateVolumeRequest{}, "", invalidID("image")
 		}
+		// Another project's image is reported as absent, so a caller cannot
+		// learn which images other projects have (#89).
+		if img.Project() != project {
+			return model.CreateVolumeRequest{}, "", notFound("image")
+		}
 		src, err = model.FromImage(img)
 		if err != nil {
 			return model.CreateVolumeRequest{}, "", invalidSpec("image")
