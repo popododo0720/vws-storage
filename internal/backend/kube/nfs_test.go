@@ -137,5 +137,4 @@ func TestPreflightChecksTheProvisioner(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `driver "rbd.csi.ceph.com" is not the provisioner`) {
 		t.Fatalf("mismatched snapshot class: %v", err)
 	}
-
 }
