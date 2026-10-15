@@ -3,7 +3,6 @@ package kube
 import (
 	"context"
 	"fmt"
-	"path"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +26,16 @@ const DefaultImageNamespace = "vws-images"
 // for a consumer. Nothing consumes the claim until the clone has Succeeded.
 const immediateBindAnnotation = "cdi.kubevirt.io/storage.bind.immediate.requested"
 
+// LabelProject and LabelRegion name the owner of an image DataSource. The
+// image id alone is not unique across projects, so a DataSource is only the
+// image projects/{project}/regions/{region}/images/{id} when both labels
+// match (#89). vws-compute sets them; a DataSource without them is no
+// project's image.
+const (
+	LabelProject = "vws.io/project"
+	LabelRegion  = "vws.io/region"
+)
+
 // imageVolume makes an image volume a DataVolume that clones the image.
 //
 // vws-compute stores an image as a CDI DataVolume and a DataSource, both
@@ -40,11 +49,11 @@ const immediateBindAnnotation = "cdi.kubevirt.io/storage.bind.immediate.requeste
 // must exist, and the caller must be allowed to clone from its source
 // namespace (create datavolumes/source, or create pods, there).
 func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string, img model.ImageName) error {
-	name := path.Base(img.String())
+	name := img.ID()
 	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
 		return backend.Permanent(fmt.Errorf("%w: image id %q is not an object name: %s", backend.ErrInvalid, name, errs[0]))
 	}
-	if err := b.checkImageSource(ctx, name); err != nil {
+	if err := b.checkImageSource(ctx, img); err != nil {
 		return err
 	}
 	src := dvSource{
@@ -59,19 +68,26 @@ func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.V
 	return b.dataVolume(ctx, id, spec, class, src)
 }
 
-// checkImageSource fails permanently when the DataSource is missing or the
-// backend may not clone from where it points.
-func (b *Block) checkImageSource(ctx context.Context, name string) error {
+// checkImageSource fails permanently when the image has no DataSource, the
+// DataSource belongs to another project or region, or the backend may not
+// clone from where it points. Absent and foreign read the same, so the
+// reason does not tell one project about another's images.
+func (b *Block) checkImageSource(ctx context.Context, img model.ImageName) error {
+	name := img.ID()
+	notFound := backend.Permanent(fmt.Errorf("%w: image %s not found", backend.ErrInvalid, img))
 	ds, err := b.dyn.Resource(dataSourceGVR).Namespace(b.imageNS).Get(ctx, name, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
-		return backend.Permanent(fmt.Errorf("%w: image %s has no DataSource %s/%s to clone", backend.ErrInvalid, name, b.imageNS, name))
+		return notFound
 	case meta.IsNoMatchError(err):
 		return fmt.Errorf("%w: the CDI DataSource API is not installed", backend.ErrBusy)
 	case apierrors.IsForbidden(err):
 		return backend.Permanent(fmt.Errorf("%w: may not get DataSource %s/%s: needs get on datasources.cdi.kubevirt.io there", backend.ErrInvalid, b.imageNS, name))
 	case err != nil:
 		return fmt.Errorf("kube: get data source: %w", err)
+	}
+	if l := ds.GetLabels(); l[LabelProject] != img.Project().String() || l[LabelRegion] != img.Region().String() {
+		return notFound
 	}
 	// CDI checks the namespace of the claim (or snapshot) the DataSource
 	// names, defaulting to the DataSource's own.
