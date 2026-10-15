@@ -95,8 +95,16 @@ var ownerRules = []struct {
 	owners []string
 	why    string
 }{
-	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
-		[]string{server}, "wire types stay in the server"},
+	{
+		hasPrefix(
+			"google.golang.org/protobuf",
+			"google.golang.org/genproto",
+			"github.com/popododo0720/vws-proto",
+			"cloud.google.com/go/longrunning",
+		),
+		[]string{server},
+		"wire types stay in the server",
+	},
 	{hasPrefix("google.golang.org/grpc"), []string{server, health, cmd}, "gRPC stays at the edge"},
 	{hasPrefix("database/sql", "modernc.org/sqlite"), []string{store + "/sqlite"}, "SQL stays in the SQLite store"},
 	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{backend + "/kube", cmd}, "Kubernetes types stay in the kube backend and its flags"},
