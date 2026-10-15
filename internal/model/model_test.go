@@ -885,6 +885,12 @@ func sampleWork(t *testing.T, k Kind, vol Volume, snap Snapshot, bucket Bucket, 
 		return VolumeDeletion{Volume: vol.ID}
 	case KindExpandVolume:
 		return VolumeExpansion{Volume: vol.ID, Size: 2 * vol.Spec.Size}
+	case KindModifyVolume:
+		labels, err := ParseLabels(map[string]string{"env": "prod"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return VolumeModification{Volume: vol.ID, Labels: labels, Type: VolumeTypeStandard}
 	case KindCreateSnapshot:
 		return SnapshotCreation{Snapshot: snap.ID, Source: vol.ID}
 	case KindDeleteSnapshot:
@@ -1050,5 +1056,83 @@ func TestPurgeWithoutGenerationSurvivesCodec(t *testing.T) {
 	}
 	if !SameRecord(op, got) {
 		t.Fatalf("round trip\n%s", raw)
+	}
+}
+
+func TestModifyStoresLabelsAndTypeAtAdmission(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	vol := availableVolume(t, now)
+	avail, ok := vol.AsAvailable()
+	if !ok {
+		t.Fatal("not available")
+	}
+	labels, err := ParseLabels(map[string]string{"team": "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := VolumeTypeStandard
+	if vol.Spec.Type == VolumeTypeStandard {
+		other = VolumeTypeSSD
+	}
+	if _, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, labels, VolumeTypeUnspecified); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("unspecified type: %v", err)
+	}
+	admitted, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, labels, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := putNext(t, admitted.Change, "volume").(Volume)
+	if next.Labels != labels || next.Spec.Type != other || next.Meta.Version != vol.Meta.Version+1 || next.Spec.Size != vol.Spec.Size {
+		t.Fatalf("volume %+v", next)
+	}
+	if _, ok := next.AsAvailable(); !ok {
+		t.Fatalf("state %v", next.State)
+	}
+	if admitted.Op.Phase() != PhaseSucceeded {
+		t.Fatalf("phase %s", admitted.Op.Phase())
+	}
+	same, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, vol.Labels, vol.Spec.Type)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := same.Change.Writes()[0].(Guard); !ok || same.Op.Phase() != PhaseSucceeded {
+		t.Fatal("no-op modify wrote the volume")
+	}
+}
+
+func TestModifyRequestValidateAndFingerprint(t *testing.T) {
+	id := NewVolumeID()
+	req := ModifyVolumeRequest{Volume: id, SetLabels: true, Expected: 1}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []ModifyVolumeRequest{{SetLabels: true}, {Volume: id}, {Volume: id, Type: VolumeType(9)}} {
+		if bad.Validate() == nil {
+			t.Fatalf("%+v validated", bad)
+		}
+	}
+	base, err := HashRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels, err := ParseLabels(map[string]string{"a": "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mut := range map[string]func(*ModifyVolumeRequest){
+		"labels":     func(r *ModifyVolumeRequest) { r.Labels = labels },
+		"set-labels": func(r *ModifyVolumeRequest) { r.SetLabels = false; r.Type = VolumeTypeSSD },
+		"type":       func(r *ModifyVolumeRequest) { r.Type = VolumeTypeSSD },
+		"etag":       func(r *ModifyVolumeRequest) { r.Expected = 2 },
+	} {
+		other := req
+		mut(&other)
+		got, err := HashRequest(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == base {
+			t.Fatalf("%s change hashed the same", name)
+		}
 	}
 }

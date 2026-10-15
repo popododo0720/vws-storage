@@ -157,6 +157,8 @@ const (
 	KindDeleteObject
 	// KindExpandVolume grows a volume.
 	KindExpandVolume
+	// KindModifyVolume changes a volume's labels or type.
+	KindModifyVolume
 	kindEnd
 )
 
@@ -190,6 +192,8 @@ func (k Kind) String() string {
 		return "delete-object"
 	case KindExpandVolume:
 		return "expand-volume"
+	case KindModifyVolume:
+		return "modify-volume"
 	default:
 		return ""
 	}
@@ -221,6 +225,15 @@ type VolumeDeletion struct {
 type VolumeExpansion struct {
 	Volume VolumeID
 	Size   Bytes
+}
+
+// VolumeModification sets Volume's Labels and Type. It touches no backend
+// object, so it is admitted already succeeded, in the write that stores the
+// new values.
+type VolumeModification struct {
+	Volume VolumeID
+	Labels Labels
+	Type   VolumeType
 }
 
 // SnapshotCreation snapshots Source into Snapshot.
@@ -293,6 +306,9 @@ func (VolumeDeletion) Kind() Kind { return KindDeleteVolume }
 func (VolumeExpansion) Kind() Kind { return KindExpandVolume }
 
 // Kind implements Work.
+func (VolumeModification) Kind() Kind { return KindModifyVolume }
+
+// Kind implements Work.
 func (SnapshotCreation) Kind() Kind { return KindCreateSnapshot }
 
 // Kind implements Work.
@@ -318,6 +334,9 @@ func (w VolumeDeletion) Target() Ref { return w.Volume }
 
 // Target implements Work.
 func (w VolumeExpansion) Target() Ref { return w.Volume }
+
+// Target implements Work.
+func (w VolumeModification) Target() Ref { return w.Volume }
 
 // Target implements Work.
 func (w SnapshotCreation) Target() Ref { return w.Snapshot }
@@ -354,6 +373,9 @@ func (w VolumeDeletion) Refs() []Ref { return []Ref{w.Volume} }
 func (w VolumeExpansion) Refs() []Ref { return []Ref{w.Volume} }
 
 // Refs implements Work.
+func (w VolumeModification) Refs() []Ref { return []Ref{w.Volume} }
+
+// Refs implements Work.
 func (w SnapshotCreation) Refs() []Ref { return []Ref{w.Snapshot, w.Source} }
 
 // Refs implements Work.
@@ -378,15 +400,16 @@ func (w ObjectPurge) Refs() []Ref {
 	return []Ref{w.Object, w.Object.Path, w.Object.Path.Bucket}
 }
 
-func (VolumeCreation) isWork()   {}
-func (VolumeDeletion) isWork()   {}
-func (VolumeExpansion) isWork()  {}
-func (SnapshotCreation) isWork() {}
-func (SnapshotDeletion) isWork() {}
-func (BucketCreation) isWork()   {}
-func (BucketDeletion) isWork()   {}
-func (ObjectUpload) isWork()     {}
-func (ObjectPurge) isWork()      {}
+func (VolumeCreation) isWork()     {}
+func (VolumeDeletion) isWork()     {}
+func (VolumeExpansion) isWork()    {}
+func (VolumeModification) isWork() {}
+func (SnapshotCreation) isWork()   {}
+func (SnapshotDeletion) isWork()   {}
+func (BucketCreation) isWork()     {}
+func (BucketDeletion) isWork()     {}
+func (ObjectUpload) isWork()       {}
+func (ObjectPurge) isWork()        {}
 
 // Check reports whether obs satisfies the upload.
 func (w ObjectUpload) Check(obs ObservedObject) error {
