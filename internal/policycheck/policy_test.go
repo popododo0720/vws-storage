@@ -64,7 +64,7 @@ func TestRepoPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const note = "vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다"
+	const note = "Once vws-proto is public, remove the replace and require a tagged version"
 	if !strings.Contains(string(readme), note) {
 		t.Error("README missing public-module note")
 	}
