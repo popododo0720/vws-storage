@@ -145,7 +145,10 @@ func TestImageOfAnotherOwnerIsNotFound(t *testing.T) {
 			vol := model.NewVolumeID()
 			err := b.CreateVolume(context.Background(), vol, imageSpec(t, imageRef(t, id)))
 			want := "image projects/a123456789012/regions/vws-1/images/" + id + " not found"
-			if !errors.Is(err, backend.ErrNotFound) || errors.Is(err, backend.ErrInvalid) || !backend.IsPermanent(err) || err.Error() != want {
+			if !errors.Is(err, backend.ErrNotFound) ||
+				errors.Is(err, backend.ErrInvalid) ||
+				!backend.IsPermanent(err) ||
+				err.Error() != want {
 				t.Fatalf("got %v", err)
 			}
 			if strings.Contains(err.Error(), "b999999999999") || strings.Contains(err.Error(), "vws-2") {
@@ -223,7 +226,10 @@ func TestImageWithoutDataSourceIsPermanent(t *testing.T) {
 	id := model.NewVolumeID()
 	err := b.CreateVolume(context.Background(), id, imageSpec(t, imageRef(t, "img-missing0001")))
 	want := "image projects/a123456789012/regions/vws-1/images/img-missing0001 not found"
-	if !backend.IsPermanent(err) || !errors.Is(err, backend.ErrNotFound) || errors.Is(err, backend.ErrInvalid) || err.Error() != want {
+	if !backend.IsPermanent(err) ||
+		!errors.Is(err, backend.ErrNotFound) ||
+		errors.Is(err, backend.ErrInvalid) ||
+		err.Error() != want {
 		t.Fatalf("missing source: %v", err)
 	}
 	if _, err := dyn.Resource(dvGVR).Namespace(ns).Get(context.Background(), b.ClaimName(id), metav1.GetOptions{}); !apierrors.IsNotFound(err) {

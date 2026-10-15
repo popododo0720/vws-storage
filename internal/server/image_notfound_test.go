@@ -28,12 +28,19 @@ const (
 	imageNamespace = "vws-images"
 )
 
-var imageDataSourceGVR = schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datasources"}
+var imageDataSourceGVR = schema.GroupVersionResource{
+	Group:    "cdi.kubevirt.io",
+	Version:  "v1beta1",
+	Resource: "datasources",
+}
 
 func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}: "VirtualMachineList",
-	})
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}: "VirtualMachineList",
+		},
+	)
 	block := kube.NewBlock(nil, dyn, "volumes", kube.DefaultClasses(), "").WithImageNamespace(imageNamespace)
 	vols, _, _, _, ops := dialBlock(t, "", server.Config{}, block)
 	ctx := context.Background()
@@ -90,7 +97,12 @@ func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
 	check("boot-region", "33333333-3333-4333-8333-333333333333")
 }
 
-func waitRefused(ctx context.Context, t *testing.T, ops longrunningpb.OperationsClient, name string) *longrunningpb.Operation {
+func waitRefused(
+	ctx context.Context,
+	t *testing.T,
+	ops longrunningpb.OperationsClient,
+	name string,
+) *longrunningpb.Operation {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -132,9 +144,14 @@ func putDataSource(t *testing.T, dyn dynamic.Interface, labels map[string]string
 			"namespace": imageNamespace,
 			"labels":    lab,
 		},
-		"spec": map[string]any{"source": map[string]any{"pvc": map[string]any{"name": refusedImageID, "namespace": imageNamespace}}},
+		"spec": map[string]any{"source": map[string]any{"pvc": map[string]any{
+			"name":      refusedImageID,
+			"namespace": imageNamespace,
+		}}},
 	}}
-	if _, err := dyn.Resource(imageDataSourceGVR).Namespace(imageNamespace).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+	if _, err := dyn.Resource(imageDataSourceGVR).Namespace(imageNamespace).Create(
+		context.Background(), obj, metav1.CreateOptions{},
+	); err != nil {
 		t.Fatal(err)
 	}
 }
