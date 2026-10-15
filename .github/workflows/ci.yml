@@ -22,7 +22,7 @@ jobs:
       - run: echo "KUBEBUILDER_ASSETS=$(setup-envtest use -p path)" >> "$GITHUB_ENV"
       - run: go test -race -count=1 -timeout 120s ./...
 
-  # Common golangci-lint baseline (vws-deploy lint/golangci-common.yml, vws-deploy#300).
+  # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).
   # fetch-depth 0 gives new-from-merge-base the origin/main history it compares against.
   lint:
     runs-on: ubuntu-latest
