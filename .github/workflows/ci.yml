@@ -14,18 +14,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.14.0
-          install-only: true
       - run: scripts/guard-agents.sh selftest
       - run: scripts/guard-agents.sh agents
       # Layer rules and the AGENTS.md rule table; -v puts the Judgment row count in the log.
       - run: go test -count=1 -v -run 'TestArchitectureRules|TestAgentsRuleTable' ./internal/archtest/
       # vws-lib is private and CI has no token for it: check the vendored copy against VENDOR only.
       - run: VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check
-      - run: golangci-lint run
-      - run: golangci-lint fmt --diff
       - run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
       - run: echo "KUBEBUILDER_ASSETS=$(setup-envtest use -p path)" >> "$GITHUB_ENV"
       - run: go test -race -count=1 -timeout 120s ./...
@@ -52,3 +46,23 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/check-english.sh commits "$BASE_SHA" "$HEAD_SHA"
+
+  # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).
+  # fetch-depth 0 gives new-from-merge-base the origin/main history it compares against.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          install-only: true
+      - name: Lint
+        run: golangci-lint run --timeout=5m ./...
+      - name: Format (gofumpt, goimports)
+        run: golangci-lint fmt --diff
