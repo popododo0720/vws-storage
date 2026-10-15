@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
 )
@@ -126,6 +127,48 @@ func (s *Service) admitExpandVolume(ctx context.Context, r store.Reader, st mode
 		return model.FinishNow(st, model.VolumeExpansion{Volume: vol.ID, Size: req.Size}, vol)
 	}
 	return avail.Expand(st, req.Size)
+}
+
+// admitModifyVolume sets an available volume's labels and type in one write.
+// A type change must be one the backend serves without touching the volume's
+// object (backend.Retyper); otherwise it is invalid.
+func (s *Service) admitModifyVolume(ctx context.Context, r store.Reader, st model.Start, req model.ModifyVolumeRequest) (model.Admitted, error) {
+	vol, err := r.Volume(ctx, req.Volume)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if !req.Zone.IsZero() && vol.Spec.Zone != req.Zone {
+		return model.Admitted{}, fmt.Errorf("%w: volume", model.ErrNotFound)
+	}
+	if err := expectVersion(vol.Meta.Version, req.Expected); err != nil {
+		return model.Admitted{}, err
+	}
+	avail, ok := vol.AsAvailable()
+	if !ok {
+		return model.Admitted{}, fmt.Errorf("%w: volume is not available", model.ErrFailedPrecondition)
+	}
+	busy, err := r.InFlight(ctx, req.Volume)
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	if busy {
+		return model.Admitted{}, fmt.Errorf("%w: volume has operations in flight", model.ErrFailedPrecondition)
+	}
+	labels, typ := vol.Labels, vol.Spec.Type
+	if req.SetLabels {
+		labels = req.Labels
+	}
+	if req.Type != model.VolumeTypeUnspecified && req.Type != typ {
+		rt, ok := s.block.(backend.Retyper)
+		if !ok {
+			return model.Admitted{}, fmt.Errorf("%w: this backend cannot change a volume type", model.ErrInvalidArgument)
+		}
+		if err := rt.Retype(typ, req.Type); err != nil {
+			return model.Admitted{}, fmt.Errorf("%w: %w", model.ErrInvalidArgument, err)
+		}
+		typ = req.Type
+	}
+	return avail.Modify(st, labels, typ)
 }
 
 func (s *Service) runVolumeExpansion(ctx context.Context, op model.Operation, w model.VolumeExpansion) error {

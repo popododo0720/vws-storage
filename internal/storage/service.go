@@ -238,6 +238,8 @@ func (s *Service) admit(ctx context.Context, r store.Reader, st model.Start, req
 		return s.admitDeleteVolume(ctx, r, st, req)
 	case model.ExpandVolumeRequest:
 		return s.admitExpandVolume(ctx, r, st, req)
+	case model.ModifyVolumeRequest:
+		return s.admitModifyVolume(ctx, r, st, req)
 	case model.CreateSnapshotRequest:
 		return s.admitCreateSnapshot(ctx, r, st, req)
 	case model.DeleteSnapshotRequest:
