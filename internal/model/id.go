@@ -49,7 +49,8 @@ func (r Region) IsZero() bool { return r.s == "" }
 // ImageName is a compute image: projects/{project}/regions/{region}/images/{image}.
 // Compute owns the image. Storage keeps the name as desired state and never
 // reads it. ImageName is neither a Key nor a Ref: no store row is keyed by it
-// and no operation holds it. Its project is not this process's to allow or deny.
+// and no operation holds it. A volume may only name an image of its own
+// project (#89); there are no public images yet.
 type ImageName struct{ s string }
 
 // ParseImageName validates the full name. Every segment uses the resource id
@@ -68,6 +69,22 @@ func (n ImageName) String() string { return n.s }
 
 // IsZero reports whether n is unset.
 func (n ImageName) IsZero() bool { return n.s == "" }
+
+// Project returns the project segment. Zero for the zero name.
+func (n ImageName) Project() Project { return Project{s: n.segment(1)} }
+
+// Region returns the region segment. Zero for the zero name.
+func (n ImageName) Region() Region { return Region{s: n.segment(3)} }
+
+// ID returns the image id, the last segment. Empty for the zero name.
+func (n ImageName) ID() string { return n.segment(5) }
+
+func (n ImageName) segment(i int) string {
+	if n.s == "" {
+		return ""
+	}
+	return strings.Split(n.s, "/")[i]
+}
 
 func scopedName(p Project, collection, id string) string {
 	if id == "" {
