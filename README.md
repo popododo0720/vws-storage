@@ -206,7 +206,7 @@ A read that races a committed write returns either the old record or the new one
 
 Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `2d8a7e9`).
 
-vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
+Once vws-proto is public, remove the replace and require a tagged version.
 
 Project comes from each request name. `-projects` restricts which projects this process serves; empty accepts any valid id. The same volume id under two projects is two rows. Bucket and snapshot regions come from the request and are stored. Volume zones come from `-zones`.
 
