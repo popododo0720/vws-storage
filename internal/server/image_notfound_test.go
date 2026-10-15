@@ -30,9 +30,6 @@ const (
 
 var imageDataSourceGVR = schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datasources"}
 
-// Absent, another project's, and another region's images are one operation
-// error: NOT_FOUND, and one message. The message names only the image the
-// caller asked for.
 func TestRefusedImageCloneOperationIsNotFound(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}: "VirtualMachineList",

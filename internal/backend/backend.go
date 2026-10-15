@@ -102,16 +102,14 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
-// MissingImageError is a clone the caller cannot have. Image is the name
-// the caller asked for. The error has no field for why: a missing image,
-// another project's image, and another region's image are this same value.
+// MissingImageError is an image the caller cannot clone. The text is the
+// client message. There is no reason field.
 type MissingImageError struct{ Image model.ImageName }
 
 func (e *MissingImageError) Error() string { return "image " + e.Image.String() + " not found" }
 
 func (e *MissingImageError) Unwrap() error { return ErrNotFound }
 
-// MissingImage returns a permanent MissingImageError.
 func MissingImage(img model.ImageName) error {
 	return Permanent(&MissingImageError{Image: img})
 }

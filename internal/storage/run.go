@@ -217,7 +217,6 @@ func statusOf(ctx context.Context, err error) model.Status {
 	if err == nil {
 		return model.Status{}
 	}
-	// Unlike other ErrNotFound values, this text names only the caller's image.
 	var missing *backend.MissingImageError
 	if errors.As(err, &missing) {
 		return model.Status{Code: model.CodeNotFound, Message: missing.Error()}
