@@ -17,9 +17,10 @@ import (
 // Delete of an absent id returns nil.
 // Expand grows a volume to size. The same size is a no-op, a smaller size is
 // Permanent(ErrInvalid), and an absent id is Permanent(ErrNotFound).
-// An image source is a compute image name on the spec. Storage has not checked
-// that the image exists, that the volume's project may use it, or that the
-// volume size covers it. The adapter decides those. Permanent still drops a
+// An image source is a compute image name on the spec. The server has checked
+// that the image is in the volume's project; storage has not checked that the
+// image exists, that it is the owner's (an image id is not unique across
+// projects), or that the volume size covers it. The adapter decides those. Permanent still drops a
 // volume whose create is undone.
 type Block interface {
 	CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error
