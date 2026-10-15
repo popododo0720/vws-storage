@@ -1101,7 +1101,8 @@ func TestUpdateVolumeExpandsAndRejectsShrink(t *testing.T) {
 		code codes.Code
 	}{
 		{"shrink", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 3}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.InvalidArgument},
-		{"labels", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}}}, codes.Unimplemented},
+		{"size and labels", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib", "labels"}}}, codes.InvalidArgument},
+		{"other path", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.image"}}}, codes.Unimplemented},
 		{"no mask", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}}, codes.Unimplemented},
 		{"stale etag", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Etag: "1", Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.Aborted},
 	} {
@@ -1116,6 +1117,80 @@ func TestUpdateVolumeExpandsAndRejectsShrink(t *testing.T) {
 	}
 	if after.GetSpec().GetSizeGib() != 5 {
 		t.Fatalf("size after rejects %d", after.GetSpec().GetSizeGib())
+	}
+}
+
+// The labels and spec.type masks store the new values in an operation that is
+// already done and return the volume; the size is untouched (#87).
+func TestUpdateVolumeSetsLabelsAndType(t *testing.T) {
+	vols, _, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	const name = "projects/local/zones/az-1/volumes/data-1"
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-1",
+		Volume: &storagev1.Volume{Labels: map[string]string{"old": "x"}, Spec: &storagev1.VolumeSpec{SizeGib: 2, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	req := &storagev1.UpdateVolumeRequest{
+		Volume: &storagev1.Volume{
+			Name: name, Labels: map[string]string{"team": "storage"},
+			Spec: &storagev1.VolumeSpec{SizeGib: 99, Type: storagev1.VolumeType_VOLUME_TYPE_STANDARD},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels", "spec.type"}},
+		RequestId:  "55555555-5555-4555-8555-555555555555",
+	}
+	op, err := vols.UpdateVolume(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !op.GetDone() || op.GetError() != nil {
+		t.Fatalf("operation %+v", op)
+	}
+	var body storagev1.Volume
+	if err := op.GetResponse().UnmarshalTo(&body); err != nil || body.GetLabels()["team"] != "storage" {
+		t.Fatalf("response %+v err %v", &body, err)
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vol.GetLabels()) != 1 || vol.GetLabels()["team"] != "storage" || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_STANDARD || vol.GetSpec().GetSizeGib() != 2 {
+		t.Fatalf("volume %+v", vol)
+	}
+	labelsOnly := &storagev1.UpdateVolumeRequest{
+		Volume:     &storagev1.Volume{Name: name, Etag: vol.GetEtag(), Spec: &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	}
+	if _, err := vols.UpdateVolume(ctx, labelsOnly); err != nil {
+		t.Fatal(err)
+	}
+	vol, err = vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vol.GetLabels()) != 0 || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_STANDARD {
+		t.Fatalf("labels mask touched the type or kept labels: %+v", vol)
+	}
+	for _, tc := range []struct {
+		name string
+		vol  *storagev1.Volume
+	}{
+		{"bad label", &storagev1.Volume{Name: name, Labels: map[string]string{"Bad Key": "v"}}},
+		{"unspecified type", &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{}}},
+	} {
+		paths := []string{"labels"}
+		if tc.name == "unspecified type" {
+			paths = []string{"spec.type"}
+		}
+		_, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{Volume: tc.vol, UpdateMask: &fieldmaskpb.FieldMask{Paths: paths}})
+		if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+			t.Fatalf("%s: code %v err %v", tc.name, st.Code(), err)
+		}
 	}
 }
 

@@ -99,16 +99,26 @@ func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeReq
 	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// UpdateVolume grows a volume. Only the mask spec or spec.size_gib is served.
-// A size below the stored one is INVALID_ARGUMENT, and the same size is a
-// succeeded operation. Labels and type are not storage transitions.
+// UpdateVolume grows a volume (mask spec or spec.size_gib) or sets its labels
+// and type (mask labels, spec.type, or both). A size below the stored one is
+// INVALID_ARGUMENT, and the same size is a succeeded operation. Labels and
+// type are stored at once and the operation is already done; a type the
+// backend cannot serve in place is INVALID_ARGUMENT. Size and labels/type in
+// one mask is INVALID_ARGUMENT: they are separate operations.
 func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest) (*longrunningpb.Operation, error) {
-	if !volumeMaskOK(in.GetUpdateMask().GetPaths()) {
+	grow, modify, ok := volumeMask(in.GetUpdateMask().GetPaths())
+	if !ok {
 		return nil, status.Error(codes.Unimplemented, "volume field mask")
+	}
+	if grow && len(modify) > 0 {
+		return nil, toStatus(invalidSpec("update_mask: size and labels or type are separate updates"))
 	}
 	id, zone, err := s.parseVolumeName(in.GetVolume().GetName())
 	if err != nil {
 		return nil, toStatus(err)
+	}
+	if len(modify) > 0 {
+		return s.modifyVolume(ctx, in, id, zone, modify)
 	}
 	size, err := model.VolumeSize(in.GetVolume().GetSpec().GetSizeGib())
 	if err != nil {
@@ -119,6 +129,32 @@ func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 		return nil, toStatus(err)
 	}
 	req := model.ExpandVolumeRequest{Volume: id, Zone: zone, Size: size, Expected: ver}
+	if in.GetValidateOnly() {
+		if err := req.Validate(); err != nil {
+			return nil, toStatus(err)
+		}
+		return doneOnly(s.volumeName(zone, id), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
+	}
+	return s.submit(ctx, in.GetRequestId(), req)
+}
+
+func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest, id model.VolumeID, zone model.Zone, paths map[string]bool) (*longrunningpb.Operation, error) {
+	ver, err := expectedVersion(in.GetVolume().GetEtag())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	req := model.ModifyVolumeRequest{Volume: id, Zone: zone, Expected: ver}
+	if paths["labels"] {
+		req.SetLabels = true
+		if req.Labels, err = model.ParseLabels(in.GetVolume().GetLabels()); err != nil {
+			return nil, toStatus(invalidSpec("labels"))
+		}
+	}
+	if paths["spec.type"] {
+		if req.Type, err = volumeType(in.GetVolume().GetSpec().GetType()); err != nil {
+			return nil, toStatus(invalidSpec("type"))
+		}
+	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
 			return nil, toStatus(err)
@@ -587,16 +623,24 @@ func (s *Server) submitUpload(ctx context.Context, requestID string, req model.R
 	return s.operation(ctx, op)
 }
 
-func volumeMaskOK(paths []string) bool {
+// volumeMask sorts the UpdateVolume mask into a size update and the labels
+// and type paths. An empty mask or any other path is not served.
+func volumeMask(paths []string) (grow bool, modify map[string]bool, ok bool) {
 	if len(paths) == 0 {
-		return false
+		return false, nil, false
 	}
+	modify = map[string]bool{}
 	for _, p := range paths {
-		if p != "spec" && p != "spec.size_gib" {
-			return false
+		switch p {
+		case "spec", "spec.size_gib":
+			grow = true
+		case "labels", "spec.type":
+			modify[p] = true
+		default:
+			return false, nil, false
 		}
 	}
-	return true
+	return grow, modify, true
 }
 
 func objectMaskOK(paths []string) bool {
