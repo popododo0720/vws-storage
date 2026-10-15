@@ -83,6 +83,8 @@ jobs:
             echo "::warning::bootstrap: the base guard-agents.sh has no verify-gate command; the gate starts after this merges"
             exit 0
           fi
+          # Labels as they are now: a re-run (verify-rerun) replays the original event, whose label list is stale.
+          LABELS=$(gh api "repos/${REPO}/issues/${NUMBER}/labels" --jq '[.[].name] | join(",")')
           text=$(mktemp)
           # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
           # imitates the marker is defanged so a comment cannot claim another author. Control characters are
