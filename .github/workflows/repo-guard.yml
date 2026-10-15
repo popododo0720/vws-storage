@@ -8,6 +8,9 @@ on:
   pull_request:
     # labeled/unlabeled re-run verify-gate when vws-verify approves or the label is removed (#249).
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  # A verdict comment that is added, edited or deleted re-runs verify-gate (verify-rerun below).
+  issue_comment:
+    types: [created, edited, deleted]
 
 permissions:
   contents: read
@@ -15,6 +18,7 @@ permissions:
 
 jobs:
   pr-hygiene:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +54,7 @@ jobs:
   # quietly weakening the script but not from rewriting this YAML. All bots share one account, so the actor
   # check cannot tell vws-verify from the PR author.
   verify-gate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,7 +95,7 @@ jobs:
   # A new push drops the approval label as well; the head check above already fails without it.
   # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
   verify-reset:
-    if: github.event.action == 'synchronize'
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -107,3 +112,29 @@ jobs:
             gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" >/dev/null
             echo "verify-approved removed: a new head needs a new verification"
           fi
+
+  # A comment event runs on the default branch, and its check would not attach to the PR head. So this job
+  # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
+  # the comments again. It checks out nothing and runs no PR code; it may only re-run jobs (actions: write).
+  verify-rerun:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run verify-gate for the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
+          run=$(gh api "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+          if [[ -z $run ]]; then echo "no pull_request run for ${head} yet"; exit 0; fi
+          job=$(gh api "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "verify-gate") | .id')
+          if [[ -z $job ]]; then echo "run ${run} has no verify-gate job"; exit 0; fi
+          gh api -X POST "repos/${REPO}/actions/jobs/${job}/rerun" >/dev/null ||
+            echo "::warning::verify-gate job ${job} could not be re-run (still running?)"
