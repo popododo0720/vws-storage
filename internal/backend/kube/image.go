@@ -31,10 +31,24 @@ const immediateBindAnnotation = "cdi.kubevirt.io/storage.bind.immediate.requeste
 // image projects/{project}/regions/{region}/images/{id} when both labels
 // match (#89). vws-compute sets them; a DataSource without them is no
 // project's image.
+//
+// LabelPublic=true marks a public image, as an AWS public AMI: every project
+// in the image's region may clone it, under its own project's image name.
 const (
 	LabelProject = "vws.io/project"
 	LabelRegion  = "vws.io/region"
+	LabelPublic  = "vws.io/public"
 )
+
+// cloneAllowed reports whether a DataSource with labels is the image img: its
+// project and region own it, or it is public and in img's region.
+func cloneAllowed(labels map[string]string, img model.ImageName) bool {
+	region := img.Region().String()
+	if labels[LabelRegion] != region {
+		return false
+	}
+	return labels[LabelProject] == img.Project().String() || labels[LabelPublic] == "true"
+}
 
 // imageVolume makes an image volume a DataVolume that clones the image.
 //
@@ -69,7 +83,8 @@ func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.V
 }
 
 // checkImageSource fails permanently when the image has no DataSource, the
-// DataSource belongs to another project or region, or the backend may not
+// DataSource belongs to another region, or to another project and is not
+// public, or the backend may not
 // clone from where it points. Absent and foreign read the same, so the
 // reason does not tell one project about another's images.
 func (b *Block) checkImageSource(ctx context.Context, img model.ImageName) error {
@@ -86,7 +101,7 @@ func (b *Block) checkImageSource(ctx context.Context, img model.ImageName) error
 	case err != nil:
 		return fmt.Errorf("kube: get data source: %w", err)
 	}
-	if l := ds.GetLabels(); l[LabelProject] != img.Project().String() || l[LabelRegion] != img.Region().String() {
+	if !cloneAllowed(ds.GetLabels(), img) {
 		return notFound
 	}
 	// CDI checks the namespace of the claim (or snapshot) the DataSource

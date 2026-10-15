@@ -320,8 +320,11 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 		if err != nil {
 			return model.CreateVolumeRequest{}, "", invalidID("image")
 		}
-		// Another project's image is reported as absent, so a caller cannot
-		// learn which images other projects have (#89).
+		// An image is addressed under the caller's own project, including a
+		// public image another project owns (vws-compute lists it there), so
+		// a name in another project is reported as absent and a caller cannot
+		// learn which images other projects have (#89). Whether the caller
+		// may clone the DataSource, owned or public, is the backend's check.
 		if img.Project() != project {
 			return model.CreateVolumeRequest{}, "", notFound("image")
 		}
