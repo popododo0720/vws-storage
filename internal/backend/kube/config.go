@@ -43,7 +43,11 @@ type Config struct {
 
 // DefaultConfig serves every type from the ceph-block classes in the VM namespace.
 func DefaultConfig() Config {
-	return Config{Namespace: DefaultNamespace, Classes: DefaultClasses(), SnapshotClass: DefaultSnapshotClass, VolumeMode: corev1.PersistentVolumeBlock,
+	return Config{
+		Namespace:         DefaultNamespace,
+		Classes:           DefaultClasses(),
+		SnapshotClass:     DefaultSnapshotClass,
+		VolumeMode:        corev1.PersistentVolumeBlock,
 		DataVolumeRetries: DefaultDataVolumeRetries, DataVolumeTimeout: DefaultDataVolumeTimeout,
 		ImageNamespace: DefaultImageNamespace,
 	}
