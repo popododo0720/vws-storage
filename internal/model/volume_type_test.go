@@ -146,3 +146,28 @@ func TestGP2CreateFingerprintMatchesThePreUpgradeSSDOne(t *testing.T) {
 		t.Fatalf("gp2 is %d, ssd was 2", mustType(t, "gp2"))
 	}
 }
+
+// A stored create operation keeps the IOPS and throughput it was admitted
+// with, so a worker that resumes it after a restart provisions the same
+// volume.
+func TestStoredCreateOperationKeepsPerformance(t *testing.T) {
+	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	vol := availableVolume(t, now)
+	vol.Spec.Type, vol.Spec.Size = mustType(t, "gp3"), 100*GiB
+	vol.Spec.Iops, vol.Spec.Throughput = 6000, 500
+	op := Operation{
+		ID: NewOperationID(), Work: VolumeCreation{Volume: vol.ID, Spec: vol.Spec}, State: OpRunning{}, Meta: fresh(now),
+	}
+	raw, err := MarshalRecord(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := got.(Operation).Work.(VolumeCreation)
+	if !ok || w.Spec.Iops != 6000 || w.Spec.Throughput != 500 || !SameRecord(got, op) {
+		t.Fatalf("op %+v from row %s", got, raw)
+	}
+}

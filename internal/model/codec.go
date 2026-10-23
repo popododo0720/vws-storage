@@ -203,13 +203,19 @@ type workWire struct {
 	Replaces    string            `json:"replaces,omitempty"`
 	Reclaim     bool              `json:"reclaim,omitempty"`
 	Deadline    int64             `json:"deadline"`
+	// Create-volume performance. Absent in operations written before #124 r1.
+	Iops       int64 `json:"iops,omitempty"`
+	Throughput int64 `json:"throughput_mibps,omitempty"`
 }
 
 func workTo(w Work) (workWire, error) {
 	switch w := w.(type) {
 	case VolumeCreation:
 		spec := specTo(w.Spec)
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type, Source: spec.Source}, nil
+		return workWire{
+			Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type,
+			Source: spec.Source, Iops: spec.Iops, Throughput: spec.Throughput,
+		}, nil
 	case VolumeDeletion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Zone: w.Zone.String()}, nil
 	case VolumeExpansion:
@@ -250,7 +256,9 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		spec, err := specFrom(specWire{Size: w.Size, Zone: w.Zone, Type: w.Type, Source: w.Source})
+		spec, err := specFrom(specWire{
+			Size: w.Size, Zone: w.Zone, Type: w.Type, Source: w.Source, Iops: w.Iops, Throughput: w.Throughput,
+		})
 		if err != nil {
 			return nil, err
 		}
