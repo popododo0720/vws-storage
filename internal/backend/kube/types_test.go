@@ -280,3 +280,16 @@ func TestRetypeNeedsTheSameVolumeMode(t *testing.T) {
 		t.Fatalf("same class and mode: %v", err)
 	}
 }
+
+// A claim's volume-type annotation picks its snapshot class and is not
+// rewritten on a retype, so a retype to a type with another snapshot class
+// is refused rather than leaving snapshots on the old class.
+func TestRetypeNeedsTheSameSnapshotClass(t *testing.T) {
+	gp3 := vtype(t, "gp3")
+	b := newBlock(kube.DefaultClasses()).
+		WithClass(gp3, kube.Class{StorageClass: kube.DefaultClass, SnapshotClass: "fast-snap"})
+	err := b.Retype(vtype(t, "gp2"), gp3)
+	if !errors.Is(err, backend.ErrInvalid) || !strings.Contains(err.Error(), "VolumeSnapshotClass") {
+		t.Fatalf("gp2 to gp3 with another snapshot class: %v", err)
+	}
+}

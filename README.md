@@ -109,7 +109,7 @@ The API serves the seven EBS types: `standard`, `gp2`, `gp3`, `io1`, `io2`, `st1
 -kube-volume-type=st1=nfs-csi/Filesystem/nfs-snap
 ```
 
-A type with no mapping is `INVALID_ARGUMENT` (`INVALID_SPEC`, "volume type ... is unsupported") before anything is written: no row, no operation, no claim. EC2 calls this `UnknownVolumeType`. Readiness checks every mapping: each StorageClass exists, a Block-only provisioner is not mapped as Filesystem, each snapshot class's driver provisions its StorageClasses, and the CDI DataVolume API exists when a type is Filesystem. A retype (`UpdateVolume` `spec.type`) needs the same StorageClass and `volumeMode`.
+A type with no mapping is `INVALID_ARGUMENT` (`INVALID_SPEC`, "volume type ... is unsupported") before anything is written: no row, no operation, no claim. EC2 calls this `UnknownVolumeType`. Readiness checks every mapping: each StorageClass exists, a Block-only provisioner is not mapped as Filesystem, each snapshot class's driver provisions its StorageClasses, and the CDI DataVolume API exists when a type is Filesystem. A retype (`UpdateVolume` `spec.type`) needs the same StorageClass, `volumeMode` and VolumeSnapshotClass.
 
 IOPS and throughput follow the EC2 rules ([EBS volume types](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volume-types.html)). Anything else is `INVALID_ARGUMENT`:
 

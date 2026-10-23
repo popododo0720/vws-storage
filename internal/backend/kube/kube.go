@@ -159,8 +159,9 @@ func (b *Block) ServeType(t model.VolumeType) error {
 }
 
 // Retype implements backend.Retyper. A claim's StorageClass and volumeMode
-// cannot change, so a type change is allowed only when both types map to
-// the same class and mode.
+// cannot change, and its annotation keeps the snapshot class of its type, so a
+// type change is allowed only when both types map to the same class, mode and
+// snapshot class.
 func (b *Block) Retype(from, to model.VolumeType) error {
 	cf, okf := b.classFor(from)
 	ct, okt := b.classFor(to)
@@ -173,6 +174,9 @@ func (b *Block) Retype(from, to model.VolumeType) error {
 	case cf.VolumeMode != ct.VolumeMode:
 		return fmt.Errorf("%w: volume type %q is volumeMode %s, and a claim's volumeMode cannot change",
 			backend.ErrInvalid, to, ct.VolumeMode)
+	case cf.SnapshotClass != ct.SnapshotClass:
+		return fmt.Errorf("%w: volume type %q uses VolumeSnapshotClass %q, and a claim keeps the snapshot class of its type",
+			backend.ErrInvalid, to, ct.SnapshotClass)
 	}
 	return nil
 }
