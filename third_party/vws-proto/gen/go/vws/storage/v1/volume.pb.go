@@ -26,12 +26,32 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// VolumeType is the EBS volume type. Each value is the EC2 VolumeType string
+// of the same name (VOLUME_TYPE_GP3 is "gp3").
 type VolumeType int32
 
 const (
 	VolumeType_VOLUME_TYPE_UNSPECIFIED VolumeType = 0
-	VolumeType_VOLUME_TYPE_STANDARD    VolumeType = 1
-	VolumeType_VOLUME_TYPE_SSD         VolumeType = 2
+	// Magnetic, EC2 "standard".
+	VolumeType_VOLUME_TYPE_STANDARD VolumeType = 1
+	// Deprecated: the old generic SSD tier, kept for wire compatibility.
+	// Clients send one of the EBS values below instead. Servers read a stored
+	// SSD volume as GP2 unless the admin maps it otherwise (vws-storage#123).
+	//
+	// Deprecated: Marked as deprecated in vws/storage/v1/volume.proto.
+	VolumeType_VOLUME_TYPE_SSD VolumeType = 2
+	// General Purpose SSD, EC2 "gp2".
+	VolumeType_VOLUME_TYPE_GP2 VolumeType = 3
+	// General Purpose SSD, EC2 "gp3".
+	VolumeType_VOLUME_TYPE_GP3 VolumeType = 4
+	// Provisioned IOPS SSD, EC2 "io1".
+	VolumeType_VOLUME_TYPE_IO1 VolumeType = 5
+	// Provisioned IOPS SSD, EC2 "io2".
+	VolumeType_VOLUME_TYPE_IO2 VolumeType = 6
+	// Throughput Optimized HDD, EC2 "st1". Not a boot volume.
+	VolumeType_VOLUME_TYPE_ST1 VolumeType = 7
+	// Cold HDD, EC2 "sc1". Not a boot volume.
+	VolumeType_VOLUME_TYPE_SC1 VolumeType = 8
 )
 
 // Enum value maps for VolumeType.
@@ -40,11 +60,23 @@ var (
 		0: "VOLUME_TYPE_UNSPECIFIED",
 		1: "VOLUME_TYPE_STANDARD",
 		2: "VOLUME_TYPE_SSD",
+		3: "VOLUME_TYPE_GP2",
+		4: "VOLUME_TYPE_GP3",
+		5: "VOLUME_TYPE_IO1",
+		6: "VOLUME_TYPE_IO2",
+		7: "VOLUME_TYPE_ST1",
+		8: "VOLUME_TYPE_SC1",
 	}
 	VolumeType_value = map[string]int32{
 		"VOLUME_TYPE_UNSPECIFIED": 0,
 		"VOLUME_TYPE_STANDARD":    1,
 		"VOLUME_TYPE_SSD":         2,
+		"VOLUME_TYPE_GP2":         3,
+		"VOLUME_TYPE_GP3":         4,
+		"VOLUME_TYPE_IO1":         5,
+		"VOLUME_TYPE_IO2":         6,
+		"VOLUME_TYPE_ST1":         7,
+		"VOLUME_TYPE_SC1":         8,
 	}
 )
 
@@ -195,7 +227,8 @@ func (x *Volume) GetDeleteTime() *timestamppb.Timestamp {
 
 // VolumeSpec is the desired disk.
 // size_gib must be at least 1 and may only grow.
-// type is STANDARD or SSD, and type and source are immutable.
+// type is one of the EBS volume types (GP2, GP3, IO1, IO2, ST1, SC1,
+// STANDARD), and type and source are immutable.
 // An unset source is a blank volume.
 // size_gib must be at least the source image or snapshot size.
 type VolumeSpec struct {
@@ -206,9 +239,16 @@ type VolumeSpec struct {
 	//
 	//	*VolumeSpec_Image
 	//	*VolumeSpec_Snapshot
-	Source        isVolumeSpec_Source `protobuf_oneof:"source"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Source isVolumeSpec_Source `protobuf_oneof:"source"`
+	// Provisioned IOPS, as in EC2 CreateVolume Iops.
+	// GP3: 3000-80000, 0 uses 3000. IO1: 100-64000, required.
+	// IO2: 100-256000, required. Every other type: must be 0.
+	Iops int64 `protobuf:"varint,5,opt,name=iops,proto3" json:"iops,omitempty"`
+	// Provisioned throughput in MiB/s, as in EC2 CreateVolume Throughput.
+	// GP3: 125-2000, 0 uses 125. Every other type: must be 0.
+	ThroughputMibps int64 `protobuf:"varint,6,opt,name=throughput_mibps,json=throughputMibps,proto3" json:"throughput_mibps,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *VolumeSpec) Reset() {
@@ -278,6 +318,20 @@ func (x *VolumeSpec) GetSnapshot() string {
 		}
 	}
 	return ""
+}
+
+func (x *VolumeSpec) GetIops() int64 {
+	if x != nil {
+		return x.Iops
+	}
+	return 0
+}
+
+func (x *VolumeSpec) GetThroughputMibps() int64 {
+	if x != nil {
+		return x.ThroughputMibps
+	}
+	return 0
 }
 
 type isVolumeSpec_Source interface {
@@ -885,7 +939,7 @@ const file_vws_storage_v1_volume_proto_rawDesc = "" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01:Z\xeaAW\n" +
-	"\x12vws.storage/Volume\x120projects/{project}/zones/{zone}/volumes/{volume}*\avolumes2\x06volume\"\xda\x01\n" +
+	"\x12vws.storage/Volume\x120projects/{project}/zones/{zone}/volumes/{volume}*\avolumes2\x06volume\"\x99\x02\n" +
 	"\n" +
 	"VolumeSpec\x12\x1e\n" +
 	"\bsize_gib\x18\x01 \x01(\x03B\x03\xe0A\x02R\asizeGib\x123\n" +
@@ -893,7 +947,9 @@ const file_vws_storage_v1_volume_proto_rawDesc = "" +
 	"\x05image\x18\x03 \x01(\tB\x19\xe0A\x05\xfaA\x13\n" +
 	"\x11vws.compute/ImageH\x00R\x05image\x12:\n" +
 	"\bsnapshot\x18\x04 \x01(\tB\x1c\xe0A\x05\xfaA\x16\n" +
-	"\x14vws.storage/SnapshotH\x00R\bsnapshotB\b\n" +
+	"\x14vws.storage/SnapshotH\x00R\bsnapshot\x12\x12\n" +
+	"\x04iops\x18\x05 \x01(\x03R\x04iops\x12)\n" +
+	"\x10throughput_mibps\x18\x06 \x01(\x03R\x0fthroughputMibpsB\b\n" +
 	"\x06source\"\xdf\x01\n" +
 	"\fVolumeStatus\x128\n" +
 	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x125\n" +
@@ -944,12 +1000,18 @@ const file_vws_storage_v1_volume_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x03 \x01(\tB\v\xe0A\x01\xe2\x8c\xcf\xd7\b\x02\b\x01R\trequestId\"L\n" +
 	"\x1aReportVolumeStatusResponse\x12.\n" +
-	"\x06volume\x18\x01 \x01(\v2\x16.vws.storage.v1.VolumeR\x06volume*X\n" +
+	"\x06volume\x18\x01 \x01(\v2\x16.vws.storage.v1.VolumeR\x06volume*\xda\x01\n" +
 	"\n" +
 	"VolumeType\x12\x1b\n" +
 	"\x17VOLUME_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
-	"\x14VOLUME_TYPE_STANDARD\x10\x01\x12\x13\n" +
-	"\x0fVOLUME_TYPE_SSD\x10\x022\x9a\b\n" +
+	"\x14VOLUME_TYPE_STANDARD\x10\x01\x12\x17\n" +
+	"\x0fVOLUME_TYPE_SSD\x10\x02\x1a\x02\b\x01\x12\x13\n" +
+	"\x0fVOLUME_TYPE_GP2\x10\x03\x12\x13\n" +
+	"\x0fVOLUME_TYPE_GP3\x10\x04\x12\x13\n" +
+	"\x0fVOLUME_TYPE_IO1\x10\x05\x12\x13\n" +
+	"\x0fVOLUME_TYPE_IO2\x10\x06\x12\x13\n" +
+	"\x0fVOLUME_TYPE_ST1\x10\a\x12\x13\n" +
+	"\x0fVOLUME_TYPE_SC1\x10\b2\x9a\b\n" +
 	"\rVolumeService\x12v\n" +
 	"\tGetVolume\x12 .vws.storage.v1.GetVolumeRequest\x1a\x16.vws.storage.v1.Volume\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{name=projects/*/zones/*/volumes/*}\x12\x87\x01\n" +
 	"\vListVolumes\x12\".vws.storage.v1.ListVolumesRequest\x1a#.vws.storage.v1.ListVolumesResponse\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{parent=projects/*/zones/*}/volumes\x12\xc6\x01\n" +

@@ -21,6 +21,8 @@ option java_package = "dev.vws.common.v1";
 //	RESOURCE_EXHAUSTED     QUOTA_EXCEEDED
 //	UNAVAILABLE            RECONCILIATION_FAILED when retryable is true
 //	INTERNAL               RECONCILIATION_FAILED when retryable is false
+//	UNAUTHENTICATED        INVALID_CREDENTIALS, MFA_REQUIRED, TOKEN_EXPIRED
+//	PERMISSION_DENIED      ACCESS_DENIED
 enum ErrorReason {
   ERROR_REASON_UNSPECIFIED = 0;
   ERROR_REASON_RESOURCE_NOT_FOUND = 1;
@@ -34,6 +36,14 @@ enum ErrorReason {
   ERROR_REASON_DEPENDENCY_MISSING = 9;
   ERROR_REASON_QUOTA_EXCEEDED = 10;
   ERROR_REASON_RECONCILIATION_FAILED = 11;
+  // Unknown or inactive key, wrong password or MFA code, unknown session.
+  ERROR_REASON_INVALID_CREDENTIALS = 12;
+  // The user has an enabled MFA device and no code was sent.
+  ERROR_REASON_MFA_REQUIRED = 13;
+  // A temporary credential or session past its expiry.
+  ERROR_REASON_TOKEN_EXPIRED = 14;
+  // An IAM policy denied the call (AWS AccessDenied).
+  ERROR_REASON_ACCESS_DENIED = 15;
 }
 
 // ReconciliationFailure is an extra detail on google.rpc.Status when a node

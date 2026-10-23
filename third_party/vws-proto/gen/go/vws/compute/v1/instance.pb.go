@@ -205,7 +205,7 @@ func (x *Instance) GetDeleteTime() *timestamppb.Timestamp {
 // - key_pair, when set, is in the region that contains the instance zone
 type InstanceSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Catalog name such as "n1.medium". Grammar: [a-z]([a-z0-9.-]{0,61}[a-z0-9])?
+	// Catalog name: vws.small, vws.medium, vws.large, or vws.xlarge. Grammar: [a-z]([a-z0-9.-]{0,61}[a-z0-9])?
 	MachineType string `protobuf:"bytes,1,opt,name=machine_type,json=machineType,proto3" json:"machine_type,omitempty"`
 	// RUNNING or STOPPED. The node starts or stops the machine to match.
 	Power InstancePower `protobuf:"varint,2,opt,name=power,proto3,enum=vws.compute.v1.InstancePower" json:"power,omitempty"`

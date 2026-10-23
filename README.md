@@ -204,7 +204,7 @@ A read that races a committed write returns either the old record or the new one
 
 ## Proto
 
-Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `2d8a7e9`).
+Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (copied from tag `v0.5.0`, commit `3fbc83c`).
 
 Once vws-proto is public, remove the replace and require a tagged version.
 
