@@ -62,7 +62,9 @@ func cloneAllowed(labels map[string]string, img model.ImageName) bool {
 // refuse later, so the reason is the backend's own sentence: the DataSource
 // must exist, and the caller must be allowed to clone from its source
 // namespace (create datavolumes/source, or create pods, there).
-func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec, class string, img model.ImageName) error {
+func (b *Block) imageVolume(
+	ctx context.Context, id model.VolumeID, spec model.VolumeSpec, c Class, img model.ImageName,
+) error {
 	name := img.ID()
 	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
 		return backend.Permanent(fmt.Errorf("%w: image id %q is not an object name: %s", backend.ErrInvalid, name, errs[0]))
@@ -74,12 +76,12 @@ func (b *Block) imageVolume(ctx context.Context, id model.VolumeID, spec model.V
 		field: "sourceRef",
 		value: map[string]any{"kind": "DataSource", "name": name, "namespace": b.imageNS},
 		key:   img.String(),
-		mode:  b.mode,
+		mode:  c.VolumeMode,
 		annotations: map[string]string{
 			immediateBindAnnotation: "true",
 		},
 	}
-	return b.dataVolume(ctx, id, spec, class, src)
+	return b.dataVolume(ctx, id, spec, c.StorageClass, src)
 }
 
 // checkImageSource fails permanently when the image has no DataSource, the

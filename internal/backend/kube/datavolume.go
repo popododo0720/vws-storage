@@ -147,11 +147,12 @@ func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec mo
 			"name":      name,
 			"namespace": b.ns,
 			"annotations": map[string]any{
-				VolumeAnnotation:    id.String(),
-				zoneAnnotation:      spec.Zone.String(),
-				dvAttemptAnnotation: strconv.Itoa(r.attempt),
-				dvFirstAnnotation:   r.first.UTC().Format(time.RFC3339Nano),
-				sourceAnnotation:    src.key,
+				VolumeAnnotation:     id.String(),
+				zoneAnnotation:       spec.Zone.String(),
+				dvAttemptAnnotation:  strconv.Itoa(r.attempt),
+				dvFirstAnnotation:    r.first.UTC().Format(time.RFC3339Nano),
+				sourceAnnotation:     src.key,
+				VolumeTypeAnnotation: spec.Type.String(),
 				// A completed DataVolume must stay: it owns the claim.
 				"cdi.kubevirt.io/storage.deleteAfterCompletion": "false",
 			},

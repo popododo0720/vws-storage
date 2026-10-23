@@ -28,15 +28,16 @@ func snapshotName(id model.SnapshotID) string {
 // CreateSnapshot creates the VolumeSnapshot and returns ErrBusy until
 // status.readyToUse is true, so the engine retries until the snapshot is usable.
 func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source model.VolumeID) error {
-	if b.snapshotClass == "" {
-		return backend.Permanent(fmt.Errorf("%w: this storage backend has no VolumeSnapshotClass", backend.ErrInvalid))
-	}
 	claim, err := b.kc.CoreV1().PersistentVolumeClaims(b.ns).Get(ctx, pvcName(source), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return backend.Permanent(fmt.Errorf("%w: volume", backend.ErrNotFound))
 	}
 	if err != nil {
 		return fmt.Errorf("kube: get claim: %w", err)
+	}
+	snapshotClass, err := b.snapshotClassFor(ctx, claim)
+	if err != nil {
+		return err
 	}
 	snaps := b.dyn.Resource(snapshotGVR).Namespace(b.ns)
 	vs := &unstructured.Unstructured{Object: map[string]any{
@@ -52,7 +53,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 			},
 		},
 		"spec": map[string]any{
-			"volumeSnapshotClassName": b.snapshotClass,
+			"volumeSnapshotClassName": snapshotClass,
 			"source":                  map[string]any{"persistentVolumeClaimName": pvcName(source)},
 		},
 	}}
@@ -67,6 +68,60 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 		return fmt.Errorf("kube: create snapshot: %w", err)
 	}
 	return b.ready(ctx, cur)
+}
+
+// snapshotClassFor is the VolumeSnapshotClass of the claim's volume type.
+// The type is the claim's annotation, else its DataVolume's. A claim from
+// before vws-storage#123 has neither: then it is the class every type of
+// the claim's StorageClass shares, and when they differ it fails rather
+// than guess. No class means the type takes no snapshots.
+func (b *Block) snapshotClassFor(ctx context.Context, claim *corev1.PersistentVolumeClaim) (string, error) {
+	name := claim.Annotations[VolumeTypeAnnotation]
+	if name == "" {
+		dv, err := b.dyn.Resource(dataVolumeGVR).Namespace(b.ns).Get(ctx, claim.Name, metav1.GetOptions{})
+		if err == nil {
+			name = dv.GetAnnotations()[VolumeTypeAnnotation]
+		}
+	}
+	none := backend.Permanent(fmt.Errorf("%w: this storage backend has no VolumeSnapshotClass for the volume",
+		backend.ErrInvalid))
+	if name != "" {
+		typ, err := model.ParseVolumeType(name)
+		if err != nil {
+			return "", backend.Permanent(fmt.Errorf("%w: claim annotation %s=%q",
+				backend.ErrInvalid, VolumeTypeAnnotation, name))
+		}
+		c, ok := b.classFor(typ)
+		if !ok {
+			return "", backend.Permanent(fmt.Errorf("%w: no StorageClass is mapped to volume type %s", backend.ErrInvalid, typ))
+		}
+		if c.SnapshotClass == "" {
+			return "", none
+		}
+		return c.SnapshotClass, nil
+	}
+	var sc string
+	if claim.Spec.StorageClassName != nil {
+		sc = *claim.Spec.StorageClassName
+	}
+	found := map[string]bool{}
+	for _, c := range b.mapped() {
+		if c.StorageClass == sc {
+			found[c.SnapshotClass] = true
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return "", backend.Permanent(fmt.Errorf(
+			"%w: the claim has no volume type, and the types of StorageClass %q have different VolumeSnapshotClasses",
+			backend.ErrInvalid, sc))
+	case len(found) == 0 || found[""]:
+		return "", none
+	}
+	for class := range found {
+		return class, nil
+	}
+	return "", none
 }
 
 // claimMode is the claim's volumeMode. An unset mode is Filesystem.

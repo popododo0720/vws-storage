@@ -2,6 +2,7 @@ package kube
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,7 +26,11 @@ type Config struct {
 	// Kubeconfig is a kubeconfig path. Empty means in-cluster credentials.
 	Kubeconfig string
 	Namespace  string
-	Classes    Classes
+	// Classes maps types to StorageClasses with the backend-wide mode and
+	// snapshot class. Types adds or replaces a type with its own Class
+	// (-kube-volume-type). A type in neither is refused (vws-storage#123).
+	Classes Classes
+	Types   map[model.VolumeType]Class
 	// SnapshotClass is the VolumeSnapshotClass. Empty disables snapshots.
 	SnapshotClass string
 	// VolumeMode is the volumeMode of new empty volumes: Block (default) or
@@ -70,8 +75,13 @@ func Open(c Config) (*Block, error) {
 		return nil, fmt.Errorf("kube: volume mode %q is not Block or Filesystem", c.VolumeMode)
 	}
 	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeGP2} {
-		if c.Classes[typ] == "" {
+		if c.Classes[typ] == "" && c.Types[typ].StorageClass == "" {
 			return nil, fmt.Errorf("kube: no StorageClass for volume type %q", typ)
+		}
+	}
+	for typ, tc := range c.Types {
+		if err := checkClass(typ, tc); err != nil {
+			return nil, err
 		}
 	}
 	rc, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig)
@@ -86,5 +96,51 @@ func Open(c Config) (*Block, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kube: %w", err)
 	}
-	return NewBlock(kc, dyn, c.Namespace, c.Classes, c.SnapshotClass).WithVolumeMode(c.VolumeMode).WithDataVolumeRetry(c.DataVolumeRetries, c.DataVolumeTimeout).WithImageNamespace(c.ImageNamespace), nil
+	b := NewBlock(kc, dyn, c.Namespace, c.Classes, c.SnapshotClass).
+		WithVolumeMode(c.VolumeMode).
+		WithDataVolumeRetry(c.DataVolumeRetries, c.DataVolumeTimeout).
+		WithImageNamespace(c.ImageNamespace)
+	for typ, tc := range c.Types {
+		b.WithClass(typ, tc)
+	}
+	return b, nil
+}
+
+func checkClass(typ model.VolumeType, c Class) error {
+	if !typ.Valid() {
+		return fmt.Errorf("kube: volume type %d is not an EBS type", typ)
+	}
+	if c.StorageClass == "" {
+		return fmt.Errorf("kube: volume type %s has no StorageClass", typ)
+	}
+	switch c.VolumeMode {
+	case "", corev1.PersistentVolumeBlock, corev1.PersistentVolumeFilesystem:
+		return nil
+	default:
+		return fmt.Errorf("kube: volume type %s: volume mode %q is not Block or Filesystem", typ, c.VolumeMode)
+	}
+}
+
+// ParseTypeClass parses TYPE=STORAGECLASS[/VOLUMEMODE[/SNAPSHOTCLASS]], the
+// -kube-volume-type flag. TYPE is an EC2 volume type name; an empty
+// VOLUMEMODE or SNAPSHOTCLASS takes the backend-wide value.
+func ParseTypeClass(s string) (model.VolumeType, Class, error) {
+	name, rest, ok := strings.Cut(s, "=")
+	if !ok {
+		return 0, Class{}, fmt.Errorf("kube: volume type mapping %q is not TYPE=STORAGECLASS[/VOLUMEMODE[/SNAPSHOTCLASS]]", s)
+	}
+	typ, err := model.ParseVolumeType(name)
+	if err != nil {
+		return 0, Class{}, fmt.Errorf("kube: volume type mapping %q: unknown volume type %q", s, name)
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) > 3 {
+		return 0, Class{}, fmt.Errorf("kube: volume type mapping %q has more than three fields", s)
+	}
+	parts = append(parts, "", "")
+	c := Class{StorageClass: parts[0], VolumeMode: corev1.PersistentVolumeMode(parts[1]), SnapshotClass: parts[2]}
+	if err := checkClass(typ, c); err != nil {
+		return 0, Class{}, err
+	}
+	return typ, c, nil
 }

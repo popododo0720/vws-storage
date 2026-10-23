@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -52,7 +53,12 @@ func run(args []string) error {
 	fs.StringVar(&kubeCfg.Kubeconfig, "kube-config", "", "kubeconfig path for -block-backend=kube; empty uses in-cluster credentials")
 	fs.StringVar(&kubeCfg.Namespace, "kube-namespace", kubeCfg.Namespace, "namespace for volume claims and snapshots")
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
-	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for gp2 volumes, the type pre-#123 ssd volumes read as")
+	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass,
+		"StorageClass for gp2 volumes, the type pre-#123 ssd volumes read as")
+	types := typeFlags{}
+	fs.Var(types, "kube-volume-type", "TYPE=STORAGECLASS[/VOLUMEMODE[/SNAPSHOTCLASS]] maps one EBS volume type "+
+		"(standard, gp2, gp3, io1, io2, st1, sc1); repeat per type. Empty fields take -kube-volume-mode and "+
+		"-kube-snapshot-class. An unmapped type is refused")
 	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots; empty disables snapshots")
 	fs.IntVar(&kubeCfg.DataVolumeRetries, "kube-dv-retries", kubeCfg.DataVolumeRetries, "times a Failed CDI DataVolume (Filesystem or image volume) is deleted and made again")
 	fs.DurationVar(&kubeCfg.DataVolumeTimeout, "kube-dv-timeout", kubeCfg.DataVolumeTimeout, "time from a volume's first CDI DataVolume to Succeeded (Filesystem or image volume)")
@@ -78,7 +84,7 @@ func run(args []string) error {
 		return err
 	}
 	kubeCfg.VolumeMode = corev1.PersistentVolumeMode(*volumeMode)
-	kubeCfg.Classes = kube.Classes{model.VolumeTypeStandard: *standardClass, model.VolumeTypeGP2: *ssdClass}
+	applyTypes(&kubeCfg, *standardClass, *ssdClass, types)
 	block, err := openBlock(*blockBackend, kubeCfg)
 	if err != nil {
 		return err
@@ -305,5 +311,40 @@ func logProvisioners(ctx context.Context, block backend.Block) {
 	}
 	for class, provisioner := range p.Provisioners(ctx) {
 		slog.InfoContext(ctx, "storage class", slog.String("class", class), slog.String("provisioner", provisioner))
+	}
+}
+
+// typeFlags collects -kube-volume-type values, one per type.
+type typeFlags map[model.VolumeType]kube.Class
+
+func (f typeFlags) String() string {
+	parts := make([]string, 0, len(f))
+	for t, c := range f {
+		parts = append(parts, fmt.Sprintf("%s=%s/%s/%s", t, c.StorageClass, c.VolumeMode, c.SnapshotClass))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func (f typeFlags) Set(v string) error {
+	t, c, err := kube.ParseTypeClass(v)
+	if err != nil {
+		return err
+	}
+	if _, dup := f[t]; dup {
+		return fmt.Errorf("volume type %s is mapped twice", t)
+	}
+	f[t] = c
+	return nil
+}
+
+// applyTypes sets the kube type mapping: the legacy flags map standard and
+// gp2 (pre-#123 ssd volumes read as gp2) with the backend-wide mode and
+// snapshot class, and each -kube-volume-type adds or replaces one type.
+func applyTypes(cfg *kube.Config, standard, gp2 string, types typeFlags) {
+	cfg.Classes = kube.Classes{model.VolumeTypeStandard: standard, model.VolumeTypeGP2: gp2}
+	cfg.Types = map[model.VolumeType]kube.Class{}
+	for t, c := range types {
+		cfg.Types[t] = c
 	}
 }

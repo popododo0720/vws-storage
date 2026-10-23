@@ -11,7 +11,11 @@ const (
 	// SnapshotAnnotation holds the VWS snapshot name on the VolumeSnapshot.
 	SnapshotAnnotation = annotationPrefix + "snapshot"
 	zoneAnnotation     = annotationPrefix + "zone"
-	sourceAnnotation   = annotationPrefix + "source"
+	// VolumeTypeAnnotation on a claim or DataVolume is the EC2 volume type it
+	// was made for, which picks its VolumeSnapshotClass. Claims made before
+	// vws-storage#123 have none.
+	VolumeTypeAnnotation = annotationPrefix + "volume-type"
+	sourceAnnotation     = annotationPrefix + "source"
 	// errorSeenAnnotation holds when a VolumeSnapshot first reported status.error.
 	errorSeenAnnotation = annotationPrefix + "error-first-seen"
 	// sourceModeAnnotation on a VolumeSnapshot is the volumeMode of the claim
