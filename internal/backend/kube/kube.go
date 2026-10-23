@@ -70,8 +70,9 @@ type Block struct {
 }
 
 var (
-	_ backend.Block   = (*Block)(nil)
-	_ backend.Retyper = (*Block)(nil)
+	_ backend.Block      = (*Block)(nil)
+	_ backend.Retyper    = (*Block)(nil)
+	_ backend.TypeServer = (*Block)(nil)
 )
 
 // NewBlock returns a backend that creates Block-mode PVCs and VolumeSnapshots
