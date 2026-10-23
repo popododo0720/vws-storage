@@ -113,14 +113,18 @@ A type with no mapping is `INVALID_ARGUMENT` (`INVALID_SPEC`, "volume type ... i
 
 IOPS and throughput follow the EC2 rules ([EBS volume types](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volume-types.html)). Anything else is `INVALID_ARGUMENT`:
 
-| Type | `iops` | `throughput_mibps` |
-| --- | --- | --- |
-| `gp3` | 3000 to 80000; 0 means 3000 | 125 to 2000; 0 means 125 |
-| `io1` | 100 to 64000, required | 0 |
-| `io2` | 100 to 256000, required | 0 |
-| `standard`, `gp2`, `st1`, `sc1` | 0 | 0 |
+| Type | Size (GiB) | `iops` | `throughput_mibps` |
+| --- | --- | --- | --- |
+| `gp3` | 1 to 65536 | 3000 to 80000, at most max(3000, 500 per GiB); 0 means 3000 | 125 to 2000, at most 0.25 per IOPS; 0 means 125 |
+| `io1` | 4 to 16384 | 100 to 64000, at most 50 per GiB, required | 0 |
+| `io2` | 4 to 65536 | 100 to 256000, at most 1000 per GiB, required | 0 |
+| `gp2` | 1 to 16384 | 0 | 0 |
+| `st1`, `sc1` | 125 to 16384 | 0 | 0 |
+| `standard` | 1 to 1024 | 0 | 0 |
 
-The values are stored and returned. The backend does not enforce them; the admin's StorageClass decides real performance. A retype keeps values the new type allows, gives `gp3` its defaults, stores 0 for the types that take none, and refuses `io1`/`io2` without valid IOPS. `UpdateVolume` does not change `iops` or `throughput_mibps`.
+The `gp3` 500-per-GiB ratio applies above the included 3000 IOPS, so every `gp3` size keeps 3000. Create, expand and retype check the size range of the volume's (new) type.
+
+The values are stored and returned. The backend does not enforce them; the admin's StorageClass decides real performance. A retype follows EC2 `ModifyVolume` without `Iops` or `Throughput`: `io1`, `io2` and `gp3` get 3000 IOPS, `gp3` gets 125 MiB/s, the other types store 0. The ratio is then checked, so a retype to `io1` under 60 GiB is refused. `UpdateVolume` does not change `iops` or `throughput_mibps`.
 
 #### SSD to gp2 migration
 
