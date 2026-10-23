@@ -169,7 +169,7 @@ func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitt
 	}
 	next := a.v
 	if typ != a.v.Spec.Type {
-		iops, mibs, err := retypePerformance(typ, a.v.Spec.Iops, a.v.Spec.Throughput)
+		iops, mibs, err := retypePerformance(typ, a.v.Spec.Size)
 		if err != nil {
 			return Admitted{}, err
 		}

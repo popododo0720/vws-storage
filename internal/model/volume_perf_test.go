@@ -162,26 +162,37 @@ func TestPerformanceSurvivesCodec(t *testing.T) {
 // without settings stores none.
 func TestModifyRederivesPerformance(t *testing.T) {
 	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	// EC2 ModifyVolume without Iops or Throughput: a change to io1, io2 or
+	// gp3 takes 3000 IOPS, gp3 takes 125 MiB/s, other types take none, and
+	// the result must still fit the size (IOPS per GiB).
 	for _, tc := range []struct {
 		from             string
+		gib              Bytes
 		iops, mibs       int64
 		to               string
 		ok               bool
 		wantIops, wantMb int64
 	}{
-		{"gp2", 0, 0, "gp3", true, 3000, 125},
-		{"gp3", 3000, 125, "gp2", true, 0, 0},
-		{"io1", 5000, 0, "gp3", true, 5000, 125},
-		{"io2", 100000, 0, "gp3", true, 3000, 125},
-		{"io1", 5000, 0, "io2", true, 5000, 0},
-		{"io2", 100000, 0, "io1", false, 0, 0},
-		{"gp2", 0, 0, "io1", false, 0, 0},
-		{"gp3", 6000, 500, "io2", true, 6000, 0},
-		{"st1", 0, 0, "sc1", true, 0, 0},
-		{"standard", 0, 0, "gp2", true, 0, 0},
+		{"gp2", 100, 0, 0, "gp3", true, 3000, 125},
+		{"gp3", 100, 3000, 125, "gp2", true, 0, 0},
+		{"io1", 100, 5000, 0, "gp3", true, 3000, 125},
+		{"io2", 200, 100000, 0, "gp3", true, 3000, 125},
+		{"io1", 100, 5000, 0, "io2", true, 3000, 0},
+		{"io2", 200, 100000, 0, "io1", true, 3000, 0},
+		{"gp2", 100, 0, 0, "io1", true, 3000, 0},
+		{"gp2", 100, 0, 0, "io2", true, 3000, 0},
+		{"gp3", 200, 10000, 500, "io1", true, 3000, 0},
+		{"gp3", 100, 6000, 500, "io2", true, 3000, 0},
+		{"gp2", 60, 0, 0, "io1", true, 3000, 0},       // 50 x 60 = 3000
+		{"gp2", 59, 0, 0, "io1", false, 0, 0},         // 3000 is over 50 x 59
+		{"gp2", 3, 0, 0, "io2", true, 3000, 0},        // 1000 x 3 = 3000
+		{"standard", 1, 0, 0, "gp3", true, 3000, 125}, // the included 3000
+		{"st1", 200, 0, 0, "sc1", true, 0, 0},
+		{"standard", 100, 0, 0, "gp2", true, 0, 0},
 	} {
 		vol := availableVolume(t, now)
 		vol.Spec.Type, vol.Spec.Iops, vol.Spec.Throughput = mustType(t, tc.from), tc.iops, tc.mibs
+		vol.Spec.Size = tc.gib * GiB
 		avail, ok := vol.AsAvailable()
 		if !ok {
 			t.Fatal("not available")

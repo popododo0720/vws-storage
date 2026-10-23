@@ -380,24 +380,21 @@ func checkPerformance(t VolumeType, size Bytes, iops, mibs int64) error {
 	return nil
 }
 
-// retypePerformance is the IOPS and throughput a volume stores after a
-// change to type to, as an EC2 ModifyVolume without Iops or Throughput: a
-// value in range for the new type is kept, gp3 otherwise takes its default,
-// io1 and io2 need an in-range IOPS, and other types store none.
-func retypePerformance(to VolumeType, iops, mibs int64) (int64, int64, error) {
+// retypePerformance is the IOPS and throughput a volume of size bytes stores
+// after a change to type to, as EC2 ModifyVolume without Iops or Throughput:
+// "If you change the volume type to io1, io2, or gp3, the default is 3,000"
+// IOPS, and throughput is 125 unless source and target are both gp3, which is
+// no type change. Other types store none. The result must fit the size; a
+// default over the IOPS-per-GiB cap is refused, as EC2 refuses it.
+func retypePerformance(to VolumeType, size Bytes) (int64, int64, error) {
 	p := performanceOf[to]
-	if p.maxIops == 0 {
-		return 0, 0, nil
+	var iops, mibs int64
+	if p.maxIops != 0 {
+		iops = 3000
 	}
-	if iops < p.minIops || iops > p.maxIops {
-		if p.defIops == 0 {
-			return 0, 0, fmt.Errorf("%w: volume type %s needs iops from %d to %d, and the volume has %d",
-				ErrInvalidArgument, to, p.minIops, p.maxIops, iops)
-		}
-		iops = p.defIops
-	}
-	if mibs < p.minMibs || mibs > p.maxMibs {
-		mibs = p.defMibs
+	mibs = p.defMibs
+	if err := checkPerformance(to, size, iops, mibs); err != nil {
+		return 0, 0, err
 	}
 	return iops, mibs, nil
 }

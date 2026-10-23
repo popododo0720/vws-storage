@@ -115,11 +115,43 @@ func TestVolumePerformanceOutsideTheTypeRulesIsInvalid(t *testing.T) {
 // because UpdateVolume carries no IOPS.
 func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
 	vols, _, _, _, ops := dial(t, "")
-	ctx := context.Background()
-	name := "projects/local/zones/az-1/volumes/retype"
-	op, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
-		Parent: "projects/local/zones/az-1", VolumeId: "retype",
-		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 10, Type: storagev1.VolumeType_VOLUME_TYPE_GP2}},
+	name := createGP2(t, vols, ops, "retype", 200)
+	retype := func(typ storagev1.VolumeType) (*storagev1.Volume, error) {
+		return retypeVolume(t, vols, ops, name, typ)
+	}
+	want := func(step string, vol *storagev1.Volume, err error, iops, mibs int64) {
+		t.Helper()
+		if err != nil || vol.GetSpec().GetIops() != iops || vol.GetSpec().GetThroughputMibps() != mibs {
+			t.Fatalf("%s: %v err %v", step, vol.GetSpec(), err)
+		}
+	}
+	vol, err := retype(storagev1.VolumeType_VOLUME_TYPE_IO1)
+	want("gp2 to io1", vol, err, 3000, 0)
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_GP3)
+	want("io1 to gp3", vol, err, 3000, 125)
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO2)
+	want("gp3 to io2", vol, err, 3000, 0)
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_ST1)
+	want("io2 to st1", vol, err, 0, 0)
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO1)
+	want("st1 to io1", vol, err, 3000, 0)
+
+	// 3000 IOPS is over io1's 50 per GiB of 10 GiB: EC2 refuses the default.
+	small := createGP2(t, vols, ops, "small", 10)
+	_, err = retypeVolume(t, vols, ops, small, storagev1.VolumeType_VOLUME_TYPE_IO1)
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("10 GiB gp2 to io1: %v", err)
+	}
+}
+
+// createGP2 creates a gp2 volume of gib GiB, waits for it and returns its name.
+func createGP2(t *testing.T, vols storagev1.VolumeServiceClient, ops longrunningpb.OperationsClient,
+	id string, gib int64,
+) string {
+	t.Helper()
+	op, err := vols.CreateVolume(context.Background(), &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: id,
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: gib, Type: storagev1.VolumeType_VOLUME_TYPE_GP2}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,26 +159,7 @@ func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
 	if done := waitOp(t, ops, op.GetName()); done.GetError() != nil {
 		t.Fatal(done.GetError())
 	}
-	retype := func(typ storagev1.VolumeType) (*storagev1.Volume, error) {
-		return retypeVolume(t, vols, ops, name, typ)
-	}
-	vol, err := retype(storagev1.VolumeType_VOLUME_TYPE_GP3)
-	if err != nil || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_GP3 ||
-		vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 125 {
-		t.Fatalf("to gp3: %v err %v", vol.GetSpec(), err)
-	}
-	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO2)
-	if err != nil || vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 0 {
-		t.Fatalf("to io2: %v err %v", vol.GetSpec(), err)
-	}
-	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_ST1)
-	if err != nil || vol.GetSpec().GetIops() != 0 || vol.GetSpec().GetThroughputMibps() != 0 {
-		t.Fatalf("to st1: %v err %v", vol.GetSpec(), err)
-	}
-	_, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO1)
-	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
-		t.Fatalf("st1 to io1 without iops: %v", err)
-	}
+	return "projects/local/zones/az-1/volumes/" + id
 }
 
 // retypeVolume sets the volume's type with UpdateVolume spec.type, waits for
