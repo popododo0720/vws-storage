@@ -99,7 +99,7 @@ type specWire struct {
 
 func specTo(s VolumeSpec) specWire {
 	return specWire{
-		Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire(),
+		Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.wireName(), Source: s.Source.wire(),
 		Iops: s.Iops, Throughput: s.Throughput,
 	}
 }
@@ -215,7 +215,9 @@ func workTo(w Work) (workWire, error) {
 	case VolumeExpansion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size)}, nil
 	case VolumeModification:
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.String(), Labels: w.Labels.Map()}, nil
+		return workWire{
+			Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.wireName(), Labels: w.Labels.Map(),
+		}, nil
 	case SnapshotCreation:
 		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Volume: w.Source.wire(), Zone: w.Region.String()}, nil
 	case SnapshotDeletion:

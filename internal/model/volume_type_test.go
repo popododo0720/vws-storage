@@ -48,46 +48,49 @@ func TestLegacySSDNameReadsAsGP2(t *testing.T) {
 	}
 }
 
-// A volume row stored before #123 holds "ssd". It decodes as gp2, a rewrite
-// stores "gp2", and decoding either form again gives the same volume: the
-// migration is a pure read, so it is idempotent and safe across restarts.
-func TestStoredSSDVolumeReadsAsGP2AndRewritesAsGP2(t *testing.T) {
+// For one release a gp2 volume is stored under the pre-#123 name "ssd", so a
+// build from before #123 can still read it after a rollback. Both names read
+// as gp2, and a write always stores "ssd": reading and writing again is
+// byte-identical, so the round trip is idempotent.
+func TestStoredSSDVolumeReadsAsGP2AndIsWrittenAsSSD(t *testing.T) {
 	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
 	vol := availableVolume(t, now)
 	vol.Spec.Type = mustType(t, "gp2")
 	vol.Labels = Labels{}
-	fresh, err := MarshalRecord(vol)
+	row, err := MarshalRecord(vol)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(fresh, []byte(`"type":"gp2"`)) {
-		t.Fatalf("new row %s", fresh)
+	if !bytes.Contains(row, []byte(`"type":"ssd"`)) || bytes.Contains(row, []byte(`"gp2"`)) {
+		t.Fatalf("gp2 row %s", row)
 	}
-	legacy := bytes.Replace(fresh, []byte(`"type":"gp2"`), []byte(`"type":"ssd"`), 1)
-	got, err := UnmarshalRecord(legacy)
-	if err != nil {
-		t.Fatal(err)
+	later := bytes.Replace(row, []byte(`"type":"ssd"`), []byte(`"type":"gp2"`), 1)
+	for name, raw := range map[string][]byte{"ssd": row, "gp2": later} {
+		got, err := UnmarshalRecord(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		read := got.(Volume)
+		if read.Spec.Type != vol.Spec.Type {
+			t.Fatalf("%s row type %q", name, read.Spec.Type)
+		}
+		again, err := MarshalRecord(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(again, row) {
+			t.Fatalf("%s rewrite %s want %s", name, again, row)
+		}
 	}
-	read := got.(Volume)
-	if read.Spec.Type != vol.Spec.Type {
-		t.Fatalf("legacy row type %q", read.Spec.Type)
-	}
-	again, err := MarshalRecord(read)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(again, fresh) || bytes.Contains(again, []byte(`"ssd"`)) {
-		t.Fatalf("rewrite %s want %s", again, fresh)
-	}
-	twice, err := UnmarshalRecord(again)
-	if err != nil || !SameRecord(twice, read) {
-		t.Fatalf("second read %+v err %v", twice, err)
+	vol.Spec.Type, vol.Spec.Iops, vol.Spec.Throughput = mustType(t, "gp3"), 3000, 125
+	if row, err := MarshalRecord(vol); err != nil || !bytes.Contains(row, []byte(`"type":"gp3"`)) {
+		t.Fatalf("gp3 row %s err %v", row, err)
 	}
 }
 
-// An operation stored before #123 carries the spec, and a modify carries
-// the type: both read "ssd" as gp2.
-func TestStoredSSDOperationsReadAsGP2(t *testing.T) {
+// Operations carry the type too (a create its spec, a modify its type): gp2
+// is stored as "ssd", and both names read as gp2.
+func TestGP2OperationsAreStoredAsSSD(t *testing.T) {
 	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
 	vol := availableVolume(t, now)
 	vol.Spec.Type = mustType(t, "gp2")
@@ -101,16 +104,18 @@ func TestStoredSSDOperationsReadAsGP2(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Contains(raw, []byte(`"gp2"`)) {
+		if !bytes.Contains(raw, []byte(`"ssd"`)) || bytes.Contains(raw, []byte(`"gp2"`)) {
 			t.Fatalf("%s: row %s", name, raw)
 		}
-		legacy := bytes.Replace(raw, []byte(`"gp2"`), []byte(`"ssd"`), 1)
-		got, err := UnmarshalRecord(legacy)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if !SameRecord(got, op) {
-			t.Fatalf("%s: legacy op %+v want %+v", name, got, op)
+		later := bytes.Replace(raw, []byte(`"ssd"`), []byte(`"gp2"`), 1)
+		for form, b := range map[string][]byte{"ssd": raw, "gp2": later} {
+			got, err := UnmarshalRecord(b)
+			if err != nil {
+				t.Fatalf("%s %s: %v", name, form, err)
+			}
+			if !SameRecord(got, op) {
+				t.Fatalf("%s %s: op %+v want %+v", name, form, got, op)
+			}
 		}
 	}
 }

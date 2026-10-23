@@ -152,7 +152,9 @@ const (
 	VolumeTypeSC1
 )
 
-// legacySSD is the pre-#123 name of VolumeTypeGP2. It is read, never written.
+// legacySSD is the pre-#123 name of VolumeTypeGP2. It is read, and for one
+// release it is also the stored name of gp2 (wireName), so a pre-#123 build
+// can read gp2 rows after a rollback.
 const legacySSD = "ssd"
 
 var volumeTypeNames = [...]string{
@@ -197,6 +199,18 @@ func (t VolumeType) String() string {
 
 // Valid reports whether t is one of VolumeTypes.
 func (t VolumeType) Valid() bool { return t.String() != "" }
+
+// wireName is the name the store keeps. For one release after #123 gp2 is
+// stored as "ssd", which every build reads (a pre-#123 build as its SSD type,
+// this one as gp2), so a rollback can still read every gp2 row. A later
+// release may store "gp2", which this build already reads. Reading and
+// writing again is byte-identical, so no row changes on its own.
+func (t VolumeType) wireName() string {
+	if t == VolumeTypeGP2 {
+		return legacySSD
+	}
+	return t.String()
+}
 
 // fingerprintName is the name a create fingerprint uses. gp2 keeps "ssd" so
 // that an idempotency token stored before #123 still matches its request.
