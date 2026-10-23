@@ -184,7 +184,7 @@ Mutations return a long-running operation. Poll `GetOperation` until `done` is s
 
 ## Object payload contract (WriteObject, ReadObject)
 
-For `vws-console-api` and other callers. The authority is `third_party/vws-proto/vws/storage/v1/object.proto`; this section states what this service does with it. `name` is `projects/{project}/buckets/{bucket}/objects/{object}`, with the key percent-encoded.
+For `vws-console-api` and other callers. The authority is `vws/storage/v1/object.proto` in `github.com/popododo0720/vws-proto` at the tag `go.mod` requires; this section states what this service does with it. `name` is `projects/{project}/buckets/{bucket}/objects/{object}`, with the key percent-encoded.
 
 ### Limits
 
