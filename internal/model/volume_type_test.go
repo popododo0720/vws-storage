@@ -124,8 +124,10 @@ func TestGP2CreateFingerprintMatchesThePreUpgradeSSDOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := NewVolumeID()
-	req := CreateVolumeRequest{ID: id, Spec: VolumeSpec{Size: GiB, Zone: zone, Type: mustType(t, "gp2"), Source: NoSource()}}
-	legacy := "create-volume\n" + id.String() + "\n1073741824\naz-1\nssd\n" + NoSource().canonical() + "\n" + Labels{}.canonical()
+	spec := VolumeSpec{Size: GiB, Zone: zone, Type: mustType(t, "gp2"), Source: NoSource()}
+	req := CreateVolumeRequest{ID: id, Spec: spec}
+	legacy := "create-volume\n" + id.String() + "\n1073741824\naz-1\nssd\n" +
+		NoSource().canonical() + "\n" + Labels{}.canonical()
 	if got := req.fingerprint(); got != legacy {
 		t.Fatalf("fingerprint %q want %q", got, legacy)
 	}

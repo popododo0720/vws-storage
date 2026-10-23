@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -35,7 +36,9 @@ func TestEveryEBSVolumeTypeIsCreatedAndReadBack(t *testing.T) {
 		id := fmt.Sprintf("v-%d", i)
 		op, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
 			Parent: "projects/local/zones/az-1", VolumeId: id,
-			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs}},
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+				SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs,
+			}},
 		})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.typ, err)
@@ -76,18 +79,21 @@ func TestVolumePerformanceOutsideTheTypeRulesIsInvalid(t *testing.T) {
 		{storagev1.VolumeType_VOLUME_TYPE_IO2, 256001, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_GP2, 100, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_GP2, 0, 125},
-		{storagev1.VolumeType_VOLUME_TYPE_SSD, 100, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_SSD, 100, 0}, //nolint:staticcheck // a pre-#123 client
 		{storagev1.VolumeType_VOLUME_TYPE_STANDARD, 100, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_ST1, 0, 125},
 		{storagev1.VolumeType_VOLUME_TYPE_SC1, 100, 0},
 	} {
 		_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
 			Parent: "projects/local/zones/az-1", VolumeId: fmt.Sprintf("bad-%d", i),
-			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs}},
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+				SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs,
+			}},
 		})
 		st, _ := status.FromError(err)
 		if st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
-			t.Errorf("%s iops=%d throughput=%d: code %v reason %q err %v", tc.typ, tc.iops, tc.mibs, st.Code(), reasonOf(st), err)
+			t.Errorf("%s iops=%d throughput=%d: code %v reason %q err %v",
+				tc.typ, tc.iops, tc.mibs, st.Code(), reasonOf(st), err)
 		}
 	}
 	listed, err := vols.ListVolumes(ctx, &storagev1.ListVolumesRequest{Parent: "projects/local/zones/az-1"})
@@ -117,24 +123,11 @@ func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
 		t.Fatal(done.GetError())
 	}
 	retype := func(typ storagev1.VolumeType) (*storagev1.Volume, error) {
-		cur, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
-		if err != nil {
-			t.Fatal(err)
-		}
-		uop, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
-			Volume:     &storagev1.Volume{Name: name, Etag: cur.GetEtag(), Spec: &storagev1.VolumeSpec{Type: typ}},
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.type"}},
-		})
-		if err != nil {
-			return nil, err
-		}
-		if done := waitOp(t, ops, uop.GetName()); done.GetError() != nil {
-			t.Fatal(done.GetError())
-		}
-		return vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+		return retypeVolume(t, vols, ops, name, typ)
 	}
 	vol, err := retype(storagev1.VolumeType_VOLUME_TYPE_GP3)
-	if err != nil || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_GP3 || vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 125 {
+	if err != nil || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_GP3 ||
+		vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 125 {
 		t.Fatalf("to gp3: %v err %v", vol.GetSpec(), err)
 	}
 	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO2)
@@ -149,4 +142,28 @@ func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
 	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
 		t.Fatalf("st1 to io1 without iops: %v", err)
 	}
+}
+
+// retypeVolume sets the volume's type with UpdateVolume spec.type, waits for
+// the operation and returns the volume read back.
+func retypeVolume(t *testing.T, vols storagev1.VolumeServiceClient, ops longrunningpb.OperationsClient,
+	name string, typ storagev1.VolumeType,
+) (*storagev1.Volume, error) {
+	t.Helper()
+	ctx := context.Background()
+	cur, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uop, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
+		Volume:     &storagev1.Volume{Name: name, Etag: cur.GetEtag(), Spec: &storagev1.VolumeSpec{Type: typ}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.type"}},
+	})
+	if err != nil {
+		return nil, err //nolint:wrapcheck // the test reads the gRPC status
+	}
+	if done := waitOp(t, ops, uop.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	return vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name}) //nolint:wrapcheck // as above
 }

@@ -15,7 +15,10 @@ func TestDeprecatedSSDCreatesGP2(t *testing.T) {
 	req := &storagev1.CreateVolumeRequest{
 		Parent: "projects/local/zones/az-1", VolumeId: "old-client",
 		RequestId: "22222222-2222-4222-8222-222222222222",
-		Volume:    &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SSD}},
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{
+			SizeGib: 1,
+			Type:    storagev1.VolumeType_VOLUME_TYPE_SSD, //nolint:staticcheck // a pre-#123 client sends it
+		}},
 	}
 	first, err := vols.CreateVolume(ctx, req)
 	if err != nil {

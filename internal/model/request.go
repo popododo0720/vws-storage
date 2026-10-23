@@ -167,7 +167,9 @@ var volumeTypeNames = [...]string{
 
 // VolumeTypes lists every valid type in number order.
 func VolumeTypes() []VolumeType {
-	return []VolumeType{VolumeTypeStandard, VolumeTypeGP2, VolumeTypeGP3, VolumeTypeIO1, VolumeTypeIO2, VolumeTypeST1, VolumeTypeSC1}
+	return []VolumeType{
+		VolumeTypeStandard, VolumeTypeGP2, VolumeTypeGP3, VolumeTypeIO1, VolumeTypeIO2, VolumeTypeST1, VolumeTypeSC1,
+	}
 }
 
 // ParseVolumeType parses an EC2 volume type name. "ssd", the pre-#123 name,
@@ -354,7 +356,8 @@ func checkPerformance(t VolumeType, iops, mibs int64) error {
 	case p.maxMibs == 0 && mibs != 0:
 		return fmt.Errorf("%w: volume type %s takes no throughput", ErrInvalidArgument, t)
 	case p.maxMibs != 0 && (mibs < p.minMibs || mibs > p.maxMibs):
-		return fmt.Errorf("%w: volume type %s needs throughput from %d to %d MiB/s", ErrInvalidArgument, t, p.minMibs, p.maxMibs)
+		return fmt.Errorf("%w: volume type %s needs throughput from %d to %d MiB/s",
+			ErrInvalidArgument, t, p.minMibs, p.maxMibs)
 	}
 	return nil
 }
@@ -370,7 +373,8 @@ func retypePerformance(to VolumeType, iops, mibs int64) (int64, int64, error) {
 	}
 	if iops < p.minIops || iops > p.maxIops {
 		if p.defIops == 0 {
-			return 0, 0, fmt.Errorf("%w: volume type %s needs iops from %d to %d, and the volume has %d", ErrInvalidArgument, to, p.minIops, p.maxIops, iops)
+			return 0, 0, fmt.Errorf("%w: volume type %s needs iops from %d to %d, and the volume has %d",
+				ErrInvalidArgument, to, p.minIops, p.maxIops, iops)
 		}
 		iops = p.defIops
 	}
@@ -681,7 +685,8 @@ func (r DeleteObjectRequest) Validate() error {
 
 // A spec without IOPS or throughput keeps the pre-#123 fingerprint.
 func (r CreateVolumeRequest) fingerprint() string {
-	f := fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
+	f := fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(),
+		r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
 	if r.Spec.Iops != 0 || r.Spec.Throughput != 0 {
 		f += fmt.Sprintf("\niops=%d\nthroughput=%d", r.Spec.Iops, r.Spec.Throughput)
 	}

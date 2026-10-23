@@ -98,7 +98,10 @@ type specWire struct {
 }
 
 func specTo(s VolumeSpec) specWire {
-	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire(), Iops: s.Iops, Throughput: s.Throughput}
+	return specWire{
+		Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire(),
+		Iops: s.Iops, Throughput: s.Throughput,
+	}
 }
 
 func specFrom(w specWire) (VolumeSpec, error) {
