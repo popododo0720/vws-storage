@@ -185,7 +185,7 @@ func TestModifyRederivesPerformance(t *testing.T) {
 		{"gp3", 100, 6000, 500, "io2", true, 3000, 0},
 		{"gp2", 60, 0, 0, "io1", true, 3000, 0},       // 50 x 60 = 3000
 		{"gp2", 59, 0, 0, "io1", false, 0, 0},         // 3000 is over 50 x 59
-		{"gp2", 3, 0, 0, "io2", true, 3000, 0},        // 1000 x 3 = 3000
+		{"gp2", 4, 0, 0, "io2", true, 3000, 0},        // io2 minimum size; 1000 x 4 >= 3000
 		{"standard", 1, 0, 0, "gp3", true, 3000, 125}, // the included 3000
 		{"st1", 200, 0, 0, "sc1", true, 0, 0},
 		{"standard", 100, 0, 0, "gp2", true, 0, 0},

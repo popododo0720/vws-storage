@@ -42,7 +42,9 @@ type Bytes int64
 // GiB is one gibibyte.
 const GiB Bytes = 1 << 30
 
-const maxVolume Bytes = 16 << 40
+// maxVolume is the largest EC2 volume (gp3 and io2, 65536 GiB). Each type has
+// its own range (sizeOf).
+const maxVolume Bytes = 64 << 40
 
 // VolumeSize converts a gibibyte count into a volume size.
 // Values that would wrap an int64, or that exceed the volume limit, are rejected.
@@ -367,6 +369,27 @@ func (s VolumeSpec) WithDefaultPerformance() VolumeSpec {
 	return s
 }
 
+// sizeOf is the EC2 CreateVolume and ModifyVolume size range of each type, in
+// GiB.
+var sizeOf = map[VolumeType]struct{ min, max Bytes }{
+	VolumeTypeStandard: {1, 1024},
+	VolumeTypeGP2:      {1, 16384},
+	VolumeTypeGP3:      {1, 65536},
+	VolumeTypeIO1:      {4, 16384},
+	VolumeTypeIO2:      {4, 65536},
+	VolumeTypeST1:      {125, 16384},
+	VolumeTypeSC1:      {125, 16384},
+}
+
+// checkSize refuses a size outside the range of type t.
+func checkSize(t VolumeType, size Bytes) error {
+	r, ok := sizeOf[t]
+	if !ok || size < r.min*GiB || size > r.max*GiB {
+		return fmt.Errorf("%w: volume type %s needs a size from %d to %d GiB", ErrInvalidArgument, t, r.min, r.max)
+	}
+	return nil
+}
+
 // checkPerformance enforces the per-type IOPS and throughput rules of EC2
 // CreateVolume and ModifyVolume on a volume of size bytes: the ranges, IOPS
 // per GiB, and gp3 throughput per IOPS.
@@ -575,6 +598,9 @@ func (r CreateVolumeRequest) Validate() error {
 	}
 	if !r.Spec.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
+	}
+	if err := checkSize(r.Spec.Type, r.Spec.Size); err != nil {
+		return err
 	}
 	return checkPerformance(r.Spec.Type, r.Spec.Size, r.Spec.Iops, r.Spec.Throughput)
 }

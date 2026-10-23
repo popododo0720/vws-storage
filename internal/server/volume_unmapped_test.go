@@ -66,7 +66,7 @@ func TestUnmappedVolumeTypeIsRefusedAndCreatesNothing(t *testing.T) {
 		"blank": {SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_GP3},
 		"io1":   {SizeGib: 4, Type: storagev1.VolumeType_VOLUME_TYPE_IO1, Iops: 200},
 		"restore": {
-			SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_SC1,
+			SizeGib: 125, Type: storagev1.VolumeType_VOLUME_TYPE_SC1,
 			Source: &storagev1.VolumeSpec_Snapshot{Snapshot: "projects/local/regions/local/snapshots/snap-1"},
 		},
 	} {

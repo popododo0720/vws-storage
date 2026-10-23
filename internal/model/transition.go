@@ -131,6 +131,9 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 	if size <= a.v.Spec.Size {
 		return Admitted{}, fmt.Errorf("%w: volume can only grow", ErrInvalidArgument)
 	}
+	if err := checkSize(a.v.Spec.Type, size); err != nil {
+		return Admitted{}, err
+	}
 	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size})
 	ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -169,6 +172,9 @@ func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitt
 	}
 	next := a.v
 	if typ != a.v.Spec.Type {
+		if err := checkSize(typ, a.v.Spec.Size); err != nil {
+			return Admitted{}, err
+		}
 		iops, mibs, err := retypePerformance(typ, a.v.Spec.Size)
 		if err != nil {
 			return Admitted{}, err
