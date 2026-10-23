@@ -20,20 +20,20 @@ func TestCreateVolumePerformanceRules(t *testing.T) {
 		ok         bool
 	}{
 		{"gp3", 3000, 125, true},
-		{"gp3", 80000, 2000, true},
+		{"gp3", 8000, 2000, true},
 		{"gp3", 2999, 125, false},
 		{"gp3", 80001, 125, false},
 		{"gp3", 3000, 124, false},
 		{"gp3", 3000, 2001, false},
 		{"gp3", 0, 0, false}, // the server fills the defaults; the model never stores 0
 		{"io1", 100, 0, true},
-		{"io1", 64000, 0, true},
+		{"io1", 50000, 0, true},
 		{"io1", 99, 0, false},
 		{"io1", 64001, 0, false},
 		{"io1", 0, 0, false},
 		{"io1", 1000, 125, false},
 		{"io2", 100, 0, true},
-		{"io2", 256000, 0, true},
+		{"io2", 100000, 0, true},
 		{"io2", 256001, 0, false},
 		{"io2", 0, 0, false},
 		{"io2", 1000, 125, false},
@@ -49,12 +49,60 @@ func TestCreateVolumePerformanceRules(t *testing.T) {
 		{"gp3", -1, 125, false},
 	} {
 		req := CreateVolumeRequest{ID: NewVolumeID(), Spec: VolumeSpec{
-			Size: GiB, Zone: zone, Type: mustType(t, tc.typ), Source: NoSource(),
+			Size: 1000 * GiB, Zone: zone, Type: mustType(t, tc.typ), Source: NoSource(),
 			Iops: tc.iops, Throughput: tc.mibs,
 		}}
 		err := req.Validate()
 		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrInvalidArgument)) {
 			t.Errorf("%s iops=%d throughput=%d: err %v", tc.typ, tc.iops, tc.mibs, err)
+		}
+	}
+}
+
+// The EC2 ratios: gp3 throughput is at most 0.25 MiB/s per provisioned IOPS;
+// IOPS per GiB is at most 500 for gp3 above its included 3000, 50 for io1 and
+// 1000 for io2 (aws-docs.txt in the #124 handoff quotes the EBS user guide).
+func TestPerformanceRatios(t *testing.T) {
+	zone, err := ParseZone("az-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		typ        string
+		gib        Bytes
+		iops, mibs int64
+		ok         bool
+	}{
+		{"gp3", 100, 3000, 750, true},
+		{"gp3", 100, 3000, 751, false},
+		{"gp3", 100, 8000, 2000, true},
+		{"gp3", 100, 7999, 2000, false},
+		{"gp3", 1, 3000, 125, true}, // the included 3000 IOPS need no size
+		{"gp3", 1, 3000, 750, true},
+		{"gp3", 10, 5000, 125, true},
+		{"gp3", 10, 5001, 125, false},
+		{"gp3", 160, 80000, 2000, true},
+		{"gp3", 159, 80000, 2000, false},
+		{"gp3", 16, 8000, 2000, true},
+		{"gp3", 15, 8000, 2000, false},
+		{"io1", 100, 5000, 0, true},
+		{"io1", 100, 5001, 0, false},
+		{"io1", 4, 200, 0, true},
+		{"io1", 4, 201, 0, false},
+		{"io1", 1280, 64000, 0, true},
+		{"io1", 1279, 64000, 0, false},
+		{"io2", 10, 10000, 0, true},
+		{"io2", 10, 10001, 0, false},
+		{"io2", 256, 256000, 0, true},
+		{"io2", 255, 256000, 0, false},
+	} {
+		req := CreateVolumeRequest{ID: NewVolumeID(), Spec: VolumeSpec{
+			Size: tc.gib * GiB, Zone: zone, Type: mustType(t, tc.typ), Source: NoSource(),
+			Iops: tc.iops, Throughput: tc.mibs,
+		}}
+		err := req.Validate()
+		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrInvalidArgument)) {
+			t.Errorf("%s %d GiB iops=%d throughput=%d: err %v", tc.typ, tc.gib, tc.iops, tc.mibs, err)
 		}
 	}
 }

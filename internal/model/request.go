@@ -321,15 +321,23 @@ type VolumeSpec struct {
 
 // performance is the EC2 range of provisioned IOPS and throughput of a type
 // (vws-proto v0.5.0 VolumeSpec). A zero range means the type takes no value.
+// iopsPerGiB caps IOPS by size; IOPS up to freeIops need no size (gp3's
+// included baseline). mibsPerKiops caps throughput by IOPS, in MiB/s per
+// 1000 IOPS (gp3: 0.25 MiB/s per IOPS).
 type performance struct {
 	minIops, maxIops, defIops int64
 	minMibs, maxMibs, defMibs int64
+	iopsPerGiB, freeIops      int64
+	mibsPerKiops              int64
 }
 
 var performanceOf = map[VolumeType]performance{
-	VolumeTypeGP3: {minIops: 3000, maxIops: 80000, defIops: 3000, minMibs: 125, maxMibs: 2000, defMibs: 125},
-	VolumeTypeIO1: {minIops: 100, maxIops: 64000},
-	VolumeTypeIO2: {minIops: 100, maxIops: 256000},
+	VolumeTypeGP3: {
+		minIops: 3000, maxIops: 80000, defIops: 3000, minMibs: 125, maxMibs: 2000, defMibs: 125,
+		iopsPerGiB: 500, freeIops: 3000, mibsPerKiops: 250,
+	},
+	VolumeTypeIO1: {minIops: 100, maxIops: 64000, iopsPerGiB: 50},
+	VolumeTypeIO2: {minIops: 100, maxIops: 256000, iopsPerGiB: 1000},
 }
 
 // WithDefaultPerformance fills what EC2 fills when a field is left out: gp3
@@ -345,8 +353,10 @@ func (s VolumeSpec) WithDefaultPerformance() VolumeSpec {
 	return s
 }
 
-// checkPerformance enforces the per-type IOPS and throughput rules.
-func checkPerformance(t VolumeType, iops, mibs int64) error {
+// checkPerformance enforces the per-type IOPS and throughput rules of EC2
+// CreateVolume and ModifyVolume on a volume of size bytes: the ranges, IOPS
+// per GiB, and gp3 throughput per IOPS.
+func checkPerformance(t VolumeType, size Bytes, iops, mibs int64) error {
 	p := performanceOf[t]
 	switch {
 	case p.maxIops == 0 && iops != 0:
@@ -358,6 +368,14 @@ func checkPerformance(t VolumeType, iops, mibs int64) error {
 	case p.maxMibs != 0 && (mibs < p.minMibs || mibs > p.maxMibs):
 		return fmt.Errorf("%w: volume type %s needs throughput from %d to %d MiB/s",
 			ErrInvalidArgument, t, p.minMibs, p.maxMibs)
+	}
+	if gib := int64(size / GiB); p.iopsPerGiB != 0 && iops > p.freeIops && iops > p.iopsPerGiB*gib {
+		return fmt.Errorf("%w: volume type %s allows at most %d iops per GiB; %d GiB allows %d",
+			ErrInvalidArgument, t, p.iopsPerGiB, gib, max(p.freeIops, p.iopsPerGiB*gib))
+	}
+	if p.mibsPerKiops != 0 && mibs*1000 > iops*p.mibsPerKiops {
+		return fmt.Errorf("%w: volume type %s allows at most 0.25 MiB/s of throughput per iops; %d iops allow %d MiB/s",
+			ErrInvalidArgument, t, iops, iops*p.mibsPerKiops/1000)
 	}
 	return nil
 }
@@ -547,7 +565,7 @@ func (r CreateVolumeRequest) Validate() error {
 	if !r.Spec.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
-	return checkPerformance(r.Spec.Type, r.Spec.Iops, r.Spec.Throughput)
+	return checkPerformance(r.Spec.Type, r.Spec.Size, r.Spec.Iops, r.Spec.Throughput)
 }
 
 // Validate implements Request.

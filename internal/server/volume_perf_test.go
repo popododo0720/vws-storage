@@ -28,8 +28,8 @@ func TestEveryEBSVolumeTypeIsCreatedAndReadBack(t *testing.T) {
 		{storagev1.VolumeType_VOLUME_TYPE_GP2, 0, 0, 0, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 0, 3000, 125},
 		{storagev1.VolumeType_VOLUME_TYPE_GP3, 16000, 1000, 16000, 1000},
-		{storagev1.VolumeType_VOLUME_TYPE_IO1, 64000, 0, 64000, 0},
-		{storagev1.VolumeType_VOLUME_TYPE_IO2, 256000, 0, 256000, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 6250, 0, 6250, 0},     // 50 per GiB of 125
+		{storagev1.VolumeType_VOLUME_TYPE_IO2, 125000, 0, 125000, 0}, // 1000 per GiB of 125
 		{storagev1.VolumeType_VOLUME_TYPE_ST1, 0, 0, 0, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_SC1, 0, 0, 0, 0},
 	} {
@@ -71,6 +71,11 @@ func TestVolumePerformanceOutsideTheTypeRulesIsInvalid(t *testing.T) {
 		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 124},
 		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 2001},
 		{storagev1.VolumeType_VOLUME_TYPE_GP3, -1, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 3000, 751}, // over 0.25 MiB/s per IOPS
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 751},    // the same after the 3000 IOPS default
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 62501, 0},  // over 500 IOPS per GiB of 125 GiB
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 6251, 0},   // over 50 IOPS per GiB
+		{storagev1.VolumeType_VOLUME_TYPE_IO2, 125001, 0}, // over 1000 IOPS per GiB
 		{storagev1.VolumeType_VOLUME_TYPE_IO1, 0, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_IO1, 99, 0},
 		{storagev1.VolumeType_VOLUME_TYPE_IO1, 64001, 0},
