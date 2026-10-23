@@ -134,7 +134,7 @@ func imageVolumeReq(t *testing.T, imageID string) model.CreateVolumeRequest {
 	}
 	return model.CreateVolumeRequest{
 		ID:   id.WithProject(project),
-		Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeSSD, Source: src},
+		Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeGP2, Source: src},
 	}
 }
 
@@ -646,7 +646,9 @@ func volumeReq(t *testing.T) model.CreateVolumeRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.CreateVolumeRequest{Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeSSD, Source: model.NoSource()}}
+	return model.CreateVolumeRequest{Spec: model.VolumeSpec{
+		Size: model.GiB, Zone: zone, Type: model.VolumeTypeGP2, Source: model.NoSource(),
+	}}
 }
 
 func token(t *testing.T, s string) model.ClientToken {

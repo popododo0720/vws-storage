@@ -24,9 +24,19 @@ import (
 	"github.com/popododo0720/vws-storage/internal/model"
 )
 
-// Classes maps a volume type to a StorageClass name. It is the one place
-// that decides which CSI driver serves a type.
+// Classes maps a volume type to a StorageClass name, with the backend-wide
+// volumeMode and VolumeSnapshotClass. WithClass maps a type with its own.
+// Together they are the one place that decides which CSI driver serves a
+// type; a type in neither is not served.
 type Classes map[model.VolumeType]string
+
+// Class is the cluster objects behind one volume type. An empty VolumeMode
+// or SnapshotClass takes the backend-wide value (WithVolumeMode, NewBlock).
+type Class struct {
+	StorageClass  string
+	VolumeMode    corev1.PersistentVolumeMode
+	SnapshotClass string
+}
 
 // DefaultClass is the StorageClass name every type maps to by default.
 const DefaultClass = "ceph-block"
@@ -35,7 +45,7 @@ const DefaultClass = "ceph-block"
 func DefaultClasses() Classes {
 	return Classes{
 		model.VolumeTypeStandard: DefaultClass,
-		model.VolumeTypeSSD:      DefaultClass,
+		model.VolumeTypeGP2:      DefaultClass,
 	}
 }
 
@@ -45,6 +55,7 @@ type Block struct {
 	dyn           dynamic.Interface
 	ns            string
 	classes       Classes
+	types         map[model.VolumeType]Class
 	snapshotClass string
 	mode          corev1.PersistentVolumeMode
 	dvRetries     int
@@ -59,8 +70,9 @@ type Block struct {
 }
 
 var (
-	_ backend.Block   = (*Block)(nil)
-	_ backend.Retyper = (*Block)(nil)
+	_ backend.Block      = (*Block)(nil)
+	_ backend.Retyper    = (*Block)(nil)
+	_ backend.TypeServer = (*Block)(nil)
 )
 
 // NewBlock returns a backend that creates Block-mode PVCs and VolumeSnapshots
@@ -68,7 +80,8 @@ var (
 // snapshots; empty means the backend takes no snapshots.
 func NewBlock(kc kubernetes.Interface, dyn dynamic.Interface, ns string, classes Classes, snapshotClass string) *Block {
 	return &Block{
-		kc: kc, dyn: dyn, ns: ns, classes: classes, snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock,
+		kc: kc, dyn: dyn, ns: ns, classes: classes, types: map[model.VolumeType]Class{},
+		snapshotClass: snapshotClass, mode: corev1.PersistentVolumeBlock,
 		dvRetries: DefaultDataVolumeRetries, dvTimeout: DefaultDataVolumeTimeout, carried: map[string]dvRetry{},
 		imageNS: DefaultImageNamespace,
 	}
@@ -97,16 +110,73 @@ func (b *Block) WithVolumeMode(m corev1.PersistentVolumeMode) *Block {
 	return b
 }
 
-// Retype implements backend.Retyper. A claim's StorageClass cannot change,
-// so a type change is allowed only when both types map to the same class.
+// WithClass maps type t to its own Class, replacing what Classes maps it to.
+func (b *Block) WithClass(t model.VolumeType, c Class) *Block {
+	b.types[t] = c
+	return b
+}
+
+// classFor is the resolved mapping of t: every field set.
+func (b *Block) classFor(t model.VolumeType) (Class, bool) {
+	c, ok := b.types[t]
+	if !ok {
+		sc, mapped := b.classes[t]
+		if !mapped {
+			return Class{}, false
+		}
+		c = Class{StorageClass: sc}
+	}
+	if c.StorageClass == "" {
+		return Class{}, false
+	}
+	if c.VolumeMode == "" {
+		c.VolumeMode = b.mode
+	}
+	if c.SnapshotClass == "" {
+		c.SnapshotClass = b.snapshotClass
+	}
+	return c, true
+}
+
+// mapped is every served type with its resolved Class.
+func (b *Block) mapped() map[model.VolumeType]Class {
+	out := map[model.VolumeType]Class{}
+	for _, t := range model.VolumeTypes() {
+		if c, ok := b.classFor(t); ok {
+			out[t] = c
+		}
+	}
+	return out
+}
+
+// ServeType reports whether new volumes of type t can be made: t needs a
+// StorageClass in the mapping. It reads only configuration.
+func (b *Block) ServeType(t model.VolumeType) error {
+	if _, ok := b.classFor(t); !ok {
+		return fmt.Errorf("%w: no StorageClass is mapped to volume type %s", backend.ErrInvalid, t)
+	}
+	return nil
+}
+
+// Retype implements backend.Retyper. A claim's StorageClass and volumeMode
+// cannot change, and its annotation keeps the snapshot class of its type, so a
+// type change is allowed only when both types map to the same class, mode and
+// snapshot class.
 func (b *Block) Retype(from, to model.VolumeType) error {
-	cf, okf := b.classes[from]
-	ct, okt := b.classes[to]
+	cf, okf := b.classFor(from)
+	ct, okt := b.classFor(to)
 	switch {
 	case !okt:
 		return fmt.Errorf("%w: volume type %q", backend.ErrInvalid, to)
-	case !okf || cf != ct:
-		return fmt.Errorf("%w: volume type %q is StorageClass %q, and a claim's StorageClass cannot change", backend.ErrInvalid, to, ct)
+	case !okf || cf.StorageClass != ct.StorageClass:
+		return fmt.Errorf("%w: volume type %q is StorageClass %q, and a claim's StorageClass cannot change",
+			backend.ErrInvalid, to, ct.StorageClass)
+	case cf.VolumeMode != ct.VolumeMode:
+		return fmt.Errorf("%w: volume type %q is volumeMode %s, and a claim's volumeMode cannot change",
+			backend.ErrInvalid, to, ct.VolumeMode)
+	case cf.SnapshotClass != ct.SnapshotClass:
+		return fmt.Errorf("%w: volume type %q uses VolumeSnapshotClass %q, and a claim keeps the snapshot class of its type",
+			backend.ErrInvalid, to, ct.SnapshotClass)
 	}
 	return nil
 }
@@ -125,17 +195,18 @@ func (b *Block) ClaimName(id model.VolumeID) string { return pvcName(id) }
 // including after Expand: a claim at least as large as the request is the same
 // volume, because a volume only grows.
 func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.VolumeSpec) error {
-	class, ok := b.classes[spec.Type]
+	c, ok := b.classFor(spec.Type)
 	if !ok {
-		return backend.Permanent(fmt.Errorf("%w: volume type %q", backend.ErrInvalid, spec.Type))
+		return backend.Permanent(b.ServeType(spec.Type))
 	}
+	class := c.StorageClass
 	if img, ok := spec.Source.Image(); ok {
-		return b.imageVolume(ctx, id, spec, class, img)
+		return b.imageVolume(ctx, id, spec, c, img)
 	}
 	var from model.SnapshotID
 	// A Block claim is the disk itself. A Filesystem claim must hold disk.img,
 	// which only a restore (the snapshot has it) or CDI (blankVolume) provides.
-	mode := b.mode
+	mode := c.VolumeMode
 	if snap, ok := spec.Source.Snapshot(); ok {
 		from = snap
 		vs, err := b.requireReady(ctx, snap)
@@ -155,9 +226,10 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 			Name:      pvcName(id),
 			Namespace: b.ns,
 			Annotations: map[string]string{
-				VolumeAnnotation: id.String(),
-				zoneAnnotation:   spec.Zone.String(),
-				sourceAnnotation: from.String(),
+				VolumeAnnotation:     id.String(),
+				zoneAnnotation:       spec.Zone.String(),
+				sourceAnnotation:     from.String(),
+				VolumeTypeAnnotation: spec.Type.String(),
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -231,6 +303,17 @@ func (b *Block) Expand(ctx context.Context, id model.VolumeID, size model.Bytes)
 	return nil
 }
 
+// anyFilesystem reports whether some type makes Filesystem volumes, which
+// are DataVolumes.
+func (b *Block) anyFilesystem() bool {
+	for _, c := range b.mapped() {
+		if c.VolumeMode == corev1.PersistentVolumeFilesystem {
+			return true
+		}
+	}
+	return false
+}
+
 // volumeSize is the size of the volume a claim stands for: the size
 // annotation, else in Filesystem mode the request of its DataVolume, else the
 // claim request.
@@ -243,7 +326,7 @@ func (b *Block) volumeSize(ctx context.Context, c *corev1.PersistentVolumeClaim)
 		return n, nil
 	}
 	have := c.Spec.Resources.Requests.Storage().Value()
-	if b.mode != corev1.PersistentVolumeFilesystem {
+	if claimMode(c) != corev1.PersistentVolumeFilesystem {
 		return have, nil
 	}
 	dv, err := b.dyn.Resource(dataVolumeGVR).Namespace(b.ns).Get(ctx, c.Name, metav1.GetOptions{})
@@ -270,7 +353,7 @@ func (b *Block) DeleteVolume(ctx context.Context, id model.VolumeID) error {
 	if err := b.deleteDataVolume(ctx, id); err != nil {
 		// In Block mode only an image volume has a DataVolume, and a
 		// deployment that grants no DataVolume access has none of those.
-		if b.mode == corev1.PersistentVolumeFilesystem || !apierrors.IsForbidden(err) {
+		if b.anyFilesystem() || !apierrors.IsForbidden(err) {
 			return err
 		}
 	}

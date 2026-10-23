@@ -120,7 +120,7 @@ message Instance {
 // - each security group belongs to that subnet's VPC
 // - key_pair, when set, is in the region that contains the instance zone
 message InstanceSpec {
-  // Catalog name such as "n1.medium". Grammar: [a-z]([a-z0-9.-]{0,61}[a-z0-9])?
+  // Catalog name: vws.small, vws.medium, vws.large, or vws.xlarge. Grammar: [a-z]([a-z0-9.-]{0,61}[a-z0-9])?
   string machine_type = 1 [(google.api.field_behavior) = REQUIRED];
   // RUNNING or STOPPED. The node starts or stops the machine to match.
   InstancePower power = 2 [(google.api.field_behavior) = REQUIRED];

@@ -93,7 +93,7 @@ func TestModifyVolumeClearsLabelsAndRejectsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vol.Labels != (model.Labels{}) || vol.Spec.Type != model.VolumeTypeSSD {
+	if vol.Labels != (model.Labels{}) || vol.Spec.Type != model.VolumeTypeGP2 {
 		t.Fatalf("volume %+v", vol)
 	}
 	if _, err := svc.Submit(ctx, token(t, "missing"), model.ModifyVolumeRequest{Volume: model.NewVolumeID(), SetLabels: true}); !errors.Is(err, model.ErrNotFound) {

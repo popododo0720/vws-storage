@@ -18,7 +18,7 @@ var snapClassGVR = schema.GroupVersionResource{Group: "snapshot.storage.k8s.io",
 func TestReadyNamesWhatIsMissing(t *testing.T) {
 	ctx := context.Background()
 	class := kube.DefaultClasses()[model.VolumeTypeStandard]
-	good := kube.Classes{model.VolumeTypeStandard: class, model.VolumeTypeSSD: class}
+	good := kube.Classes{model.VolumeTypeStandard: class, model.VolumeTypeGP2: class}
 
 	// Nothing but the StorageClass exists: the snapshot class is reported, and the
 	// namespace and StorageClass are not.
@@ -42,7 +42,7 @@ func TestReadyNamesWhatIsMissing(t *testing.T) {
 		t.Fatalf("everything exists: %v", err)
 	}
 
-	bad := kube.Classes{model.VolumeTypeStandard: class, model.VolumeTypeSSD: "no-such-class"}
+	bad := kube.Classes{model.VolumeTypeStandard: class, model.VolumeTypeGP2: "no-such-class"}
 	err = kube.NewBlock(kc, dyn, "no-such-ns", bad, "ready-snapclass").Ready(ctx)
 	if err == nil || !strings.Contains(err.Error(), `namespace "no-such-ns"`) || !strings.Contains(err.Error(), `StorageClass "no-such-class"`) {
 		t.Fatalf("missing namespace and class: %v", err)

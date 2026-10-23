@@ -15,7 +15,7 @@ func TestVolumeCreateThenReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := CreateVolumeRequest{Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD, Source: NoSource()}}
+	req := CreateVolumeRequest{Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeGP2, Source: NoSource()}}
 	if err := req.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestCreateVolumeFingerprintIsStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	id = id.WithProject(project)
-	blank := CreateVolumeRequest{ID: id, Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD, Source: NoSource()}}
+	blank := CreateVolumeRequest{ID: id, Spec: VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeGP2, Source: NoSource()}}
 	fp, err := HashRequest(blank)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestBlankSourceIsNotASnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD}
+	base := VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeGP2}
 	blankSpec := base
 	blankSpec.Source = blank
 	snapSpec := base
@@ -620,7 +620,7 @@ func TestTokenReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := req
-	other.Spec.Type = VolumeTypeSSD
+	other.Spec.Type = VolumeTypeGP2
 	otherClaim, err := Claim(tok, other)
 	if err != nil {
 		t.Fatal(err)
@@ -662,7 +662,7 @@ func availableVolume(t *testing.T, now time.Time) Volume {
 	}
 	return Volume{
 		ID:    NewVolumeID(),
-		Spec:  VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeSSD, Source: NoSource()},
+		Spec:  VolumeSpec{Size: GiB, Zone: zone, Type: VolumeTypeGP2, Source: NoSource()},
 		State: Available{},
 		Meta:  fresh(now),
 	}
@@ -1072,7 +1072,7 @@ func TestModifyStoresLabelsAndTypeAtAdmission(t *testing.T) {
 	}
 	other := VolumeTypeStandard
 	if vol.Spec.Type == VolumeTypeStandard {
-		other = VolumeTypeSSD
+		other = VolumeTypeGP2
 	}
 	if _, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, labels, VolumeTypeUnspecified); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("unspecified type: %v", err)
@@ -1121,8 +1121,8 @@ func TestModifyRequestValidateAndFingerprint(t *testing.T) {
 	}
 	for name, mut := range map[string]func(*ModifyVolumeRequest){
 		"labels":     func(r *ModifyVolumeRequest) { r.Labels = labels },
-		"set-labels": func(r *ModifyVolumeRequest) { r.SetLabels = false; r.Type = VolumeTypeSSD },
-		"type":       func(r *ModifyVolumeRequest) { r.Type = VolumeTypeSSD },
+		"set-labels": func(r *ModifyVolumeRequest) { r.SetLabels = false; r.Type = VolumeTypeGP2 },
+		"type":       func(r *ModifyVolumeRequest) { r.Type = VolumeTypeGP2 },
 		"etag":       func(r *ModifyVolumeRequest) { r.Expected = 2 },
 	} {
 		other := req

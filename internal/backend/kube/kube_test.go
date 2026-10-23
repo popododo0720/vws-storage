@@ -122,10 +122,10 @@ func claims(t *testing.T) int {
 }
 
 func TestCreateVolumeMapsTypeToStorageClass(t *testing.T) {
-	classes := kube.Classes{model.VolumeTypeStandard: "hdd-class", model.VolumeTypeSSD: "ssd-class"}
+	classes := kube.Classes{model.VolumeTypeStandard: "hdd-class", model.VolumeTypeGP2: "ssd-class"}
 	b := newBlock(classes)
 	id := model.NewVolumeID()
-	if err := b.CreateVolume(context.Background(), id, spec(t, model.VolumeTypeSSD, 2*model.GiB)); err != nil {
+	if err := b.CreateVolume(context.Background(), id, spec(t, model.VolumeTypeGP2, 2*model.GiB)); err != nil {
 		t.Fatal(err)
 	}
 	l, err := kc.CoreV1().PersistentVolumeClaims(ns).List(context.Background(), metav1.ListOptions{})
@@ -352,15 +352,15 @@ func TestClaimAndSnapshotObjectNamesMatchTheObjectsCreated(t *testing.T) {
 // A type may change only to a type served by the same StorageClass (#87).
 func TestRetypeNeedsTheSameStorageClass(t *testing.T) {
 	same := kube.NewBlock(kc, dyn, ns, kube.DefaultClasses(), "")
-	if err := same.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); err != nil {
+	if err := same.Retype(model.VolumeTypeStandard, model.VolumeTypeGP2); err != nil {
 		t.Fatalf("same class: %v", err)
 	}
-	split := kube.NewBlock(kc, dyn, ns, kube.Classes{model.VolumeTypeStandard: "hdd", model.VolumeTypeSSD: "nvme"}, "")
-	if err := split.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); !errors.Is(err, backend.ErrInvalid) {
+	split := kube.NewBlock(kc, dyn, ns, kube.Classes{model.VolumeTypeStandard: "hdd", model.VolumeTypeGP2: "nvme"}, "")
+	if err := split.Retype(model.VolumeTypeStandard, model.VolumeTypeGP2); !errors.Is(err, backend.ErrInvalid) {
 		t.Fatalf("other class: %v", err)
 	}
 	only := kube.NewBlock(kc, dyn, ns, kube.Classes{model.VolumeTypeStandard: "hdd"}, "")
-	if err := only.Retype(model.VolumeTypeStandard, model.VolumeTypeSSD); !errors.Is(err, backend.ErrInvalid) {
+	if err := only.Retype(model.VolumeTypeStandard, model.VolumeTypeGP2); !errors.Is(err, backend.ErrInvalid) {
 		t.Fatalf("unmapped: %v", err)
 	}
 }

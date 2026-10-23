@@ -105,7 +105,8 @@ message Volume {
 
 // VolumeSpec is the desired disk.
 // size_gib must be at least 1 and may only grow.
-// type is STANDARD or SSD, and type and source are immutable.
+// type is one of the EBS volume types (GP2, GP3, IO1, IO2, ST1, SC1,
+// STANDARD), and type and source are immutable.
 // An unset source is a blank volume.
 // size_gib must be at least the source image or snapshot size.
 message VolumeSpec {
@@ -121,6 +122,13 @@ message VolumeSpec {
       (google.api.resource_reference).type = "vws.storage/Snapshot"
     ];
   }
+  // Provisioned IOPS, as in EC2 CreateVolume Iops.
+  // GP3: 3000-80000, 0 uses 3000. IO1: 100-64000, required.
+  // IO2: 100-256000, required. Every other type: must be 0.
+  int64 iops = 5;
+  // Provisioned throughput in MiB/s, as in EC2 CreateVolume Throughput.
+  // GP3: 125-2000, 0 uses 125. Every other type: must be 0.
+  int64 throughput_mibps = 6;
 }
 
 message VolumeStatus {
@@ -135,10 +143,28 @@ message VolumeStatus {
   string claim_name = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
+// VolumeType is the EBS volume type. Each value is the EC2 VolumeType string
+// of the same name (VOLUME_TYPE_GP3 is "gp3").
 enum VolumeType {
   VOLUME_TYPE_UNSPECIFIED = 0;
+  // Magnetic, EC2 "standard".
   VOLUME_TYPE_STANDARD = 1;
-  VOLUME_TYPE_SSD = 2;
+  // Deprecated: the old generic SSD tier, kept for wire compatibility.
+  // Clients send one of the EBS values below instead. Servers read a stored
+  // SSD volume as GP2 unless the admin maps it otherwise (vws-storage#123).
+  VOLUME_TYPE_SSD = 2 [deprecated = true];
+  // General Purpose SSD, EC2 "gp2".
+  VOLUME_TYPE_GP2 = 3;
+  // General Purpose SSD, EC2 "gp3".
+  VOLUME_TYPE_GP3 = 4;
+  // Provisioned IOPS SSD, EC2 "io1".
+  VOLUME_TYPE_IO1 = 5;
+  // Provisioned IOPS SSD, EC2 "io2".
+  VOLUME_TYPE_IO2 = 6;
+  // Throughput Optimized HDD, EC2 "st1". Not a boot volume.
+  VOLUME_TYPE_ST1 = 7;
+  // Cold HDD, EC2 "sc1". Not a boot volume.
+  VOLUME_TYPE_SC1 = 8;
 }
 
 message GetVolumeRequest {

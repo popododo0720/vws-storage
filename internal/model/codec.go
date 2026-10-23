@@ -92,10 +92,16 @@ type specWire struct {
 	Zone   string `json:"zone"`
 	Type   string `json:"type"`
 	Source string `json:"source"`
+	// Absent in rows written before #123 and for types without them.
+	Iops       int64 `json:"iops,omitempty"`
+	Throughput int64 `json:"throughput_mibps,omitempty"`
 }
 
 func specTo(s VolumeSpec) specWire {
-	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire()}
+	return specWire{
+		Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.wireName(), Source: s.Source.wire(),
+		Iops: s.Iops, Throughput: s.Throughput,
+	}
 }
 
 func specFrom(w specWire) (VolumeSpec, error) {
@@ -111,7 +117,7 @@ func specFrom(w specWire) (VolumeSpec, error) {
 	if err != nil {
 		return VolumeSpec{}, err
 	}
-	return VolumeSpec{Size: Bytes(w.Size), Zone: z, Type: t, Source: src}, nil
+	return VolumeSpec{Size: Bytes(w.Size), Zone: z, Type: t, Source: src, Iops: w.Iops, Throughput: w.Throughput}, nil
 }
 
 type claimWire struct {
@@ -197,19 +203,27 @@ type workWire struct {
 	Replaces    string            `json:"replaces,omitempty"`
 	Reclaim     bool              `json:"reclaim,omitempty"`
 	Deadline    int64             `json:"deadline"`
+	// Create-volume performance. Absent in operations written before #124 r1.
+	Iops       int64 `json:"iops,omitempty"`
+	Throughput int64 `json:"throughput_mibps,omitempty"`
 }
 
 func workTo(w Work) (workWire, error) {
 	switch w := w.(type) {
 	case VolumeCreation:
 		spec := specTo(w.Spec)
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type, Source: spec.Source}, nil
+		return workWire{
+			Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: spec.Size, Zone: spec.Zone, Type: spec.Type,
+			Source: spec.Source, Iops: spec.Iops, Throughput: spec.Throughput,
+		}, nil
 	case VolumeDeletion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Zone: w.Zone.String()}, nil
 	case VolumeExpansion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size)}, nil
 	case VolumeModification:
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.String(), Labels: w.Labels.Map()}, nil
+		return workWire{
+			Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.wireName(), Labels: w.Labels.Map(),
+		}, nil
 	case SnapshotCreation:
 		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Volume: w.Source.wire(), Zone: w.Region.String()}, nil
 	case SnapshotDeletion:
@@ -242,7 +256,9 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		spec, err := specFrom(specWire{Size: w.Size, Zone: w.Zone, Type: w.Type, Source: w.Source})
+		spec, err := specFrom(specWire{
+			Size: w.Size, Zone: w.Zone, Type: w.Type, Source: w.Source, Iops: w.Iops, Throughput: w.Throughput,
+		})
 		if err != nil {
 			return nil, err
 		}

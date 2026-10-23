@@ -51,6 +51,14 @@ type Retyper interface {
 	Retype(from, to model.VolumeType) error
 }
 
+// TypeServer is an optional Block capability: ServeType reports whether new
+// volumes of type t can be made, because the admin mapped t to storage. It
+// reads only configuration. A non-nil error is the reason it cannot. A
+// backend without it serves every type (vws-storage#123).
+type TypeServer interface {
+	ServeType(t model.VolumeType) error
+}
+
 // Object is the mutating object backend.
 // Bytes are addressed by ObjectRef. How a generation is stored is private
 // to the adapter.

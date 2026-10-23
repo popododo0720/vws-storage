@@ -24,54 +24,83 @@ var filesystemOnly = map[string]bool{
 // that cannot be read is absent.
 func (b *Block) Provisioners(ctx context.Context) map[string]string {
 	out := map[string]string{}
-	for _, class := range b.classes {
-		if sc, err := b.kc.StorageV1().StorageClasses().Get(ctx, class, metav1.GetOptions{}); err == nil {
-			out[class] = sc.Provisioner
+	for _, c := range b.mapped() {
+		if _, done := out[c.StorageClass]; done {
+			continue
+		}
+		if sc, err := b.kc.StorageV1().StorageClasses().Get(ctx, c.StorageClass, metav1.GetOptions{}); err == nil {
+			out[c.StorageClass] = sc.Provisioner
 		}
 	}
 	return out
 }
 
 // Ready is the preflight. It reports whether the cluster answers and holds
-// what the backend needs: the namespace, each StorageClass with a provisioner
-// that can serve the volume mode, the VolumeSnapshotClass when one is set
-// (with the same driver), and the CDI DataVolume API in Filesystem mode. It
-// only reads. Storage is not installed here; it must exist beforehand.
+// what each type mapping needs: the namespace, each StorageClass with a
+// provisioner that can serve the type's volume mode, each VolumeSnapshotClass
+// with the driver of the StorageClasses that use it, and the CDI DataVolume
+// API when a type is Filesystem. It only reads. Storage is not installed
+// here; it must exist beforehand.
 func (b *Block) Ready(ctx context.Context) error {
 	var errs []error
 	if _, err := b.kc.CoreV1().Namespaces().Get(ctx, b.ns, metav1.GetOptions{}); err != nil {
 		errs = append(errs, fmt.Errorf("namespace %q: %w", b.ns, err))
 	}
-	var classes []string
-	seen := map[string]bool{}
-	for _, class := range b.classes {
-		if !seen[class] {
-			seen[class] = true
-			classes = append(classes, class)
+	mapped := b.mapped()
+	blockOn := map[string]bool{}       // StorageClass -> some type uses it in Block mode
+	snapUsers := map[string][]string{} // VolumeSnapshotClass -> StorageClasses
+	fs := false
+	for _, c := range mapped {
+		if c.VolumeMode == corev1.PersistentVolumeBlock {
+			blockOn[c.StorageClass] = true
+		} else {
+			if _, seen := blockOn[c.StorageClass]; !seen {
+				blockOn[c.StorageClass] = false
+			}
+			fs = true
+		}
+		if c.SnapshotClass != "" {
+			snapUsers[c.SnapshotClass] = append(snapUsers[c.SnapshotClass], c.StorageClass)
 		}
 	}
+	classes := make([]string, 0, len(blockOn))
+	for class := range blockOn {
+		classes = append(classes, class)
+	}
 	sort.Strings(classes)
-	drivers := map[string]bool{}
+	provisioner := map[string]string{}
 	for _, class := range classes {
 		sc, err := b.kc.StorageV1().StorageClasses().Get(ctx, class, metav1.GetOptions{})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("StorageClass %q: %w", class, err))
 			continue
 		}
-		drivers[sc.Provisioner] = true
-		if b.mode == corev1.PersistentVolumeBlock && filesystemOnly[sc.Provisioner] {
+		provisioner[class] = sc.Provisioner
+		if blockOn[class] && filesystemOnly[sc.Provisioner] {
 			errs = append(errs, fmt.Errorf("StorageClass %q: provisioner %s serves only Filesystem volumes; set the volume mode to Filesystem", class, sc.Provisioner))
 		}
 	}
-	if b.snapshotClass != "" {
-		vsc, err := b.dyn.Resource(snapshotClassGVR).Get(ctx, b.snapshotClass, metav1.GetOptions{})
+	snaps := make([]string, 0, len(snapUsers))
+	for name := range snapUsers {
+		snaps = append(snaps, name)
+	}
+	sort.Strings(snaps)
+	for _, name := range snaps {
+		vsc, err := b.dyn.Resource(snapshotClassGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			errs = append(errs, fmt.Errorf("VolumeSnapshotClass %q: %w", b.snapshotClass, err))
-		} else if d, _, _ := unstructured.NestedString(vsc.Object, "driver"); len(drivers) > 0 && !drivers[d] { //nolint:errcheck // absent is ""
-			errs = append(errs, fmt.Errorf("VolumeSnapshotClass %q: driver %q is not the provisioner of the StorageClasses", b.snapshotClass, d))
+			errs = append(errs, fmt.Errorf("VolumeSnapshotClass %q: %w", name, err))
+			continue
+		}
+		d, _, _ := unstructured.NestedString(vsc.Object, "driver") //nolint:errcheck // absent is ""
+		for _, class := range snapUsers[name] {
+			if p, ok := provisioner[class]; ok && p != d {
+				errs = append(errs, fmt.Errorf(
+					"VolumeSnapshotClass %q: driver %q is not the provisioner of the StorageClasses", name, d))
+				break
+			}
 		}
 	}
-	if b.mode == corev1.PersistentVolumeFilesystem {
+	if fs {
 		if _, err := b.dyn.Resource(dataVolumeGVR).Namespace(b.ns).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
 			errs = append(errs, fmt.Errorf("CDI DataVolume API (needed for Filesystem volumes): %w", err))
 		}

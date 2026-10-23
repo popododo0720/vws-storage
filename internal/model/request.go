@@ -42,7 +42,9 @@ type Bytes int64
 // GiB is one gibibyte.
 const GiB Bytes = 1 << 30
 
-const maxVolume Bytes = 16 << 40
+// maxVolume is the largest EC2 volume (gp3 and io2, 65536 GiB). Each type has
+// its own range (sizeOf).
+const maxVolume Bytes = 64 << 40
 
 // VolumeSize converts a gibibyte count into a volume size.
 // Values that would wrap an int64, or that exceed the volume limit, are rejected.
@@ -124,40 +126,101 @@ func hexByte(c byte) byte {
 // ETag is the backend-reported entity tag.
 type ETag string
 
-// VolumeType selects a block performance class.
+// VolumeType is the EC2 EBS volume type. Each value prints as the EC2
+// VolumeType string of the same name. Which storage serves a type is the
+// block backend's configuration, not the model's.
 type VolumeType int
 
+// The numbers are stored in fingerprints (ModifyVolumeRequest), so a value
+// never changes. GP2 keeps the number of the pre-#123 "ssd" type, which it
+// replaces.
 const (
 	// VolumeTypeUnspecified is not a valid stored type.
 	VolumeTypeUnspecified VolumeType = iota
-	// VolumeTypeStandard is the default performance class.
+	// VolumeTypeStandard is EC2 "standard" (magnetic).
 	VolumeTypeStandard
-	// VolumeTypeSSD is the higher performance class.
-	VolumeTypeSSD
+	// VolumeTypeGP2 is EC2 "gp2" (General Purpose SSD). A volume stored as
+	// "ssd" before vws-storage#123 reads as gp2.
+	VolumeTypeGP2
+	// VolumeTypeGP3 is EC2 "gp3" (General Purpose SSD).
+	VolumeTypeGP3
+	// VolumeTypeIO1 is EC2 "io1" (Provisioned IOPS SSD).
+	VolumeTypeIO1
+	// VolumeTypeIO2 is EC2 "io2" (Provisioned IOPS SSD).
+	VolumeTypeIO2
+	// VolumeTypeST1 is EC2 "st1" (Throughput Optimized HDD).
+	VolumeTypeST1
+	// VolumeTypeSC1 is EC2 "sc1" (Cold HDD).
+	VolumeTypeSC1
 )
 
-// ParseVolumeType parses "standard" or "ssd".
-func ParseVolumeType(s string) (VolumeType, error) {
-	switch s {
-	case "standard":
-		return VolumeTypeStandard, nil
-	case "ssd":
-		return VolumeTypeSSD, nil
-	default:
-		return 0, fmt.Errorf("%w: volume type", ErrInvalidArgument)
+// legacySSD is the pre-#123 name of VolumeTypeGP2. It is read, and for one
+// release it is also the stored name of gp2 (wireName), so a pre-#123 build
+// can read gp2 rows after a rollback.
+const legacySSD = "ssd"
+
+var volumeTypeNames = [...]string{
+	VolumeTypeStandard: "standard",
+	VolumeTypeGP2:      "gp2",
+	VolumeTypeGP3:      "gp3",
+	VolumeTypeIO1:      "io1",
+	VolumeTypeIO2:      "io2",
+	VolumeTypeST1:      "st1",
+	VolumeTypeSC1:      "sc1",
+}
+
+// VolumeTypes lists every valid type in number order.
+func VolumeTypes() []VolumeType {
+	return []VolumeType{
+		VolumeTypeStandard, VolumeTypeGP2, VolumeTypeGP3, VolumeTypeIO1, VolumeTypeIO2, VolumeTypeST1, VolumeTypeSC1,
 	}
 }
 
-// String returns "standard", "ssd", or "".
+// ParseVolumeType parses an EC2 volume type name. "ssd", the pre-#123 name,
+// parses as gp2: this is the whole stored-data migration (see
+// docs/volume-types.md), so it must stay.
+func ParseVolumeType(s string) (VolumeType, error) {
+	if s == legacySSD {
+		return VolumeTypeGP2, nil
+	}
+	for i, name := range volumeTypeNames {
+		if name != "" && name == s {
+			return VolumeType(i), nil
+		}
+	}
+	return 0, fmt.Errorf("%w: volume type", ErrInvalidArgument)
+}
+
+// String returns the EC2 name, or "" for an invalid type.
 func (t VolumeType) String() string {
-	switch t {
-	case VolumeTypeStandard:
-		return "standard"
-	case VolumeTypeSSD:
-		return "ssd"
-	default:
+	if t < 0 || int(t) >= len(volumeTypeNames) {
 		return ""
 	}
+	return volumeTypeNames[t]
+}
+
+// Valid reports whether t is one of VolumeTypes.
+func (t VolumeType) Valid() bool { return t.String() != "" }
+
+// wireName is the name the store keeps. For one release after #123 gp2 is
+// stored as "ssd", which every build reads (a pre-#123 build as its SSD type,
+// this one as gp2), so a rollback can still read every gp2 row. A later
+// release may store "gp2", which this build already reads. Reading and
+// writing again is byte-identical, so no row changes on its own.
+func (t VolumeType) wireName() string {
+	if t == VolumeTypeGP2 {
+		return legacySSD
+	}
+	return t.String()
+}
+
+// fingerprintName is the name a create fingerprint uses. gp2 keeps "ssd" so
+// that an idempotency token stored before #123 still matches its request.
+func (t VolumeType) fingerprintName() string {
+	if t == VolumeTypeGP2 {
+		return legacySSD
+	}
+	return t.String()
 }
 
 // Source is absent, one local snapshot, or one compute image.
@@ -260,11 +323,117 @@ func imageWire(w string) bool {
 }
 
 // VolumeSpec is the desired shape of a volume.
+// Iops and Throughput (MiB/s) are the provisioned performance of EC2
+// CreateVolume. They are stored and reported; the backend's StorageClass is
+// what delivers them, and that is the admin's responsibility.
 type VolumeSpec struct {
-	Size   Bytes
-	Zone   Zone
-	Type   VolumeType
-	Source Source
+	Size       Bytes
+	Zone       Zone
+	Type       VolumeType
+	Source     Source
+	Iops       int64
+	Throughput int64
+}
+
+// performance is the EC2 range of provisioned IOPS and throughput of a type
+// (vws-proto v0.5.0 VolumeSpec). A zero range means the type takes no value.
+// iopsPerGiB caps IOPS by size; IOPS up to freeIops need no size (gp3's
+// included baseline). mibsPerKiops caps throughput by IOPS, in MiB/s per
+// 1000 IOPS (gp3: 0.25 MiB/s per IOPS).
+type performance struct {
+	minIops, maxIops, defIops int64
+	minMibs, maxMibs, defMibs int64
+	iopsPerGiB, freeIops      int64
+	mibsPerKiops              int64
+}
+
+var performanceOf = map[VolumeType]performance{
+	VolumeTypeGP3: {
+		minIops: 3000, maxIops: 80000, defIops: 3000, minMibs: 125, maxMibs: 2000, defMibs: 125,
+		iopsPerGiB: 500, freeIops: 3000, mibsPerKiops: 250,
+	},
+	VolumeTypeIO1: {minIops: 100, maxIops: 64000, iopsPerGiB: 50},
+	VolumeTypeIO2: {minIops: 100, maxIops: 256000, iopsPerGiB: 1000},
+}
+
+// WithDefaultPerformance fills what EC2 fills when a field is left out: gp3
+// takes 3000 IOPS and 125 MiB/s. io1 and io2 IOPS have no default.
+func (s VolumeSpec) WithDefaultPerformance() VolumeSpec {
+	p := performanceOf[s.Type]
+	if s.Iops == 0 {
+		s.Iops = p.defIops
+	}
+	if s.Throughput == 0 {
+		s.Throughput = p.defMibs
+	}
+	return s
+}
+
+// sizeOf is the EC2 CreateVolume and ModifyVolume size range of each type, in
+// GiB.
+var sizeOf = map[VolumeType]struct{ min, max Bytes }{
+	VolumeTypeStandard: {1, 1024},
+	VolumeTypeGP2:      {1, 16384},
+	VolumeTypeGP3:      {1, 65536},
+	VolumeTypeIO1:      {4, 16384},
+	VolumeTypeIO2:      {4, 65536},
+	VolumeTypeST1:      {125, 16384},
+	VolumeTypeSC1:      {125, 16384},
+}
+
+// checkSize refuses a size outside the range of type t.
+func checkSize(t VolumeType, size Bytes) error {
+	r, ok := sizeOf[t]
+	if !ok || size < r.min*GiB || size > r.max*GiB {
+		return fmt.Errorf("%w: volume type %s needs a size from %d to %d GiB", ErrInvalidArgument, t, r.min, r.max)
+	}
+	return nil
+}
+
+// checkPerformance enforces the per-type IOPS and throughput rules of EC2
+// CreateVolume and ModifyVolume on a volume of size bytes: the ranges, IOPS
+// per GiB, and gp3 throughput per IOPS.
+func checkPerformance(t VolumeType, size Bytes, iops, mibs int64) error {
+	p := performanceOf[t]
+	switch {
+	case p.maxIops == 0 && iops != 0:
+		return fmt.Errorf("%w: volume type %s takes no iops", ErrInvalidArgument, t)
+	case p.maxIops != 0 && (iops < p.minIops || iops > p.maxIops):
+		return fmt.Errorf("%w: volume type %s needs iops from %d to %d", ErrInvalidArgument, t, p.minIops, p.maxIops)
+	case p.maxMibs == 0 && mibs != 0:
+		return fmt.Errorf("%w: volume type %s takes no throughput", ErrInvalidArgument, t)
+	case p.maxMibs != 0 && (mibs < p.minMibs || mibs > p.maxMibs):
+		return fmt.Errorf("%w: volume type %s needs throughput from %d to %d MiB/s",
+			ErrInvalidArgument, t, p.minMibs, p.maxMibs)
+	}
+	if gib := int64(size / GiB); p.iopsPerGiB != 0 && iops > p.freeIops && iops > p.iopsPerGiB*gib {
+		return fmt.Errorf("%w: volume type %s allows at most %d iops per GiB; %d GiB allows %d",
+			ErrInvalidArgument, t, p.iopsPerGiB, gib, max(p.freeIops, p.iopsPerGiB*gib))
+	}
+	if p.mibsPerKiops != 0 && mibs*1000 > iops*p.mibsPerKiops {
+		return fmt.Errorf("%w: volume type %s allows at most 0.25 MiB/s of throughput per iops; %d iops allow %d MiB/s",
+			ErrInvalidArgument, t, iops, iops*p.mibsPerKiops/1000)
+	}
+	return nil
+}
+
+// retypePerformance is the IOPS and throughput a volume of size bytes stores
+// after a change to type to, as EC2 ModifyVolume without Iops or Throughput:
+// "If you change the volume type to io1, io2, or gp3, the default is 3,000"
+// IOPS, and throughput is 125 unless source and target are both gp3, which is
+// no type change. Other types store none. The result must fit the size; a
+// default over the IOPS-per-GiB cap is refused, as EC2 refuses it.
+func retypePerformance(to VolumeType, size Bytes) (int64, int64, error) {
+	p := performanceOf[to]
+	var iops, mibs int64
+	if p.maxIops != 0 {
+		iops = 3000
+	}
+	mibs = p.defMibs
+	if err := checkPerformance(to, size, iops, mibs); err != nil {
+		return 0, 0, err
+	}
+	return iops, mibs, nil
 }
 
 // Request is one client mutation. Adding a kind requires fingerprint so the
@@ -427,10 +596,13 @@ func (r CreateVolumeRequest) Validate() error {
 	if r.Spec.Zone.IsZero() {
 		return fmt.Errorf("%w: zone", ErrInvalidArgument)
 	}
-	if r.Spec.Type != VolumeTypeStandard && r.Spec.Type != VolumeTypeSSD {
+	if !r.Spec.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
-	return nil
+	if err := checkSize(r.Spec.Type, r.Spec.Size); err != nil {
+		return err
+	}
+	return checkPerformance(r.Spec.Type, r.Spec.Size, r.Spec.Iops, r.Spec.Throughput)
 }
 
 // Validate implements Request.
@@ -446,7 +618,7 @@ func (r ModifyVolumeRequest) Validate() error {
 	if r.Volume.IsZero() {
 		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
 	}
-	if r.Type != VolumeTypeUnspecified && r.Type != VolumeTypeStandard && r.Type != VolumeTypeSSD {
+	if r.Type != VolumeTypeUnspecified && !r.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
 	if !r.SetLabels && r.Type == VolumeTypeUnspecified {
@@ -566,8 +738,14 @@ func (r DeleteObjectRequest) Validate() error {
 	return nil
 }
 
+// A spec without IOPS or throughput keeps the pre-#123 fingerprint.
 func (r CreateVolumeRequest) fingerprint() string {
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), r.Spec.Source.canonical(), r.Labels.canonical())
+	f := fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(),
+		r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
+	if r.Spec.Iops != 0 || r.Spec.Throughput != 0 {
+		f += fmt.Sprintf("\niops=%d\nthroughput=%d", r.Spec.Iops, r.Spec.Throughput)
+	}
+	return f
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {

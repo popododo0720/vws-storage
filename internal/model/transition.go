@@ -131,6 +131,9 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 	if size <= a.v.Spec.Size {
 		return Admitted{}, fmt.Errorf("%w: volume can only grow", ErrInvalidArgument)
 	}
+	if err := checkSize(a.v.Spec.Type, size); err != nil {
+		return Admitted{}, err
+	}
 	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size})
 	ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -154,21 +157,32 @@ func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) 
 
 // Modify stores labels and typ on the volume and records the operation as
 // succeeded in the same write: nothing outside the store changes. Values
-// equal to the stored ones only record the operation.
+// equal to the stored ones only record the operation. A new type re-derives
+// IOPS and throughput (retypePerformance).
 func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitted, error) {
 	if st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
-	if typ != VolumeTypeStandard && typ != VolumeTypeSSD {
+	if !typ.Valid() {
 		return Admitted{}, fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
 	w := VolumeModification{Volume: a.v.ID, Labels: labels, Type: typ}
 	if a.v.Labels == labels && a.v.Spec.Type == typ {
 		return FinishNow(st, w, a.v)
 	}
+	next := a.v
+	if typ != a.v.Spec.Type {
+		if err := checkSize(typ, a.v.Spec.Size); err != nil {
+			return Admitted{}, err
+		}
+		iops, mibs, err := retypePerformance(typ, a.v.Spec.Size)
+		if err != nil {
+			return Admitted{}, err
+		}
+		next.Spec.Iops, next.Spec.Throughput = iops, mibs
+	}
 	op := newOp(st, w)
 	op.State = OpSucceeded{}
-	next := a.v
 	next.Labels = labels
 	next.Spec.Type = typ
 	next.Meta = bump(a.v.Meta, st.Now)

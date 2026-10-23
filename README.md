@@ -26,7 +26,8 @@ go run ./cmd/vws-storage
 | `-kube-config` | empty | kubeconfig path for `kube`. Empty uses in-cluster credentials |
 | `-kube-namespace` | `vws-vms` | namespace for claims and snapshots. It is the VM namespace, because KubeVirt hot-plugs only a claim in the VM's namespace |
 | `-kube-class-standard` | `ceph-block` | StorageClass for `standard` volumes |
-| `-kube-class-ssd` | `ceph-block` | StorageClass for `ssd` volumes |
+| `-kube-class-ssd` | `ceph-block` | StorageClass for `gp2` volumes. The name is kept from before #123, when the type was `ssd`; an `ssd` volume reads as `gp2` |
+| `-kube-volume-type` | none | `TYPE=STORAGECLASS[/VOLUMEMODE[/SNAPSHOTCLASS]]`, repeatable, one per type (`standard`, `gp2`, `gp3`, `io1`, `io2`, `st1`, `sc1`). Empty fields take `-kube-volume-mode` and `-kube-snapshot-class`. It overrides the two flags above for its type. A type mapped nowhere is refused. See "Volume types" |
 | `-kube-snapshot-class` | `ceph-block` | VolumeSnapshotClass for snapshots. Empty disables snapshots (`CreateSnapshot` is `INVALID_ARGUMENT`) |
 | `-kube-volume-mode` | `Block` | `volumeMode` of new empty volumes. `Filesystem` for a provisioner that serves only Filesystem, such as NFS. It needs CDI |
 | `-kube-dv-retries` | `3` | Filesystem and image volumes: times a `Failed` CDI DataVolume is deleted and made again. `0` gives up on the first `Failed` |
@@ -42,7 +43,7 @@ One process may open a given SQLite file.
 `internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.
 
 - `kube.Config` holds the kubeconfig path (empty means in-cluster), the namespace, the class table, and the `VolumeSnapshotClass`. `kube.Open` builds the backend and does not call the API server. Defaults are namespace `vws-vms` (the VM namespace, so KubeVirt can hot-plug the claim), StorageClass `ceph-block`, and snapshot class `ceph-block`. They are the names the Rook bundle in vws-deploy creates (provisioner `rook-ceph.rbd.csi.ceph.com`). A class that does not exist leaves the claim Pending.
-- `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `ssd` to `ceph-block`. A type with no entry is `INVALID_ARGUMENT` on the operation and creates no claim.
+- `kube.Classes` maps a volume type to a StorageClass name. `DefaultClasses` maps `standard` and `gp2` to `ceph-block`. `kube.Config.Types` (and `Block.WithClass`) map a type to a `kube.Class`: StorageClass, `volumeMode` and VolumeSnapshotClass. A type in neither is not served (`ServeType`): `CreateVolume` is `INVALID_ARGUMENT` and creates nothing. New claims and DataVolumes carry the annotation `vws.io/volume-type`, which picks the snapshot class.
 - The claim name is derived from the full volume name, so a repeated `CreateVolume` is one claim. A repeat with another size, type, or zone is `ErrConflict`.
 - `Expand` raises the claim request. A smaller size is `ErrInvalid`. The API server accepts a resize only on a bound claim whose class has `allowVolumeExpansion: true`. `Expand` is on `backend.Block`. `UpdateVolume` with mask `spec` or `spec.size_gib` submits an `ExpandVolumeRequest`. A smaller size is `INVALID_ARGUMENT` and the same size is a succeeded operation. The row keeps its old size until the backend call succeeds, then takes the new size and a new etag in the write that succeeds the operation.
 - An image volume (`source.image`, the RunInstances root volume) is a CDI `DataVolume` named after the claim with `sourceRef: {kind: DataSource, name: <image id>, namespace: <-kube-image-namespace>}`, in Block or Filesystem mode as `-kube-volume-mode` says. vws-compute keeps each image as a DataVolume and a DataSource named by the image id in its image namespace, and the image name is `projects/*/regions/*/images/{id}`, so the last segment names the DataSource; project and region are not checked. The DataVolume has `cdi.kubevirt.io/storage.bind.immediate.requested: "true"`, since nothing consumes the claim before the clone ends. It waits for `Succeeded` and retries `Failed` with `-kube-dv-retries` and `-kube-dv-timeout` exactly as the Filesystem bullet below says, and `claim_name` stays empty until then (the volume is creating). Before the first DataVolume the backend reads the DataSource and asks the API server (SelfSubjectAccessReview) whether it may clone from the namespace the DataSource points at. A missing DataSource or a missing permission fails the create permanently, so the volume is in error with the reason. Those are the checks CDI's DataVolume webhook makes against the user that creates the DataVolume, which is this service account, not the VM namespace `default` account (that one is checked only for a VM's `dataVolumeTemplates`). RBAC for image volumes:
@@ -98,6 +99,43 @@ vws-storage does not install or operate storage. The StorageClasses, the CSI dri
 
 Until all of these hold, the volume and snapshot services are NOT_SERVING.
 
+### Volume types
+
+The API serves the seven EBS types: `standard`, `gp2`, `gp3`, `io1`, `io2`, `st1` and `sc1` (#123, vws-proto v0.5.0). The admin maps each type to storage; the defaults map `standard` and `gp2` to `ceph-block`, so a deployment that sets no new flag behaves as before. For example:
+
+```
+-kube-volume-type=gp3=ceph-block-fast
+-kube-volume-type=io2=ceph-block-fast//ceph-block-fast-snap
+-kube-volume-type=st1=nfs-csi/Filesystem/nfs-snap
+```
+
+A type with no mapping is `INVALID_ARGUMENT` (`INVALID_SPEC`, "volume type ... is unsupported") before anything is written: no row, no operation, no claim. EC2 calls this `UnknownVolumeType`. Readiness checks every mapping: each StorageClass exists, a Block-only provisioner is not mapped as Filesystem, each snapshot class's driver provisions its StorageClasses, and the CDI DataVolume API exists when a type is Filesystem. A retype (`UpdateVolume` `spec.type`) needs the same StorageClass, `volumeMode` and VolumeSnapshotClass.
+
+IOPS and throughput follow the EC2 rules ([EBS volume types](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volume-types.html)). Anything else is `INVALID_ARGUMENT`:
+
+| Type | Size (GiB) | `iops` | `throughput_mibps` |
+| --- | --- | --- | --- |
+| `gp3` | 1 to 65536 | 3000 to 80000, at most max(3000, 500 per GiB); 0 means 3000 | 125 to 2000, at most 0.25 per IOPS; 0 means 125 |
+| `io1` | 4 to 16384 | 100 to 64000, at most 50 per GiB, required | 0 |
+| `io2` | 4 to 65536 | 100 to 256000, at most 1000 per GiB, required | 0 |
+| `gp2` | 1 to 16384 | 0 | 0 |
+| `st1`, `sc1` | 125 to 16384 | 0 | 0 |
+| `standard` | 1 to 1024 | 0 | 0 |
+
+The `gp3` 500-per-GiB ratio applies above the included 3000 IOPS, so every `gp3` size keeps 3000. Create, expand and retype check the size range of the volume's (new) type.
+
+The values are stored and returned. The backend does not enforce them; the admin's StorageClass decides real performance. A retype follows EC2 `ModifyVolume` without `Iops` or `Throughput`: `io1`, `io2` and `gp3` get 3000 IOPS, `gp3` gets 125 MiB/s, the other types store 0. The ratio is then checked, so a retype to `io1` under 60 GiB is refused. `UpdateVolume` does not change `iops` or `throughput_mibps`.
+
+#### SSD to gp2 migration
+
+Before #123 the second type was `ssd` (`VOLUME_TYPE_SSD`, now deprecated). It is `gp2`:
+
+- Reads migrate. The store keeps the type as a name, and both `ssd` and `gp2` parse as `gp2`. For one release a `gp2` volume or operation is still stored under the old name `ssd`, so a build from before #123 can read it after a rollback; a later release can store `gp2`, which this build already reads. Reading a row and writing it again is byte-identical. There is no batch job: nothing runs at startup, a restart changes nothing, and running twice is the same as once. No row is deleted or rewritten except by a write that would have happened anyway.
+- `gp2` keeps the number `ssd` had, and a create fingerprint prints `gp2` as `ssd`, so a retried request with a pre-upgrade token is still the same operation. `iops` and `throughput_mibps` enter the fingerprint only when they are not 0.
+- Kubernetes objects do not change. `gp2` uses the StorageClass `-kube-class-ssd` names, so existing claims stay as they are. A claim made before #123 has no `vws.io/volume-type`; its snapshot class is the one shared by the types of its StorageClass, and a snapshot is refused rather than guessed when they differ.
+- `CreateVolume` keeps accepting `VOLUME_TYPE_SSD`, which a pre-#123 console-api still sends. It is stored as `gp2` through the `gp2` mapping, and is the same operation as the same request with `VOLUME_TYPE_GP2`. Responses never carry `VOLUME_TYPE_SSD`; they say `VOLUME_TYPE_GP2`, which a pre-#123 console-api already shows as `gp2`.
+- Rollout: deploy this service before console-api#323. Downgrade: a build from before #123 reads `standard` and `gp2` rows (stored as `ssd`) and their operations. It cannot read a row of a new type (`gp3`, `io1`, `io2`, `st1`, `sc1`, possible only once those are mapped): `ListVolumes` fails with `INVALID_ARGUMENT` "volume type", and so does reading that volume, and while such an operation is runnable its queue sampler logs an error every second. No row is deleted; deploying this build again reads every row. Take a copy of the state before the upgrade.
+
 ### External storage (generic CSI and NFS)
 
 Any CSI driver that provisions dynamically works through the StorageClass flags. NFS uses [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) with a StorageClass such as:
@@ -111,7 +149,7 @@ parameters: {server: nas.example, share: /export/vws}
 allowVolumeExpansion: true
 ```
 
-Then run with `-kube-class-standard=nfs-csi -kube-class-ssd=nfs-csi -kube-volume-mode=Filesystem`. `-kube-snapshot-class` is the csi-driver-nfs VolumeSnapshotClass, or empty for no snapshots.
+Then run with `-kube-class-standard=nfs-csi -kube-class-ssd=nfs-csi -kube-volume-mode=Filesystem`, or map types one by one with `-kube-volume-type=gp2=nfs-csi/Filesystem`. `-kube-snapshot-class` is the csi-driver-nfs VolumeSnapshotClass, or empty for no snapshots.
 
 iSCSI has no option of its own. The kubernetes-csi `csi-driver-iscsi` only attaches LUNs that already exist and cannot provision them. An iSCSI SAN whose vendor CSI driver provisions dynamically is a generic CSI StorageClass, in Block mode.
 
@@ -204,7 +242,7 @@ A read that races a committed write returns either the old record or the new one
 
 ## Proto
 
-Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (snapshot of main `2d8a7e9`).
+Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (copied from tag `v0.5.0`, commit `3fbc83c`).
 
 Once vws-proto is public, remove the replace and require a tagged version.
 

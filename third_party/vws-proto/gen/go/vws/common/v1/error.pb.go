@@ -35,6 +35,8 @@ const (
 //	RESOURCE_EXHAUSTED     QUOTA_EXCEEDED
 //	UNAVAILABLE            RECONCILIATION_FAILED when retryable is true
 //	INTERNAL               RECONCILIATION_FAILED when retryable is false
+//	UNAUTHENTICATED        INVALID_CREDENTIALS, MFA_REQUIRED, TOKEN_EXPIRED
+//	PERMISSION_DENIED      ACCESS_DENIED
 type ErrorReason int32
 
 const (
@@ -50,6 +52,14 @@ const (
 	ErrorReason_ERROR_REASON_DEPENDENCY_MISSING    ErrorReason = 9
 	ErrorReason_ERROR_REASON_QUOTA_EXCEEDED        ErrorReason = 10
 	ErrorReason_ERROR_REASON_RECONCILIATION_FAILED ErrorReason = 11
+	// Unknown or inactive key, wrong password or MFA code, unknown session.
+	ErrorReason_ERROR_REASON_INVALID_CREDENTIALS ErrorReason = 12
+	// The user has an enabled MFA device and no code was sent.
+	ErrorReason_ERROR_REASON_MFA_REQUIRED ErrorReason = 13
+	// A temporary credential or session past its expiry.
+	ErrorReason_ERROR_REASON_TOKEN_EXPIRED ErrorReason = 14
+	// An IAM policy denied the call (AWS AccessDenied).
+	ErrorReason_ERROR_REASON_ACCESS_DENIED ErrorReason = 15
 )
 
 // Enum value maps for ErrorReason.
@@ -67,6 +77,10 @@ var (
 		9:  "ERROR_REASON_DEPENDENCY_MISSING",
 		10: "ERROR_REASON_QUOTA_EXCEEDED",
 		11: "ERROR_REASON_RECONCILIATION_FAILED",
+		12: "ERROR_REASON_INVALID_CREDENTIALS",
+		13: "ERROR_REASON_MFA_REQUIRED",
+		14: "ERROR_REASON_TOKEN_EXPIRED",
+		15: "ERROR_REASON_ACCESS_DENIED",
 	}
 	ErrorReason_value = map[string]int32{
 		"ERROR_REASON_UNSPECIFIED":           0,
@@ -81,6 +95,10 @@ var (
 		"ERROR_REASON_DEPENDENCY_MISSING":    9,
 		"ERROR_REASON_QUOTA_EXCEEDED":        10,
 		"ERROR_REASON_RECONCILIATION_FAILED": 11,
+		"ERROR_REASON_INVALID_CREDENTIALS":   12,
+		"ERROR_REASON_MFA_REQUIRED":          13,
+		"ERROR_REASON_TOKEN_EXPIRED":         14,
+		"ERROR_REASON_ACCESS_DENIED":         15,
 	}
 )
 
@@ -202,7 +220,7 @@ const file_vws_common_v1_error_proto_rawDesc = "" +
 	"generation\x12\x12\n" +
 	"\x04node\x18\x03 \x01(\tR\x04node\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1c\n" +
-	"\tretryable\x18\x05 \x01(\bR\tretryable*\xb8\x03\n" +
+	"\tretryable\x18\x05 \x01(\bR\tretryable*\xbd\x04\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fERROR_REASON_RESOURCE_NOT_FOUND\x10\x01\x12\x1f\n" +
@@ -216,7 +234,11 @@ const file_vws_common_v1_error_proto_rawDesc = "" +
 	"\x1fERROR_REASON_DEPENDENCY_MISSING\x10\t\x12\x1f\n" +
 	"\x1bERROR_REASON_QUOTA_EXCEEDED\x10\n" +
 	"\x12&\n" +
-	"\"ERROR_REASON_RECONCILIATION_FAILED\x10\vBb\n" +
+	"\"ERROR_REASON_RECONCILIATION_FAILED\x10\v\x12$\n" +
+	" ERROR_REASON_INVALID_CREDENTIALS\x10\f\x12\x1d\n" +
+	"\x19ERROR_REASON_MFA_REQUIRED\x10\r\x12\x1e\n" +
+	"\x1aERROR_REASON_TOKEN_EXPIRED\x10\x0e\x12\x1e\n" +
+	"\x1aERROR_REASON_ACCESS_DENIED\x10\x0fBb\n" +
 	"\x11dev.vws.common.v1B\n" +
 	"ErrorProtoP\x01Z?github.com/popododo0720/vws-proto/gen/go/vws/common/v1;commonv1b\x06proto3"
 

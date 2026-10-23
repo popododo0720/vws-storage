@@ -34,7 +34,7 @@ func TestOpenUsesConfiguredNames(t *testing.T) {
 	cfg := kube.DefaultConfig()
 	cfg.Kubeconfig = writeKubeconfig(t)
 	cfg.Namespace = ns
-	cfg.Classes = kube.Classes{model.VolumeTypeStandard: "slow-class", model.VolumeTypeSSD: "fast-class"}
+	cfg.Classes = kube.Classes{model.VolumeTypeStandard: "slow-class", model.VolumeTypeGP2: "fast-class"}
 	cfg.SnapshotClass = "custom-snapclass"
 	b, err := kube.Open(cfg)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestOpenUsesConfiguredNames(t *testing.T) {
 	}
 	ctx := context.Background()
 	id := model.NewVolumeID()
-	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeSSD, model.GiB)); err != nil {
+	if err := b.CreateVolume(ctx, id, spec(t, model.VolumeTypeGP2, model.GiB)); err != nil {
 		t.Fatal(err)
 	}
 	pvcs, err := kc.CoreV1().PersistentVolumeClaims(cfg.Namespace).List(ctx, metav1.ListOptions{})
@@ -93,7 +93,7 @@ func TestDefaultConfigNamesMatchVwsDeploy(t *testing.T) {
 	if c.Namespace != "vws-vms" || c.SnapshotClass != "ceph-block" {
 		t.Fatalf("namespace %q snapshot class %q", c.Namespace, c.SnapshotClass)
 	}
-	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeSSD} {
+	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeGP2} {
 		if got := c.Classes[typ]; got != "ceph-block" {
 			t.Errorf("class for %s is %q", typ, got)
 		}
