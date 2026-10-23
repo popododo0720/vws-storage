@@ -305,11 +305,79 @@ func imageWire(w string) bool {
 }
 
 // VolumeSpec is the desired shape of a volume.
+// Iops and Throughput (MiB/s) are the provisioned performance of EC2
+// CreateVolume. They are stored and reported; the backend's StorageClass is
+// what delivers them, and that is the admin's responsibility.
 type VolumeSpec struct {
-	Size   Bytes
-	Zone   Zone
-	Type   VolumeType
-	Source Source
+	Size       Bytes
+	Zone       Zone
+	Type       VolumeType
+	Source     Source
+	Iops       int64
+	Throughput int64
+}
+
+// performance is the EC2 range of provisioned IOPS and throughput of a type
+// (vws-proto v0.5.0 VolumeSpec). A zero range means the type takes no value.
+type performance struct {
+	minIops, maxIops, defIops int64
+	minMibs, maxMibs, defMibs int64
+}
+
+var performanceOf = map[VolumeType]performance{
+	VolumeTypeGP3: {minIops: 3000, maxIops: 80000, defIops: 3000, minMibs: 125, maxMibs: 2000, defMibs: 125},
+	VolumeTypeIO1: {minIops: 100, maxIops: 64000},
+	VolumeTypeIO2: {minIops: 100, maxIops: 256000},
+}
+
+// WithDefaultPerformance fills what EC2 fills when a field is left out: gp3
+// takes 3000 IOPS and 125 MiB/s. io1 and io2 IOPS have no default.
+func (s VolumeSpec) WithDefaultPerformance() VolumeSpec {
+	p := performanceOf[s.Type]
+	if s.Iops == 0 {
+		s.Iops = p.defIops
+	}
+	if s.Throughput == 0 {
+		s.Throughput = p.defMibs
+	}
+	return s
+}
+
+// checkPerformance enforces the per-type IOPS and throughput rules.
+func checkPerformance(t VolumeType, iops, mibs int64) error {
+	p := performanceOf[t]
+	switch {
+	case p.maxIops == 0 && iops != 0:
+		return fmt.Errorf("%w: volume type %s takes no iops", ErrInvalidArgument, t)
+	case p.maxIops != 0 && (iops < p.minIops || iops > p.maxIops):
+		return fmt.Errorf("%w: volume type %s needs iops from %d to %d", ErrInvalidArgument, t, p.minIops, p.maxIops)
+	case p.maxMibs == 0 && mibs != 0:
+		return fmt.Errorf("%w: volume type %s takes no throughput", ErrInvalidArgument, t)
+	case p.maxMibs != 0 && (mibs < p.minMibs || mibs > p.maxMibs):
+		return fmt.Errorf("%w: volume type %s needs throughput from %d to %d MiB/s", ErrInvalidArgument, t, p.minMibs, p.maxMibs)
+	}
+	return nil
+}
+
+// retypePerformance is the IOPS and throughput a volume stores after a
+// change to type to, as an EC2 ModifyVolume without Iops or Throughput: a
+// value in range for the new type is kept, gp3 otherwise takes its default,
+// io1 and io2 need an in-range IOPS, and other types store none.
+func retypePerformance(to VolumeType, iops, mibs int64) (int64, int64, error) {
+	p := performanceOf[to]
+	if p.maxIops == 0 {
+		return 0, 0, nil
+	}
+	if iops < p.minIops || iops > p.maxIops {
+		if p.defIops == 0 {
+			return 0, 0, fmt.Errorf("%w: volume type %s needs iops from %d to %d, and the volume has %d", ErrInvalidArgument, to, p.minIops, p.maxIops, iops)
+		}
+		iops = p.defIops
+	}
+	if mibs < p.minMibs || mibs > p.maxMibs {
+		mibs = p.defMibs
+	}
+	return iops, mibs, nil
 }
 
 // Request is one client mutation. Adding a kind requires fingerprint so the
@@ -475,7 +543,7 @@ func (r CreateVolumeRequest) Validate() error {
 	if !r.Spec.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
-	return nil
+	return checkPerformance(r.Spec.Type, r.Spec.Iops, r.Spec.Throughput)
 }
 
 // Validate implements Request.
@@ -611,8 +679,13 @@ func (r DeleteObjectRequest) Validate() error {
 	return nil
 }
 
+// A spec without IOPS or throughput keeps the pre-#123 fingerprint.
 func (r CreateVolumeRequest) fingerprint() string {
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
+	f := fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
+	if r.Spec.Iops != 0 || r.Spec.Throughput != 0 {
+		f += fmt.Sprintf("\niops=%d\nthroughput=%d", r.Spec.Iops, r.Spec.Throughput)
+	}
+	return f
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {

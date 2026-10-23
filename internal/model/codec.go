@@ -92,10 +92,13 @@ type specWire struct {
 	Zone   string `json:"zone"`
 	Type   string `json:"type"`
 	Source string `json:"source"`
+	// Absent in rows written before #123 and for types without them.
+	Iops       int64 `json:"iops,omitempty"`
+	Throughput int64 `json:"throughput_mibps,omitempty"`
 }
 
 func specTo(s VolumeSpec) specWire {
-	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire()}
+	return specWire{Size: int64(s.Size), Zone: s.Zone.String(), Type: s.Type.String(), Source: s.Source.wire(), Iops: s.Iops, Throughput: s.Throughput}
 }
 
 func specFrom(w specWire) (VolumeSpec, error) {
@@ -111,7 +114,7 @@ func specFrom(w specWire) (VolumeSpec, error) {
 	if err != nil {
 		return VolumeSpec{}, err
 	}
-	return VolumeSpec{Size: Bytes(w.Size), Zone: z, Type: t, Source: src}, nil
+	return VolumeSpec{Size: Bytes(w.Size), Zone: z, Type: t, Source: src, Iops: w.Iops, Throughput: w.Throughput}, nil
 }
 
 type claimWire struct {

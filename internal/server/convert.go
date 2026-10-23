@@ -364,9 +364,11 @@ func (s *Server) volumeCreate(in *storagev1.CreateVolumeRequest) (model.CreateVo
 	if got := in.GetVolume().GetName(); got != "" && got != name {
 		return model.CreateVolumeRequest{}, "", invalidID("volume name")
 	}
-	return model.CreateVolumeRequest{ID: id, Spec: model.VolumeSpec{
+	spec := model.VolumeSpec{
 		Size: size, Zone: zone, Type: typ, Source: src,
-	}, Labels: labels}, name, nil
+		Iops: specIn.GetIops(), Throughput: specIn.GetThroughputMibps(),
+	}
+	return model.CreateVolumeRequest{ID: id, Spec: spec.WithDefaultPerformance(), Labels: labels}, name, nil
 }
 
 func (s *Server) snapshotCreate(in *storagev1.CreateSnapshotRequest) (model.CreateSnapshotRequest, string, error) {
@@ -658,6 +660,7 @@ func (s *Server) volumeMsgAttached(ctx context.Context, v model.Volume, attached
 		Labels: v.Labels.Map(),
 		Spec: &storagev1.VolumeSpec{
 			SizeGib: int64(v.Spec.Size / model.GiB), Type: protoVolumeType(v.Spec.Type),
+			Iops: v.Spec.Iops, ThroughputMibps: v.Spec.Throughput,
 		},
 		Status: &storagev1.VolumeStatus{
 			Observed: observed(v.State, v.Meta.Version), SizeGib: int64(v.Spec.Size / model.GiB), ClaimName: s.svc.ClaimName(v),

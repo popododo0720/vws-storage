@@ -1,0 +1,152 @@
+package server_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
+)
+
+// Every EBS type of vws-proto v0.5.0 is created, stored and read back under
+// its own value, with gp3's omitted IOPS and throughput filled as EC2 fills
+// them (vws-storage#123).
+func TestEveryEBSVolumeTypeIsCreatedAndReadBack(t *testing.T) {
+	vols, _, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	for i, tc := range []struct {
+		typ              storagev1.VolumeType
+		iops, mibs       int64
+		wantIops, wantMb int64
+	}{
+		{storagev1.VolumeType_VOLUME_TYPE_STANDARD, 0, 0, 0, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP2, 0, 0, 0, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 0, 3000, 125},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 16000, 1000, 16000, 1000},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 64000, 0, 64000, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO2, 256000, 0, 256000, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_ST1, 0, 0, 0, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_SC1, 0, 0, 0, 0},
+	} {
+		id := fmt.Sprintf("v-%d", i)
+		op, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+			Parent: "projects/local/zones/az-1", VolumeId: id,
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs}},
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.typ, err)
+		}
+		if done := waitOp(t, ops, op.GetName()); done.GetError() != nil {
+			t.Fatalf("%s: %v", tc.typ, done.GetError())
+		}
+		vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/local/zones/az-1/volumes/" + id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := vol.GetSpec()
+		if s.GetType() != tc.typ || s.GetIops() != tc.wantIops || s.GetThroughputMibps() != tc.wantMb {
+			t.Errorf("%s: read back %v iops %d throughput %d", tc.typ, s.GetType(), s.GetIops(), s.GetThroughputMibps())
+		}
+	}
+}
+
+// IOPS and throughput outside the per-type rules are InvalidArgument and
+// create nothing.
+func TestVolumePerformanceOutsideTheTypeRulesIsInvalid(t *testing.T) {
+	vols, _, _, _, _ := dial(t, "")
+	ctx := context.Background()
+	for i, tc := range []struct {
+		typ        storagev1.VolumeType
+		iops, mibs int64
+	}{
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 2999, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 80001, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 124},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, 0, 2001},
+		{storagev1.VolumeType_VOLUME_TYPE_GP3, -1, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 0, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 99, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 64001, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO1, 1000, 125},
+		{storagev1.VolumeType_VOLUME_TYPE_IO2, 0, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_IO2, 256001, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP2, 100, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_GP2, 0, 125},
+		{storagev1.VolumeType_VOLUME_TYPE_SSD, 100, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_STANDARD, 100, 0},
+		{storagev1.VolumeType_VOLUME_TYPE_ST1, 0, 125},
+		{storagev1.VolumeType_VOLUME_TYPE_SC1, 100, 0},
+	} {
+		_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+			Parent: "projects/local/zones/az-1", VolumeId: fmt.Sprintf("bad-%d", i),
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 125, Type: tc.typ, Iops: tc.iops, ThroughputMibps: tc.mibs}},
+		})
+		st, _ := status.FromError(err)
+		if st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+			t.Errorf("%s iops=%d throughput=%d: code %v reason %q err %v", tc.typ, tc.iops, tc.mibs, st.Code(), reasonOf(st), err)
+		}
+	}
+	listed, err := vols.ListVolumes(ctx, &storagev1.ListVolumesRequest{Parent: "projects/local/zones/az-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(listed.GetVolumes()); n != 0 {
+		t.Fatalf("%d volumes created", n)
+	}
+}
+
+// UpdateVolume spec.type re-derives IOPS and throughput for the new type.
+// Moving to io1 or io2 without an in-range stored IOPS is InvalidArgument,
+// because UpdateVolume carries no IOPS.
+func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
+	vols, _, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	name := "projects/local/zones/az-1/volumes/retype"
+	op, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "retype",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 10, Type: storagev1.VolumeType_VOLUME_TYPE_GP2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, op.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	retype := func(typ storagev1.VolumeType) (*storagev1.Volume, error) {
+		cur, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		uop, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
+			Volume:     &storagev1.Volume{Name: name, Etag: cur.GetEtag(), Spec: &storagev1.VolumeSpec{Type: typ}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.type"}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if done := waitOp(t, ops, uop.GetName()); done.GetError() != nil {
+			t.Fatal(done.GetError())
+		}
+		return vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
+	}
+	vol, err := retype(storagev1.VolumeType_VOLUME_TYPE_GP3)
+	if err != nil || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_GP3 || vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 125 {
+		t.Fatalf("to gp3: %v err %v", vol.GetSpec(), err)
+	}
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO2)
+	if err != nil || vol.GetSpec().GetIops() != 3000 || vol.GetSpec().GetThroughputMibps() != 0 {
+		t.Fatalf("to io2: %v err %v", vol.GetSpec(), err)
+	}
+	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_ST1)
+	if err != nil || vol.GetSpec().GetIops() != 0 || vol.GetSpec().GetThroughputMibps() != 0 {
+		t.Fatalf("to st1: %v err %v", vol.GetSpec(), err)
+	}
+	_, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO1)
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" {
+		t.Fatalf("st1 to io1 without iops: %v", err)
+	}
+}
