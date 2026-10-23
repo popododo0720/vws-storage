@@ -76,7 +76,7 @@ func imageRef(t *testing.T, imageID string) model.Source {
 
 func imageSpec(t *testing.T, src model.Source) model.VolumeSpec {
 	t.Helper()
-	s := spec(t, model.VolumeTypeSSD, 8*model.GiB)
+	s := spec(t, model.VolumeTypeGP2, 8*model.GiB)
 	s.Source = src
 	return s
 }

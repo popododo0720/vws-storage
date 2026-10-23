@@ -52,7 +52,7 @@ func run(args []string) error {
 	fs.StringVar(&kubeCfg.Kubeconfig, "kube-config", "", "kubeconfig path for -block-backend=kube; empty uses in-cluster credentials")
 	fs.StringVar(&kubeCfg.Namespace, "kube-namespace", kubeCfg.Namespace, "namespace for volume claims and snapshots")
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
-	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for ssd volumes")
+	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass, "StorageClass for gp2 volumes, the type pre-#123 ssd volumes read as")
 	fs.StringVar(&kubeCfg.SnapshotClass, "kube-snapshot-class", kubeCfg.SnapshotClass, "VolumeSnapshotClass for snapshots; empty disables snapshots")
 	fs.IntVar(&kubeCfg.DataVolumeRetries, "kube-dv-retries", kubeCfg.DataVolumeRetries, "times a Failed CDI DataVolume (Filesystem or image volume) is deleted and made again")
 	fs.DurationVar(&kubeCfg.DataVolumeTimeout, "kube-dv-timeout", kubeCfg.DataVolumeTimeout, "time from a volume's first CDI DataVolume to Succeeded (Filesystem or image volume)")
@@ -78,7 +78,7 @@ func run(args []string) error {
 		return err
 	}
 	kubeCfg.VolumeMode = corev1.PersistentVolumeMode(*volumeMode)
-	kubeCfg.Classes = kube.Classes{model.VolumeTypeStandard: *standardClass, model.VolumeTypeSSD: *ssdClass}
+	kubeCfg.Classes = kube.Classes{model.VolumeTypeStandard: *standardClass, model.VolumeTypeGP2: *ssdClass}
 	block, err := openBlock(*blockBackend, kubeCfg)
 	if err != nil {
 		return err

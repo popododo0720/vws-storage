@@ -439,15 +439,27 @@ func (s *Server) bucketCreate(in *storagev1.CreateBucketRequest) (model.CreateBu
 	return model.CreateBucketRequest{Bucket: id, Region: region, Labels: labels}, name, nil
 }
 
+// protoTypes pairs each wire value with the model type of the same EC2 name.
+var protoTypes = map[storagev1.VolumeType]model.VolumeType{
+	storagev1.VolumeType_VOLUME_TYPE_STANDARD: model.VolumeTypeStandard,
+	storagev1.VolumeType_VOLUME_TYPE_GP2:      model.VolumeTypeGP2,
+	storagev1.VolumeType_VOLUME_TYPE_GP3:      model.VolumeTypeGP3,
+	storagev1.VolumeType_VOLUME_TYPE_IO1:      model.VolumeTypeIO1,
+	storagev1.VolumeType_VOLUME_TYPE_IO2:      model.VolumeTypeIO2,
+	storagev1.VolumeType_VOLUME_TYPE_ST1:      model.VolumeTypeST1,
+	storagev1.VolumeType_VOLUME_TYPE_SC1:      model.VolumeTypeSC1,
+}
+
+// volumeType reads a wire type. The deprecated SSD value is gp2, the type
+// it always was, so a pre-#123 client keeps working (vws-proto v0.5.0).
 func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
-	switch t {
-	case storagev1.VolumeType_VOLUME_TYPE_STANDARD:
-		return model.VolumeTypeStandard, nil
-	case storagev1.VolumeType_VOLUME_TYPE_SSD:
-		return model.VolumeTypeSSD, nil
-	default:
-		return 0, invalidSpec("volume type")
+	if t == storagev1.VolumeType_VOLUME_TYPE_SSD { //nolint:staticcheck // read for pre-#123 clients
+		return model.VolumeTypeGP2, nil
 	}
+	if typ, ok := protoTypes[t]; ok {
+		return typ, nil
+	}
+	return 0, invalidSpec("volume type")
 }
 
 func tokenFor(requestID string) (model.ClientToken, error) {
@@ -715,15 +727,15 @@ func (s *Server) objectMsg(o model.Object) *storagev1.Object {
 	}
 }
 
+// protoVolumeType writes a model type. It never writes the deprecated SSD
+// value: a stored ssd volume reads as gp2.
 func protoVolumeType(t model.VolumeType) storagev1.VolumeType {
-	switch t {
-	case model.VolumeTypeStandard:
-		return storagev1.VolumeType_VOLUME_TYPE_STANDARD
-	case model.VolumeTypeSSD:
-		return storagev1.VolumeType_VOLUME_TYPE_SSD
-	default:
-		return storagev1.VolumeType_VOLUME_TYPE_UNSPECIFIED
+	for wire, typ := range protoTypes {
+		if typ == t {
+			return wire
+		}
 	}
+	return storagev1.VolumeType_VOLUME_TYPE_UNSPECIFIED
 }
 
 func observed(state model.Lifecycle, version model.Version) *commonv1.ObservedState {

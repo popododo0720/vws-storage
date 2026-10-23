@@ -69,7 +69,7 @@ func Open(c Config) (*Block, error) {
 	default:
 		return nil, fmt.Errorf("kube: volume mode %q is not Block or Filesystem", c.VolumeMode)
 	}
-	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeSSD} {
+	for _, typ := range []model.VolumeType{model.VolumeTypeStandard, model.VolumeTypeGP2} {
 		if c.Classes[typ] == "" {
 			return nil, fmt.Errorf("kube: no StorageClass for volume type %q", typ)
 		}

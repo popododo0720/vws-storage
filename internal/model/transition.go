@@ -159,7 +159,7 @@ func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitt
 	if st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
-	if typ != VolumeTypeStandard && typ != VolumeTypeSSD {
+	if !typ.Valid() {
 		return Admitted{}, fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
 	w := VolumeModification{Volume: a.v.ID, Labels: labels, Type: typ}

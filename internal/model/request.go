@@ -124,40 +124,85 @@ func hexByte(c byte) byte {
 // ETag is the backend-reported entity tag.
 type ETag string
 
-// VolumeType selects a block performance class.
+// VolumeType is the EC2 EBS volume type. Each value prints as the EC2
+// VolumeType string of the same name. Which storage serves a type is the
+// block backend's configuration, not the model's.
 type VolumeType int
 
+// The numbers are stored in fingerprints (ModifyVolumeRequest), so a value
+// never changes. GP2 keeps the number of the pre-#123 "ssd" type, which it
+// replaces.
 const (
 	// VolumeTypeUnspecified is not a valid stored type.
 	VolumeTypeUnspecified VolumeType = iota
-	// VolumeTypeStandard is the default performance class.
+	// VolumeTypeStandard is EC2 "standard" (magnetic).
 	VolumeTypeStandard
-	// VolumeTypeSSD is the higher performance class.
-	VolumeTypeSSD
+	// VolumeTypeGP2 is EC2 "gp2" (General Purpose SSD). A volume stored as
+	// "ssd" before vws-storage#123 reads as gp2.
+	VolumeTypeGP2
+	// VolumeTypeGP3 is EC2 "gp3" (General Purpose SSD).
+	VolumeTypeGP3
+	// VolumeTypeIO1 is EC2 "io1" (Provisioned IOPS SSD).
+	VolumeTypeIO1
+	// VolumeTypeIO2 is EC2 "io2" (Provisioned IOPS SSD).
+	VolumeTypeIO2
+	// VolumeTypeST1 is EC2 "st1" (Throughput Optimized HDD).
+	VolumeTypeST1
+	// VolumeTypeSC1 is EC2 "sc1" (Cold HDD).
+	VolumeTypeSC1
 )
 
-// ParseVolumeType parses "standard" or "ssd".
-func ParseVolumeType(s string) (VolumeType, error) {
-	switch s {
-	case "standard":
-		return VolumeTypeStandard, nil
-	case "ssd":
-		return VolumeTypeSSD, nil
-	default:
-		return 0, fmt.Errorf("%w: volume type", ErrInvalidArgument)
-	}
+// legacySSD is the pre-#123 name of VolumeTypeGP2. It is read, never written.
+const legacySSD = "ssd"
+
+var volumeTypeNames = [...]string{
+	VolumeTypeStandard: "standard",
+	VolumeTypeGP2:      "gp2",
+	VolumeTypeGP3:      "gp3",
+	VolumeTypeIO1:      "io1",
+	VolumeTypeIO2:      "io2",
+	VolumeTypeST1:      "st1",
+	VolumeTypeSC1:      "sc1",
 }
 
-// String returns "standard", "ssd", or "".
+// VolumeTypes lists every valid type in number order.
+func VolumeTypes() []VolumeType {
+	return []VolumeType{VolumeTypeStandard, VolumeTypeGP2, VolumeTypeGP3, VolumeTypeIO1, VolumeTypeIO2, VolumeTypeST1, VolumeTypeSC1}
+}
+
+// ParseVolumeType parses an EC2 volume type name. "ssd", the pre-#123 name,
+// parses as gp2: this is the whole stored-data migration (see
+// docs/volume-types.md), so it must stay.
+func ParseVolumeType(s string) (VolumeType, error) {
+	if s == legacySSD {
+		return VolumeTypeGP2, nil
+	}
+	for i, name := range volumeTypeNames {
+		if name != "" && name == s {
+			return VolumeType(i), nil
+		}
+	}
+	return 0, fmt.Errorf("%w: volume type", ErrInvalidArgument)
+}
+
+// String returns the EC2 name, or "" for an invalid type.
 func (t VolumeType) String() string {
-	switch t {
-	case VolumeTypeStandard:
-		return "standard"
-	case VolumeTypeSSD:
-		return "ssd"
-	default:
+	if t < 0 || int(t) >= len(volumeTypeNames) {
 		return ""
 	}
+	return volumeTypeNames[t]
+}
+
+// Valid reports whether t is one of VolumeTypes.
+func (t VolumeType) Valid() bool { return t.String() != "" }
+
+// fingerprintName is the name a create fingerprint uses. gp2 keeps "ssd" so
+// that an idempotency token stored before #123 still matches its request.
+func (t VolumeType) fingerprintName() string {
+	if t == VolumeTypeGP2 {
+		return legacySSD
+	}
+	return t.String()
 }
 
 // Source is absent, one local snapshot, or one compute image.
@@ -427,7 +472,7 @@ func (r CreateVolumeRequest) Validate() error {
 	if r.Spec.Zone.IsZero() {
 		return fmt.Errorf("%w: zone", ErrInvalidArgument)
 	}
-	if r.Spec.Type != VolumeTypeStandard && r.Spec.Type != VolumeTypeSSD {
+	if !r.Spec.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
 	return nil
@@ -446,7 +491,7 @@ func (r ModifyVolumeRequest) Validate() error {
 	if r.Volume.IsZero() {
 		return fmt.Errorf("%w: volume id", ErrInvalidArgument)
 	}
-	if r.Type != VolumeTypeUnspecified && r.Type != VolumeTypeStandard && r.Type != VolumeTypeSSD {
+	if r.Type != VolumeTypeUnspecified && !r.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
 	if !r.SetLabels && r.Type == VolumeTypeUnspecified {
@@ -567,7 +612,7 @@ func (r DeleteObjectRequest) Validate() error {
 }
 
 func (r CreateVolumeRequest) fingerprint() string {
-	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.String(), r.Spec.Source.canonical(), r.Labels.canonical())
+	return fmt.Sprintf("create-volume\n%s\n%d\n%s\n%s\n%s\n%s", r.ID.String(), r.Spec.Size, r.Spec.Zone.String(), r.Spec.Type.fingerprintName(), r.Spec.Source.canonical(), r.Labels.canonical())
 }
 
 func (r DeleteVolumeRequest) fingerprint() string {

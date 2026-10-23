@@ -30,7 +30,7 @@ func nfsClass(t *testing.T, name string) kube.Classes {
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatal(err)
 	}
-	return kube.Classes{model.VolumeTypeStandard: name, model.VolumeTypeSSD: name}
+	return kube.Classes{model.VolumeTypeStandard: name, model.VolumeTypeGP2: name}
 }
 
 func dataVolume(t *testing.T, b *kube.Block, id model.VolumeID) *unstructured.Unstructured {

@@ -181,7 +181,7 @@ func admitVolume(t *testing.T, now time.Time) model.Admitted {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := model.CreateVolumeRequest{Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeSSD, Source: model.NoSource()}}
+	req := model.CreateVolumeRequest{Spec: model.VolumeSpec{Size: model.GiB, Zone: zone, Type: model.VolumeTypeGP2, Source: model.NoSource()}}
 	claim, err := model.Claim(tok, req)
 	if err != nil {
 		t.Fatal(err)

@@ -35,7 +35,7 @@ const DefaultClass = "ceph-block"
 func DefaultClasses() Classes {
 	return Classes{
 		model.VolumeTypeStandard: DefaultClass,
-		model.VolumeTypeSSD:      DefaultClass,
+		model.VolumeTypeGP2:      DefaultClass,
 	}
 }
 
