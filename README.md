@@ -184,7 +184,7 @@ Mutations return a long-running operation. Poll `GetOperation` until `done` is s
 
 ## Object payload contract (WriteObject, ReadObject)
 
-For `vws-console-api` and other callers. The authority is `third_party/vws-proto/vws/storage/v1/object.proto`; this section states what this service does with it. `name` is `projects/{project}/buckets/{bucket}/objects/{object}`, with the key percent-encoded.
+For `vws-console-api` and other callers. The authority is `vws/storage/v1/object.proto` in `github.com/popododo0720/vws-proto` at the tag `go.mod` requires; this section states what this service does with it. `name` is `projects/{project}/buckets/{bucket}/objects/{object}`, with the key percent-encoded.
 
 ### Limits
 
@@ -242,9 +242,7 @@ A read that races a committed write returns either the old record or the new one
 
 ## Proto
 
-Storage RPCs come from `github.com/popododo0720/vws-proto`. The module is private, so `go.mod` replaces it with `./third_party/vws-proto` (copied from tag `v0.5.0`, commit `3fbc83c`).
-
-Once vws-proto is public, remove the replace and require a tagged version.
+Storage RPCs come from `github.com/popododo0720/vws-proto` at a release tag (`go.mod` pins it; today `v0.5.0`). The repo is public, so `go mod download` fetches it through the default module proxy with no token or `GOPRIVATE`. To take a new proto release, run `go get github.com/popododo0720/vws-proto@vX.Y.Z` and `go mod tidy`. Never copy or `replace` the module.
 
 Project comes from each request name. `-projects` restricts which projects this process serves; empty accepts any valid id. The same volume id under two projects is two rows. Bucket and snapshot regions come from the request and are stored. Volume zones come from `-zones`.
 
