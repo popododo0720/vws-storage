@@ -38,7 +38,7 @@ func TestUpgradeFrom010RecordsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT kind, key, payload FROM records ORDER BY kind, key`)
+	rows, err := db.QueryContext(context.Background(), `SELECT kind, key, payload FROM records ORDER BY kind, key`)
 	if err != nil {
 		t.Fatal(err)
 	}

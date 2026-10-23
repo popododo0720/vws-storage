@@ -33,11 +33,16 @@ const (
 	upgradeVol2  = upgradeZone + "/volumes/vol-0000000000000002b"
 	upgradeVol3  = upgradeZone + "/volumes/vol-0000000000000003c"
 	upgradeSnap1 = upgradeRgn + "/snapshots/snap-0000000000000001a"
+	standard     = storagev1.VolumeType_VOLUME_TYPE_STANDARD
 )
+
+var teamLabel = map[string]string{"team": "storage"}
 
 // openFixture010 serves a copy of the 0.1.0 file with the current code. The
 // copy lives in t.TempDir, so the fixture is never written.
-func openFixture010(t *testing.T) (*storage.Service, storagev1.VolumeServiceClient, storagev1.SnapshotServiceClient, longrunningpb.OperationsClient) {
+func openFixture010(t *testing.T) (
+	*storage.Service, storagev1.VolumeServiceClient, storagev1.SnapshotServiceClient, longrunningpb.OperationsClient,
+) {
 	t.Helper()
 	raw, err := os.ReadFile(fixture010)
 	if err != nil {
@@ -75,7 +80,8 @@ func openFixture010(t *testing.T) (*storage.Service, storagev1.VolumeServiceClie
 		gs.Stop()
 		svc.Close()
 	})
-	return svc, storagev1.NewVolumeServiceClient(conn), storagev1.NewSnapshotServiceClient(conn), longrunningpb.NewOperationsClient(conn)
+	return svc, storagev1.NewVolumeServiceClient(conn), storagev1.NewSnapshotServiceClient(conn),
+		longrunningpb.NewOperationsClient(conn)
 }
 
 // Records written by 0.1.0 decode with the current code, keep their values,
@@ -92,10 +98,10 @@ func TestUpgradeFrom010DecodesStoredRecords(t *testing.T) {
 		labels map[string]string
 		op     string
 	}{
-		{upgradeVol1, 8, storagev1.VolumeType_VOLUME_TYPE_STANDARD, model.VolumeTypeStandard, map[string]string{"team": "storage"}, "op-bfe297985c75b4c3a531"},
+		{upgradeVol1, 8, standard, model.VolumeTypeStandard, teamLabel, "op-bfe297985c75b4c3a531"},
 		// Stored as "ssd" by 0.1.0; it reads as gp2 (#123).
 		{upgradeVol2, 16, storagev1.VolumeType_VOLUME_TYPE_GP2, model.VolumeTypeGP2, nil, "op-ee409fb8ed4722576195"},
-		{upgradeVol3, 2000, storagev1.VolumeType_VOLUME_TYPE_STANDARD, model.VolumeTypeStandard, nil, "op-395b8bb42cb203f7e45e"},
+		{upgradeVol3, 2000, standard, model.VolumeTypeStandard, nil, "op-395b8bb42cb203f7e45e"},
 	}
 	for _, w := range want {
 		v, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: w.name})
@@ -125,8 +131,9 @@ func TestUpgradeFrom010DecodesStoredRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 		// 0.1.0 stored no IOPS or throughput; standard and gp2 take none.
-		if mv.Spec.Size != model.Bytes(w.size)*model.GiB || mv.Spec.Type != w.mtype || mv.Spec.Iops != 0 || mv.Spec.Throughput != 0 ||
-			mv.Spec.WithDefaultPerformance() != mv.Spec || mv.Spec.Zone.String() != "vws-1a" || mv.Spec.Source != model.NoSource() {
+		ms := mv.Spec
+		if ms.Size != model.Bytes(w.size)*model.GiB || ms.Type != w.mtype || ms.Iops != 0 || ms.Throughput != 0 ||
+			ms.WithDefaultPerformance() != ms || ms.Zone.String() != "vws-1a" || ms.Source != model.NoSource() {
 			t.Errorf("%s model spec %+v", w.name, mv.Spec)
 		}
 		op, err := ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: upgradeOps + w.op})
@@ -174,8 +181,15 @@ func TestUpgradeFrom010DecodesStoredRecords(t *testing.T) {
 func TestUpgradeFrom010ReplaysStoredTokens(t *testing.T) {
 	_, vols, snaps, _ := openFixture010(t)
 	ctx := context.Background()
-	create := func(id, tok string, size int64, typ storagev1.VolumeType, labels map[string]string) *storagev1.CreateVolumeRequest {
-		return &storagev1.CreateVolumeRequest{
+	const (
+		vol1, tok1 = "vol-0000000000000001a", "11111111-1111-4111-8111-111111111111"
+		vol2, tok2 = "vol-0000000000000002b", "22222222-2222-4222-8222-222222222222"
+	)
+	// The 0.1.0 client sent the now-deprecated SSD value; its replay does too.
+	ssd := storagev1.VolumeType_VOLUME_TYPE_SSD //nolint:staticcheck // the replay must send what 0.1.0 got
+	type createReq = storagev1.CreateVolumeRequest
+	create := func(id, tok string, size int64, typ storagev1.VolumeType, labels map[string]string) *createReq {
+		return &createReq{
 			Parent: upgradeZone, VolumeId: id, RequestId: tok,
 			Volume: &storagev1.Volume{Labels: labels, Spec: &storagev1.VolumeSpec{SizeGib: size, Type: typ}},
 		}
@@ -185,9 +199,9 @@ func TestUpgradeFrom010ReplaysStoredTokens(t *testing.T) {
 		req  *storagev1.CreateVolumeRequest
 		op   string
 	}{
-		{"standard", create("vol-0000000000000001a", "11111111-1111-4111-8111-111111111111", 8, storagev1.VolumeType_VOLUME_TYPE_STANDARD, map[string]string{"team": "storage"}), "op-bfe297985c75b4c3a531"},
-		{"ssd", create("vol-0000000000000002b", "22222222-2222-4222-8222-222222222222", 16, storagev1.VolumeType_VOLUME_TYPE_SSD, nil), "op-ee409fb8ed4722576195"},
-		{"gp2", create("vol-0000000000000002b", "22222222-2222-4222-8222-222222222222", 16, storagev1.VolumeType_VOLUME_TYPE_GP2, nil), "op-ee409fb8ed4722576195"},
+		{"standard", create(vol1, tok1, 8, standard, teamLabel), "op-bfe297985c75b4c3a531"},
+		{"ssd", create(vol2, tok2, 16, ssd, nil), "op-ee409fb8ed4722576195"},
+		{"gp2", create(vol2, tok2, 16, storagev1.VolumeType_VOLUME_TYPE_GP2, nil), "op-ee409fb8ed4722576195"},
 	}
 	for _, c := range cases {
 		op, err := vols.CreateVolume(ctx, c.req)
