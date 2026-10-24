@@ -1,9 +1,8 @@
 # Upgrade fixtures: 0.1.0
 
-`storage.db` was written by the 0.1.0 build: source commit `0c874bc`
-(the build of the `ghcr.io/popododo0720/vws/storage:0.1.0` image that ran on
-vws-test before `dac2dd2`; the repo has no git tag for it). SQLite schema
-`user_version` 2.
+`storage.db` was written by the 0.1.0 build: git tag `0.1.0`, source commit
+`0c874bc` (the build of the `ghcr.io/popododo0720/vws/storage:0.1.0` image that
+ran on vws-test before `dac2dd2`). SQLite schema `user_version` 2.
 
 It holds three volumes (`standard` 8 GiB with a label, `ssd` 16 GiB, and
 `standard` 2000 GiB, over the later 1024 GiB limit, for #126), one snapshot
@@ -13,7 +12,7 @@ of the first volume, the four create operations, and their four create tokens
 Command (run from the repository root of this branch, Go 1.27, fake backends):
 
 ```sh
-git worktree add --detach /tmp/vws-storage-0.1.0 0c874bc
+git worktree add --detach /tmp/vws-storage-0.1.0 0.1.0
 (cd /tmp/vws-storage-0.1.0 && go build -o /tmp/vws-storage-0.1.0.bin ./cmd/vws-storage)
 dir=$(mktemp -d)
 /tmp/vws-storage-0.1.0.bin -db="$dir/storage.db" -listen=127.0.0.1:17400 -fake-object-addr=127.0.0.1:17401 &
