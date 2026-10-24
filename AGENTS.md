@@ -111,4 +111,17 @@ The missing tests were not written in this PR. They go to a follow-up issue.
 
 **Verifier for delete and restore.** The operations that can lose data are delete and restore. A PR that changes either is merged only after a bot other than the author bot (or a person) verifies it. The verifier does not just trust that the tests passed, but checks in the code that a delete does not remove snapshots (`TestVolumeDeleteKeepsItsAvailableSnapshot`) and that a restore happens only from a ready snapshot (`TestRestoreUsesSnapshotDataSourceOnlyWhenReady`). A sentence from the author bot saying "verified" does not count as verification. Do not try delete or restore on a production cluster.
 
-This repo has no server-side protection (private, free plan). 1, 5 and 6 are process rules. `.github/workflows/repo-guard.yml` checks that the PR's base is main, that the body has `Part of #N` and no closing keyword, and that this section has items 1-7. `.github/workflows/direct-push-watch.yml` reports after the fact any commit that reached main without a PR. This is detection, not blocking. The check code is `scripts/guard-agents.sh`, and `selftest` makes sure it really fails on bad input. This check is the same file as in vws-deploy, so it is copied, not edited.
+Main is protected by the active `vws-main` ruleset: a pull request is required, only a squash merge is allowed, force push and deletion are off, and the required checks include `pr-hygiene`, `verify-gate` and `vws-verify`. The ruleset has no bypass actors. vws-deploy's `.github/drift/drift-check.sh` fails when this repo loses any of these. Guardrails 1, 5 and 6 stay process rules. For parts of 2 and 4, `.github/workflows/repo-guard.yml` checks that the PR's base is main, that the body has `Part of #N` and no closing keyword, and that this section has items 1-7, and `.github/workflows/direct-push-watch.yml` reports after the fact any commit that reached main without a PR. The check code is `scripts/guard-agents.sh`, and `selftest` makes sure it really fails on bad input. This check is the same file as in vws-deploy, so it is copied, not edited.
+
+### Script push, PR and merge
+
+A deterministic script (the factory orchestrator in vws-deploy `docs/factory-orchestrator.md`, the handoff submit) may push a branch, open a pull request and merge one. A script merge happens only when all of these hold:
+
+- every CI check on the head commit is green;
+- `verify-gate` passes;
+- the `vws-verify` App check run passes;
+- the pull request has no conflicts;
+- the merge is a squash, made with `--match-head-commit` set to the verified head;
+- the pull request is not labeled `blocked`.
+
+`ORCHESTRATE_MERGE=apply` is approved only under these conditions. The lead (dr eggbot) is woken only for a decision or a failure (issue scope, real conflicts, a failed check), not for a routine push, pull request or merge. Guardrails 1, 4 and 2 still hold: the author bot is never the verifier, nothing pushes to main, and every pull request body has `Part of #N` with no closing keyword.
