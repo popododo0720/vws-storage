@@ -104,7 +104,8 @@ jobs:
           # the gRPC listener and that check are in place.
           serving=
           for _ in $(seq 1 30); do
-            if docker logs "$name" 2>&1 | grep -q '"msg":"serving"'; then
+            logs=$(docker logs "$name" 2>&1 || true)
+            if grep -q '"msg":"serving"' <<<"$logs"; then
               serving=1
               break
             fi
