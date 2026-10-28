@@ -9,6 +9,7 @@ import (
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -226,4 +227,39 @@ func TestUpgradeFrom010ReplaysStoredTokens(t *testing.T) {
 	if op.GetName() != upgradeOps+"op-7195b0929250b1cfcd89" || !op.GetDone() {
 		t.Errorf("snapshot replay %s done %v", op.GetName(), op.GetDone())
 	}
+}
+
+// The stored 0.1.0 standard create at 2000 GiB is over the 1024 GiB limit that
+// type has today. Its token replays the stored operation, while a fresh token
+// is still refused (#126).
+func TestUpgradeFrom010ReplaysOverLimitStandardCreate(t *testing.T) {
+	_, vols, _, _ := openFixture010(t)
+	ctx := context.Background()
+	op, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: upgradeZone, VolumeId: "vol-0000000000000003c", RequestId: "33333333-3333-4333-8333-333333333333",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 2000, Type: standard}},
+	})
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if op.GetName() != upgradeOps+"op-395b8bb42cb203f7e45e" || !op.GetDone() || op.GetError() != nil {
+		t.Errorf("replay %s done %v err %v", op.GetName(), op.GetDone(), op.GetError())
+	}
+
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: upgradeVol3})
+	if err != nil {
+		t.Fatalf("get %s: %v", upgradeVol3, err)
+	}
+	if vol.GetSpec().GetSizeGib() != 2000 || vol.GetSpec().GetType() != standard {
+		t.Errorf("%s spec %+v, want 2000 GiB standard", upgradeVol3, vol.GetSpec())
+	}
+	if vol.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY {
+		t.Errorf("%s status %+v, want READY", upgradeVol3, vol.GetStatus())
+	}
+
+	_, err = vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: upgradeZone, VolumeId: "vol-0000000000000003c", RequestId: "55555555-5555-4555-8555-555555555555",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 2000, Type: standard}},
+	})
+	wantStatus(t, err, codes.InvalidArgument, "INVALID_SPEC")
 }
