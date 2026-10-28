@@ -461,7 +461,10 @@ func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
 	if typ, ok := protoTypes[t]; ok {
 		return typ, nil
 	}
-	return 0, fmt.Errorf("%w: volume type", model.ErrUnsupportedVolumeType)
+	if t == storagev1.VolumeType_VOLUME_TYPE_UNSPECIFIED {
+		return 0, invalidSpec("volume type")
+	}
+	return 0, fmt.Errorf("%w: volume type %s is unsupported", model.ErrUnsupportedVolumeType, t)
 }
 
 func tokenFor(requestID string) (model.ClientToken, error) {
