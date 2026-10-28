@@ -461,7 +461,7 @@ func volumeType(t storagev1.VolumeType) (model.VolumeType, error) {
 	if typ, ok := protoTypes[t]; ok {
 		return typ, nil
 	}
-	return 0, invalidSpec("volume type")
+	return 0, fmt.Errorf("%w: volume type", model.ErrUnsupportedVolumeType)
 }
 
 func tokenFor(requestID string) (model.ClientToken, error) {
@@ -840,6 +840,8 @@ func toStatus(err error) error {
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	case errors.Is(err, model.ErrTokenReused):
 		return statusError{code: codes.Aborted, reason: "IDEMPOTENCY_CONFLICT", err: err}.grpc()
+	case errors.Is(err, model.ErrUnsupportedVolumeType):
+		return statusError{code: codes.InvalidArgument, reason: "UNSUPPORTED_VOLUME_TYPE", err: err}.grpc()
 	case errors.Is(err, model.ErrInvalidArgument):
 		return statusError{code: codes.InvalidArgument, reason: "INVALID_SPEC", err: err}.grpc()
 	case errors.Is(err, model.ErrNotFound):

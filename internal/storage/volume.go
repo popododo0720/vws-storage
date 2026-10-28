@@ -38,12 +38,13 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 		id = model.NewVolumeID().WithProject(req.Project())
 	}
 	// A type the backend does not serve is refused before anything is
-	// written, so it leaves no row, operation or backend object. EC2 names
-	// this UnknownVolumeType ("The specified volume type is unsupported").
+	// written, so it leaves no row, operation or backend object. It carries its
+	// own reason because EC2 names this UnknownVolumeType ("The specified
+	// volume type is unsupported").
 	if ts, ok := s.block.(backend.TypeServer); ok {
 		if err := ts.ServeType(req.Spec.Type); err != nil {
 			return model.Admitted{}, fmt.Errorf("%w: volume type %s is unsupported: %w",
-				model.ErrInvalidArgument, req.Spec.Type, err)
+				model.ErrUnsupportedVolumeType, req.Spec.Type, err)
 		}
 	}
 	// A blank volume and an image name need no local row. A snapshot does.

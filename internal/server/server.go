@@ -152,7 +152,7 @@ func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 	}
 	if paths["spec.type"] {
 		if req.Type, err = volumeType(in.GetVolume().GetSpec().GetType()); err != nil {
-			return nil, toStatus(invalidSpec("type"))
+			return nil, toStatus(err)
 		}
 	}
 	if in.GetValidateOnly() {

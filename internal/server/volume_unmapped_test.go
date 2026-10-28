@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
 
@@ -76,7 +77,7 @@ func TestUnmappedVolumeTypeIsRefusedAndCreatesNothing(t *testing.T) {
 			Volume:    &storagev1.Volume{Spec: spec},
 		})
 		st, _ := status.FromError(err)
-		if st.Code() != codes.InvalidArgument || reasonOf(st) != "INVALID_SPEC" ||
+		if st.Code() != codes.InvalidArgument || reasonOf(st) != "UNSUPPORTED_VOLUME_TYPE" ||
 			!strings.Contains(st.Message(), "unsupported") || !strings.Contains(st.Message(), "no StorageClass is mapped") {
 			t.Errorf("%s: code %v reason %q message %q", name, st.Code(), reasonOf(st), st.Message())
 		}
@@ -123,10 +124,61 @@ func TestDeprecatedSSDUsesTheGP2Mapping(t *testing.T) {
 	}
 	stdOnly := mappedOnly{Block: fake.NewBlock(), types: map[model.VolumeType]bool{model.VolumeTypeStandard: true}}
 	st, _ := status.FromError(create(stdOnly))
-	if st.Code() != codes.InvalidArgument || !strings.Contains(st.Message(), "volume type gp2 is unsupported") {
-		t.Fatalf("gp2 unmapped: code %v message %q", st.Code(), st.Message())
+	if st.Code() != codes.InvalidArgument || reasonOf(st) != "UNSUPPORTED_VOLUME_TYPE" ||
+		!strings.Contains(st.Message(), "volume type gp2 is unsupported") {
+		t.Fatalf("gp2 unmapped: code %v reason %q message %q", st.Code(), reasonOf(st), st.Message())
 	}
 	if len(stdOnly.Calls()) != 0 {
 		t.Fatalf("calls %v", stdOnly.Calls())
+	}
+}
+
+// A wire type this build has no mapping for is the same unsupported type as a
+// type the deployment does not serve, on create and on retype (#125).
+func TestUnknownWireVolumeTypeHasItsOwnReason(t *testing.T) {
+	vols, _, _, _, ops := dial(t, "")
+	ctx := context.Background()
+	for i, typ := range []storagev1.VolumeType{
+		storagev1.VolumeType_VOLUME_TYPE_UNSPECIFIED,
+		storagev1.VolumeType(99),
+	} {
+		id := fmt.Sprintf("unknown-type-%d", i)
+		_, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+			Parent: "projects/local/zones/az-1", VolumeId: id,
+			Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: typ}},
+		})
+		st, _ := status.FromError(err)
+		if st.Code() != codes.InvalidArgument || reasonOf(st) != "UNSUPPORTED_VOLUME_TYPE" {
+			t.Errorf("%v: code %v reason %q message %q", typ, st.Code(), reasonOf(st), st.Message())
+		}
+		name := "projects/local/zones/az-1/volumes/" + id
+		if _, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name}); status.Code(err) != codes.NotFound {
+			t.Errorf("%v: volume row: %v", typ, err)
+		}
+	}
+	created, err := vols.CreateVolume(ctx, &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "retype-target",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_GP2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitOp(t, ops, created.GetName()); done.GetError() != nil {
+		t.Fatal(done.GetError())
+	}
+	_, err = vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
+		Volume: &storagev1.Volume{
+			Name: "projects/local/zones/az-1/volumes/retype-target",
+			Spec: &storagev1.VolumeSpec{Type: storagev1.VolumeType(99)},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.type"}},
+	})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument || reasonOf(st) != "UNSUPPORTED_VOLUME_TYPE" {
+		t.Fatalf("retype: code %v reason %q message %q", st.Code(), reasonOf(st), st.Message())
+	}
+	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: "projects/local/zones/az-1/volumes/retype-target"})
+	if err != nil || vol.GetSpec().GetType() != storagev1.VolumeType_VOLUME_TYPE_GP2 {
+		t.Fatalf("type after refused retype: %v err %v", vol.GetSpec().GetType(), err)
 	}
 }
