@@ -3,6 +3,7 @@ package kube_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -42,6 +43,48 @@ func createVM(t *testing.T, name string, managed bool, claims ...string) {
 	})
 }
 
+// terminatingVM writes a VM and starts its deletion behind a finalizer. The
+// object stays in the API server with a deletionTimestamp, the state a
+// terminated instance's VirtualMachine is in while KubeVirt drains it.
+func terminatingVM(t *testing.T, name, claim string) {
+	t.Helper()
+	createVM(t, name, true, claim)
+	ctx := context.Background()
+	vm, err := dyn.Resource(vmGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.SetFinalizers([]string{"test.vws.io/hold"})
+	if _, err := dyn.Resource(vmGVR).Namespace(ns).Update(ctx, vm, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dyn.Resource(vmGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		vm, err := dyn.Resource(vmGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return
+		}
+		vm.SetFinalizers(nil)
+		_, _ = dyn.Resource(vmGVR).Namespace(ns).Update(ctx, vm, metav1.UpdateOptions{})
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		vm, err := dyn.Resource(vmGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if vm.GetDeletionTimestamp() != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the API server did not record the deletion")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestAttachmentsReadTheVirtualMachineSpec(t *testing.T) {
 	b := newBlock(kube.DefaultClasses())
 	boot, data, free, foreign := model.NewVolumeID(), model.NewVolumeID(), model.NewVolumeID(), model.NewVolumeID()
@@ -60,5 +103,19 @@ func TestAttachmentsReadTheVirtualMachineSpec(t *testing.T) {
 	}
 	if _, ok := got[b.ClaimName(foreign)]; ok {
 		t.Fatal("a VM vws-compute does not manage counts")
+	}
+}
+
+func TestAttachmentsIgnoreATerminatingVirtualMachine(t *testing.T) {
+	b := newBlock(kube.DefaultClasses())
+	id := model.NewVolumeID()
+	terminatingVM(t, "t1gone", b.ClaimName(id))
+
+	got, err := b.Attachments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm, ok := got[b.ClaimName(id)]; ok {
+		t.Fatalf("a terminating VirtualMachine still owns claim %s as %s", b.ClaimName(id), vm)
 	}
 }
