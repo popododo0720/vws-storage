@@ -154,9 +154,6 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 	if tok.IsZero() {
 		return OperationStatus{}, fmt.Errorf("%w: client token", model.ErrInvalidArgument)
 	}
-	if err := req.Validate(); err != nil {
-		return OperationStatus{}, err
-	}
 	claim, err := model.Claim(tok, req)
 	if err != nil {
 		return OperationStatus{}, err
@@ -173,6 +170,11 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 			op, err = r.Operation(ctx, id)
 			return model.Change{}, err
 		case !errors.Is(err, model.ErrNotFound):
+			return model.Change{}, err
+		}
+		// A stored token replays the operation as it ran, even when a check
+		// added after that create would refuse the request today (#126).
+		if err := req.Validate(); err != nil {
 			return model.Change{}, err
 		}
 		st := model.Start{Op: model.NewOperationID().WithProject(req.Project()), Claim: claim, Now: s.now()}
