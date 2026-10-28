@@ -63,7 +63,7 @@ jobs:
         with:
           version: v0.19.1
       # setup-ko logs in to ghcr.io only when KO_DOCKER_REPO is unset; it is set above, so it
-      # skipped the login and the push was anonymous (DENIED, run 38565617910). Log in here.
+      # skipped the login and the push was anonymous. Log in here.
       # The token reaches ko only on stdin, never in args or output.
       - name: Log in to ghcr.io
         env:
