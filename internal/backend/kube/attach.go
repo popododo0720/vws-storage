@@ -19,8 +19,10 @@ const managedLabel = "vws.io/managed=true"
 // vws-compute writes when it attaches a volume and what its own "already
 // attached" check reads, so a stopped instance still holds its volumes. A
 // VirtualMachine with a deletion timestamp has no instance left: compute
-// deletes it when the instance goes, and KubeVirt's finalizers keep the object
-// in the API server until the guest is gone.
+// deleted the instance, and KubeVirt's finalizers keep the object in the API
+// server until the guest is gone. This is status only. An attach check must
+// keep counting the terminating VM as holding its claim until the object is
+// gone.
 func (b *Block) Attachments(ctx context.Context) (map[string]string, error) {
 	l, err := b.dyn.Resource(vmGVR).Namespace(b.ns).List(ctx, metav1.ListOptions{LabelSelector: managedLabel})
 	if err != nil {
