@@ -99,6 +99,22 @@ jobs:
             --publish 127.0.0.1:18080:8080 \
             --env VWS_HEALTH_ADDR=:8080 \
             "$IMAGE"
+          # /readyz is 200 from the moment obs.Setup starts, before the storage check is
+          # registered. Wait for the "serving" line, which main.go writes after the engine,
+          # the gRPC listener and that check are in place.
+          serving=
+          for _ in $(seq 1 30); do
+            if docker logs "$name" 2>&1 | grep -q '"msg":"serving"'; then
+              serving=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ -z $serving ]]; then
+            docker logs "$name" || true
+            echo "::error::the published image did not reach serving" >&2
+            exit 1
+          fi
           ready=
           for _ in $(seq 1 30); do
             if curl -fsS --max-time 2 http://127.0.0.1:18080/readyz >/dev/null; then
