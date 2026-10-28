@@ -17,7 +17,10 @@ const managedLabel = "vws.io/managed=true"
 // Attachments maps a claim name to the name of the VirtualMachine whose spec
 // uses it, boot disk and hot-plugged volumes alike. The VM spec is what
 // vws-compute writes when it attaches a volume and what its own "already
-// attached" check reads, so a stopped instance still holds its volumes.
+// attached" check reads, so a stopped instance still holds its volumes. A
+// VirtualMachine with a deletion timestamp has no instance left: compute
+// deletes it when the instance goes, and KubeVirt's finalizers keep the object
+// in the API server until the guest is gone.
 func (b *Block) Attachments(ctx context.Context) (map[string]string, error) {
 	l, err := b.dyn.Resource(vmGVR).Namespace(b.ns).List(ctx, metav1.ListOptions{LabelSelector: managedLabel})
 	if err != nil {
@@ -25,6 +28,9 @@ func (b *Block) Attachments(ctx context.Context) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for _, vm := range l.Items {
+		if vm.GetDeletionTimestamp() != nil {
+			continue
+		}
 		vols, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes") //nolint:errcheck // a malformed spec has no claims
 		for _, v := range vols {
 			m, ok := v.(map[string]any)
