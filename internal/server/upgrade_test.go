@@ -176,14 +176,16 @@ func TestUpgradeFrom010DecodesStoredRecords(t *testing.T) {
 
 // A create sent to 0.1.0 and sent again with the same request_id after the
 // upgrade is the same operation, not a new one or a conflict. The gp2 volume
-// replays both as the old SSD enum and as GP2, since "ssd" is gp2 (#123).
-// The over-1024 GiB standard volume is #126 and is not replayed here.
+// replays both as the old SSD enum and as GP2, since "ssd" is gp2 (#123). The
+// standard volume over 1024 GiB replays even though the size limits added by
+// #124 refuse a new create of that size (#126).
 func TestUpgradeFrom010ReplaysStoredTokens(t *testing.T) {
 	_, vols, snaps, _ := openFixture010(t)
 	ctx := context.Background()
 	const (
 		vol1, tok1 = "vol-0000000000000001a", "11111111-1111-4111-8111-111111111111"
 		vol2, tok2 = "vol-0000000000000002b", "22222222-2222-4222-8222-222222222222"
+		vol3, tok3 = "vol-0000000000000003c", "33333333-3333-4333-8333-333333333333"
 	)
 	// The 0.1.0 client sent the now-deprecated SSD value; its replay does too.
 	ssd := storagev1.VolumeType_VOLUME_TYPE_SSD //nolint:staticcheck // the replay must send what 0.1.0 got
@@ -202,6 +204,7 @@ func TestUpgradeFrom010ReplaysStoredTokens(t *testing.T) {
 		{"standard", create(vol1, tok1, 8, standard, teamLabel), "op-bfe297985c75b4c3a531"},
 		{"ssd", create(vol2, tok2, 16, ssd, nil), "op-ee409fb8ed4722576195"},
 		{"gp2", create(vol2, tok2, 16, storagev1.VolumeType_VOLUME_TYPE_GP2, nil), "op-ee409fb8ed4722576195"},
+		{"standard over 1024 GiB", create(vol3, tok3, 2000, standard, nil), "op-395b8bb42cb203f7e45e"},
 	}
 	for _, c := range cases {
 		op, err := vols.CreateVolume(ctx, c.req)
