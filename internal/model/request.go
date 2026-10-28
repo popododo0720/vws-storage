@@ -24,6 +24,9 @@ var (
 	// that must go first, such as a bucket that still holds objects. It prints
 	// as ErrFailedPrecondition.
 	ErrDependencyMissing error = refinedError{parent: ErrFailedPrecondition}
+	// ErrUnsupportedVolumeType is an ErrInvalidArgument for a volume type this
+	// build or deployment cannot serve. It prints as ErrInvalidArgument.
+	ErrUnsupportedVolumeType error = refinedError{parent: ErrInvalidArgument}
 )
 
 // refinedError is a more specific sentinel that still matches its parent.

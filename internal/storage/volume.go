@@ -38,12 +38,12 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 		id = model.NewVolumeID().WithProject(req.Project())
 	}
 	// A type the backend does not serve is refused before anything is
-	// written, so it leaves no row, operation or backend object. EC2 names
-	// this UnknownVolumeType ("The specified volume type is unsupported").
+	// written, so it leaves no row, operation or backend object. It carries its
+	// own reason because EC2 names this UnknownVolumeType ("The specified
+	// volume type is unsupported").
 	if ts, ok := s.block.(backend.TypeServer); ok {
 		if err := ts.ServeType(req.Spec.Type); err != nil {
-			return model.Admitted{}, fmt.Errorf("%w: volume type %s is unsupported: %w",
-				model.ErrInvalidArgument, req.Spec.Type, err)
+			return model.Admitted{}, unsupportedVolumeType(req.Spec.Type, err)
 		}
 	}
 	// A blank volume and an image name need no local row. A snapshot does.
@@ -168,6 +168,11 @@ func (s *Service) admitModifyVolume(ctx context.Context, r store.Reader, st mode
 		labels = req.Labels
 	}
 	if req.Type != model.VolumeTypeUnspecified && req.Type != typ {
+		if ts, ok := s.block.(backend.TypeServer); ok {
+			if err := ts.ServeType(req.Type); err != nil {
+				return model.Admitted{}, unsupportedVolumeType(req.Type, err)
+			}
+		}
 		rt, ok := s.block.(backend.Retyper)
 		if !ok {
 			return model.Admitted{}, fmt.Errorf("%w: this backend cannot change a volume type", model.ErrInvalidArgument)
@@ -178,6 +183,12 @@ func (s *Service) admitModifyVolume(ctx context.Context, r store.Reader, st mode
 		typ = req.Type
 	}
 	return avail.Modify(st, labels, typ)
+}
+
+// unsupportedVolumeType is a type this deployment has no storage mapped for.
+func unsupportedVolumeType(t model.VolumeType, cause error) error {
+	return fmt.Errorf("%w: volume type %s is unsupported: %w",
+		model.ErrUnsupportedVolumeType, t, cause)
 }
 
 func (s *Service) runVolumeExpansion(ctx context.Context, op model.Operation, w model.VolumeExpansion) error {
