@@ -37,7 +37,10 @@ type Options struct {
 	RetryBase    time.Duration
 	RetryMax     time.Duration
 	UploadPoll   time.Duration
-	Now          func() time.Time
+	// AttachmentTimeout bounds one read of the volume attachments from the
+	// backend (default 5s).
+	AttachmentTimeout time.Duration
+	Now               func() time.Time
 }
 
 // StoreConfig selects a store without exporting the store package.
@@ -80,6 +83,8 @@ type Service struct {
 	policy retryPolicy
 	window time.Duration
 	ttl    time.Duration
+
+	attachTimeout time.Duration
 
 	workers      int
 	scanInterval time.Duration
@@ -128,6 +133,10 @@ func Open(ctx context.Context, opts Options) (*Service, error) {
 	if poll <= 0 {
 		poll = 200 * time.Millisecond
 	}
+	attachTimeout := opts.AttachmentTimeout
+	if attachTimeout <= 0 {
+		attachTimeout = 5 * time.Second
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -139,7 +148,7 @@ func Open(ctx context.Context, opts Options) (*Service, error) {
 	return &Service{
 		st: st, block: opts.Block, object: opts.Object, signer: opts.Signer,
 		zones: zones, now: now, policy: retryPolicy{base: base, max: retryMax, poll: poll},
-		window: window, ttl: ttl, workers: workers, scanInterval: scan,
+		window: window, ttl: ttl, attachTimeout: attachTimeout, workers: workers, scanInterval: scan,
 		wake: make(chan model.OperationID, workers),
 	}, nil
 }
@@ -157,6 +166,12 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 	claim, err := model.Claim(tok, req)
 	if err != nil {
 		return OperationStatus{}, err
+	}
+	// Remote reads happen here, before Update: the store holds one
+	// process-wide lock (and a write transaction) for the whole callback.
+	var pre preread
+	if d, ok := req.(model.DeleteVolumeRequest); ok {
+		pre.attachedTo, pre.attachErr = s.attachedTo(ctx, d.Volume)
 	}
 	var op model.Operation
 	err = s.st.Update(ctx, func(r store.Reader) (model.Change, error) {
@@ -178,7 +193,7 @@ func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.R
 			return model.Change{}, err
 		}
 		st := model.Start{Op: model.NewOperationID().WithProject(req.Project()), Claim: claim, Now: s.now()}
-		admitted, err := s.admit(ctx, r, st, req)
+		admitted, err := s.admit(ctx, r, st, req, pre)
 		if err != nil {
 			return model.Change{}, err
 		}
@@ -232,12 +247,22 @@ func findOpen(ctx context.Context, r store.Reader, kind model.Kind, match func(m
 	}
 }
 
-func (s *Service) admit(ctx context.Context, r store.Reader, st model.Start, req model.Request) (model.Admitted, error) {
+// preread is what Submit read from a backend before taking the store lock,
+// so admission never waits on a remote call while it holds the lock.
+type preread struct {
+	// attachedTo and attachErr are the DeleteVolume attachment read.
+	attachedTo string
+	attachErr  error
+}
+
+func (s *Service) admit(
+	ctx context.Context, r store.Reader, st model.Start, req model.Request, pre preread,
+) (model.Admitted, error) {
 	switch req := req.(type) {
 	case model.CreateVolumeRequest:
 		return s.admitCreateVolume(ctx, r, st, req)
 	case model.DeleteVolumeRequest:
-		return s.admitDeleteVolume(ctx, r, st, req)
+		return s.admitDeleteVolume(ctx, r, st, req, pre)
 	case model.ExpandVolumeRequest:
 		return s.admitExpandVolume(ctx, r, st, req)
 	case model.ModifyVolumeRequest:
