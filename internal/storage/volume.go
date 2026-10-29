@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
@@ -93,6 +96,9 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 		return model.Admitted{}, err
 	}
 	if failed, ok := vol.AsFailed(); ok && !busy {
+		if err := s.refuseAttached(ctx, req.Volume); err != nil {
+			return model.Admitted{}, err
+		}
 		return failed.Delete(st)
 	}
 	avail, ok := vol.AsAvailable()
@@ -102,7 +108,65 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 	if busy {
 		return model.Admitted{}, fmt.Errorf("%w: volume has operations in flight", model.ErrFailedPrecondition)
 	}
+	if err := s.refuseAttached(ctx, req.Volume); err != nil {
+		return model.Admitted{}, err
+	}
 	return avail.Delete(st)
+}
+
+// refuseAttached is the DeleteVolume admission half of the attachment rule
+// (#152): a volume an instance spec uses is DEPENDENCY_MISSING (EC2
+// VolumeInUse), and the store is left as it was. An attachment list the
+// backend cannot read refuses as well: a delete must not guess the volume is
+// detached. It runs after the cheap row checks, so only a delete that would
+// otherwise be admitted asks the backend.
+func (s *Service) refuseAttached(ctx context.Context, id model.VolumeID) error {
+	inst, err := s.attachedTo(ctx, id)
+	if err != nil {
+		slog.WarnContext(ctx, "volume delete refused: attachments unavailable",
+			slog.String(obs.FieldResourceType, "volume"), slog.String(obs.FieldResourceID, id.String()),
+			slog.String(obs.FieldErr, err.Error()))
+		return fmt.Errorf("%w: cannot confirm that the volume is detached; retry later", model.ErrFailedPrecondition)
+	}
+	if inst != "" {
+		return fmt.Errorf("%w: volume is attached to instance %s", model.ErrDependencyMissing, inst)
+	}
+	return nil
+}
+
+// attachedTo returns the id of the instance whose spec uses the backend
+// object of id, or "" when none does or the backend has no attachments.
+// Unlike Attachments it returns the backend error instead of reporting none.
+func (s *Service) attachedTo(ctx context.Context, id model.VolumeID) (string, error) {
+	a, ok := s.block.(backend.Attacher)
+	if !ok {
+		return "", nil
+	}
+	byClaim, err := a.Attachments(ctx)
+	if err != nil {
+		return "", fmt.Errorf("storage: volume attachments: %w", err)
+	}
+	return byClaim[s.block.ClaimName(id)], nil
+}
+
+// detachedOrBusy is the delete-step half of the attachment rule (#152). The
+// attachment is written by vws-compute into the instance spec, outside this
+// store, so an attach can land after admission saw none. Admission commits
+// Deleting first and this check reads the attachments again right before the
+// backend delete; vws-compute refuses a volume that is being deleted. With
+// each side writing before it checks, one of them sees the other. An attached
+// or unreadable volume is a transient backend.ErrBusy: the operation retries
+// and the backend object stays until the instance lets go.
+func (s *Service) detachedOrBusy(ctx context.Context, id model.VolumeID) error {
+	inst, err := s.attachedTo(ctx, id)
+	if err != nil {
+		// The cause stays text so a wrapped permanent error never reads as permanent.
+		return fmt.Errorf("%w: %v", backend.ErrBusy, err) //nolint:errorlint // see above
+	}
+	if inst != "" {
+		return fmt.Errorf("%w: volume %s is attached to instance %s", backend.ErrBusy, id, inst)
+	}
+	return nil
 }
 
 // admitExpandVolume grows an available volume. A size equal to the stored one
@@ -270,7 +334,10 @@ func (s *Service) runVolumeCreation(ctx context.Context, op model.Operation, w m
 }
 
 func (s *Service) runVolumeDeletion(ctx context.Context, op model.Operation, w model.VolumeDeletion) error {
-	callErr := s.block.DeleteVolume(ctx, w.Volume)
+	callErr := s.detachedOrBusy(ctx, w.Volume)
+	if callErr == nil {
+		callErr = s.block.DeleteVolume(ctx, w.Volume)
+	}
 	return finish(ctx, s, op.ID, callErr,
 		func(run model.RunningOp[model.VolumeDeletion], r store.Reader, now time.Time) (model.Change, error) {
 			vol, err := r.Volume(ctx, w.Volume)
