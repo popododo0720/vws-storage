@@ -70,7 +70,9 @@ func (s *Service) admitCreateVolume(ctx context.Context, r store.Reader, st mode
 // without another edit.
 func sameVolumeSpec(a, b model.VolumeSpec) bool { return a == b }
 
-func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st model.Start, req model.DeleteVolumeRequest) (model.Admitted, error) {
+func (s *Service) admitDeleteVolume(
+	ctx context.Context, r store.Reader, st model.Start, req model.DeleteVolumeRequest, pre preread,
+) (model.Admitted, error) {
 	vol, err := r.Volume(ctx, req.Volume)
 	if errors.Is(err, model.ErrNotFound) && req.AllowMissing {
 		return model.FinishNow(st, model.VolumeDeletion{Volume: req.Volume, Zone: req.Zone}, nil)
@@ -96,7 +98,7 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 		return model.Admitted{}, err
 	}
 	if failed, ok := vol.AsFailed(); ok && !busy {
-		if err := s.refuseAttached(ctx, req.Volume); err != nil {
+		if err := refuseAttached(ctx, req.Volume, pre); err != nil {
 			return model.Admitted{}, err
 		}
 		return failed.Delete(st)
@@ -108,7 +110,7 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 	if busy {
 		return model.Admitted{}, fmt.Errorf("%w: volume has operations in flight", model.ErrFailedPrecondition)
 	}
-	if err := s.refuseAttached(ctx, req.Volume); err != nil {
+	if err := refuseAttached(ctx, req.Volume, pre); err != nil {
 		return model.Admitted{}, err
 	}
 	return avail.Delete(st)
@@ -118,18 +120,18 @@ func (s *Service) admitDeleteVolume(ctx context.Context, r store.Reader, st mode
 // (#152): a volume an instance spec uses is DEPENDENCY_MISSING (EC2
 // VolumeInUse), and the store is left as it was. An attachment list the
 // backend cannot read refuses as well: a delete must not guess the volume is
-// detached. It runs after the cheap row checks, so only a delete that would
-// otherwise be admitted asks the backend.
-func (s *Service) refuseAttached(ctx context.Context, id model.VolumeID) error {
-	inst, err := s.attachedTo(ctx, id)
-	if err != nil {
+// detached. Submit read the attachments before the store lock (pre); this
+// applies the result after the cheap row checks, so a replay or a refusal on
+// the row is answered as before.
+func refuseAttached(ctx context.Context, id model.VolumeID, pre preread) error {
+	if pre.attachErr != nil {
 		slog.WarnContext(ctx, "volume delete refused: attachments unavailable",
 			slog.String(obs.FieldResourceType, "volume"), slog.String(obs.FieldResourceID, id.String()),
-			slog.String(obs.FieldErr, err.Error()))
+			slog.String(obs.FieldErr, pre.attachErr.Error()))
 		return fmt.Errorf("%w: cannot confirm that the volume is detached; retry later", model.ErrFailedPrecondition)
 	}
-	if inst != "" {
-		return fmt.Errorf("%w: volume is attached to instance %s", model.ErrDependencyMissing, inst)
+	if pre.attachedTo != "" {
+		return fmt.Errorf("%w: volume is attached to instance %s", model.ErrDependencyMissing, pre.attachedTo)
 	}
 	return nil
 }
@@ -137,11 +139,15 @@ func (s *Service) refuseAttached(ctx context.Context, id model.VolumeID) error {
 // attachedTo returns the id of the instance whose spec uses the backend
 // object of id, or "" when none does or the backend has no attachments.
 // Unlike Attachments it returns the backend error instead of reporting none.
+// The read is bounded by the attachment timeout. Never call it from a store
+// Update callback: it is a remote call.
 func (s *Service) attachedTo(ctx context.Context, id model.VolumeID) (string, error) {
 	a, ok := s.block.(backend.Attacher)
 	if !ok {
 		return "", nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, s.attachTimeout)
+	defer cancel()
 	byClaim, err := a.Attachments(ctx)
 	if err != nil {
 		return "", fmt.Errorf("storage: volume attachments: %w", err)
@@ -151,12 +157,14 @@ func (s *Service) attachedTo(ctx context.Context, id model.VolumeID) (string, er
 
 // detachedOrBusy is the delete-step half of the attachment rule (#152). The
 // attachment is written by vws-compute into the instance spec, outside this
-// store, so an attach can land after admission saw none. Admission commits
-// Deleting first and this check reads the attachments again right before the
-// backend delete; vws-compute refuses a volume that is being deleted. With
-// each side writing before it checks, one of them sees the other. An attached
-// or unreadable volume is a transient backend.ErrBusy: the operation retries
-// and the backend object stays until the instance lets go.
+// store, so an attach can land after admission saw none (admission reads the
+// attachments before it takes the store lock). This check reads them again
+// right before the backend delete and is the authority for such an attach.
+// The window where compute patches the instance spec after this read is
+// closed only when vws-compute also refuses a volume that is being deleted
+// (vws-compute#137, open). An attached or unreadable volume is a transient
+// backend.ErrBusy: the operation retries and the backend object stays until
+// the instance lets go.
 func (s *Service) detachedOrBusy(ctx context.Context, id model.VolumeID) error {
 	inst, err := s.attachedTo(ctx, id)
 	if err != nil {

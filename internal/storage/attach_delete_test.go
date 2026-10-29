@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -22,13 +23,26 @@ type attachingBlock struct {
 	vms       map[string]string
 	fail      error
 	afterRead func()
+	// beforeRead runs first in Attachments, without the lock held, so a
+	// test can stall the read the way a slow API server does.
+	beforeRead func(context.Context)
 }
 
 func newAttachingBlock() *attachingBlock {
 	return &attachingBlock{Block: fake.NewBlock(), vms: map[string]string{}}
 }
 
-func (b *attachingBlock) Attachments(context.Context) (map[string]string, error) {
+func (b *attachingBlock) Attachments(ctx context.Context) (map[string]string, error) {
+	b.mu.Lock()
+	before := b.beforeRead
+	b.mu.Unlock()
+	if before != nil {
+		before(ctx)
+		// A real list cut off by its context fails with the context error.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("list virtualmachines: %w", err)
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.fail != nil {
@@ -50,6 +64,12 @@ func (b *attachingBlock) setAfterRead(fn func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.afterRead = fn
+}
+
+func (b *attachingBlock) setBeforeRead(fn func(context.Context)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.beforeRead = fn
 }
 
 func (b *attachingBlock) attach(id model.VolumeID, vm string) {
@@ -81,10 +101,13 @@ func (b *attachingBlock) deletes() int {
 }
 
 // openAttaching opens a running service over blk.
-func openAttaching(t *testing.T, blk *attachingBlock) *storage.Service {
+func openAttaching(t *testing.T, blk *attachingBlock, edit ...func(*storage.Options)) *storage.Service {
 	t.Helper()
 	o := opts(storage.Memory(), blk.Block, fake.NewObjects(fake.ObjectOptions{}))
 	o.Block = blk
+	for _, fn := range edit {
+		fn(&o)
+	}
 	svc, err := storage.Open(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)
@@ -261,5 +284,93 @@ func TestDeleteWaitsForAnAttachRacingTheAdmission(t *testing.T) {
 	}
 	if _, err := svc.Volume(ctx, vol.ID); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("volume after delete: %v", err)
+	}
+}
+
+// A slow attachment list (a stalled API server) must not hold the store:
+// an unrelated Submit finishes while a DeleteVolume waits on the list, and
+// the delete is admitted once the list answers (#152).
+func TestSlowAttachmentsDoNotBlockOtherSubmits(t *testing.T) {
+	blk := newAttachingBlock()
+	svc := openAttaching(t, blk)
+	ctx := context.Background()
+	vol := createAvailable(t, svc, "vol")
+	delTok, otherTok, other := token(t, "del"), token(t, "other"), volumeReq(t)
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	blk.setBeforeRead(func(ctx context.Context) {
+		once.Do(func() { close(entered) })
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	})
+	type result struct {
+		op  storage.OperationStatus
+		err error
+	}
+	delDone := make(chan result, 1)
+	go func() {
+		op, err := svc.Submit(ctx, delTok, model.DeleteVolumeRequest{Volume: vol.ID})
+		delDone <- result{op, err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeleteVolume never read the attachments")
+	}
+
+	otherDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Submit(ctx, otherTok, other)
+		otherDone <- err
+	}()
+	select {
+	case err := <-otherDone:
+		if err != nil {
+			close(release)
+			t.Fatalf("unrelated CreateVolume: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-otherDone
+		t.Fatal("unrelated CreateVolume waited for the attachment list")
+	}
+
+	close(release)
+	res := <-delDone
+	if res.err != nil {
+		t.Fatalf("delete after the list answered: %v", res.err)
+	}
+	if got := waitDone(t, svc, res.op.ID); got.Phase() != model.PhaseSucceeded {
+		t.Fatalf("delete %s %+v", got.Phase(), got.Err())
+	}
+}
+
+// An attachment list that never answers is cut off by the attachment
+// timeout: the delete is refused as not ready instead of hanging, and the
+// volume is unchanged (#152).
+func TestDeleteVolumeAttachmentReadIsBounded(t *testing.T) {
+	blk := newAttachingBlock()
+	svc := openAttaching(t, blk, func(o *storage.Options) { o.AttachmentTimeout = 50 * time.Millisecond })
+	ctx := context.Background()
+	vol := createAvailable(t, svc, "vol")
+	blk.setBeforeRead(func(ctx context.Context) { <-ctx.Done() })
+
+	start := time.Now()
+	_, err := svc.Submit(ctx, token(t, "del"), model.DeleteVolumeRequest{Volume: vol.ID})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("delete waited %s for a stalled list", took)
+	}
+	if !errors.Is(err, model.ErrFailedPrecondition) || errors.Is(err, model.ErrDependencyMissing) {
+		t.Fatalf("delete with a stalled list: %v, want FAILED_PRECONDITION (not ready)", err)
+	}
+	after, err := svc.Volume(ctx, vol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.AsAvailable(); !ok || after.Meta.Version != vol.Meta.Version {
+		t.Fatalf("volume changed: state %T version %d, was %d", after.State, after.Meta.Version, vol.Meta.Version)
 	}
 }
