@@ -2,9 +2,12 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
@@ -54,4 +57,31 @@ func TestVolumeInErrorShowsStateAndReason(t *testing.T) {
 		t.Fatalf("list %d volumes", len(page.GetVolumes()))
 	}
 	check("list", page.GetVolumes()[0])
+}
+
+// A permanent backend failure that names no sentinel is a broken invariant. The
+// operation must not answer UNAVAILABLE, which tells the caller to retry a
+// request the backend will never accept.
+func TestPermanentBackendErrorIsInternal(t *testing.T) {
+	blk := fake.NewBlock()
+	blk.FailNext("CreateVolume", backend.Permanent(errors.New("s3: the stored bytes changed under us")))
+	vols, _, _, _, ops := dialBlock(t, "", server.Config{}, blk)
+	op, err := vols.CreateVolume(context.Background(), &storagev1.CreateVolumeRequest{
+		Parent: "projects/local/zones/az-1", VolumeId: "data-corrupt",
+		Volume: &storagev1.Volume{Spec: &storagev1.VolumeSpec{SizeGib: 1, Type: storagev1.VolumeType_VOLUME_TYPE_GP2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitOp(t, ops, op.GetName())
+	st := done.GetError()
+	if st == nil {
+		t.Fatal("operation succeeded")
+	}
+	if codes.Code(st.GetCode()) != codes.Internal || st.GetMessage() != "the backend failed" {
+		t.Fatalf("code %v message %q", codes.Code(st.GetCode()), st.GetMessage())
+	}
+	if strings.Contains(st.GetMessage(), "changed under us") {
+		t.Fatalf("message %q carries backend text", st.GetMessage())
+	}
 }
