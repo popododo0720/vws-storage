@@ -238,6 +238,10 @@ func statusOf(ctx context.Context, err error) model.Status {
 		return model.Status{Code: model.CodeFailedPrecondition, Message: msgBackendConflict}
 	case errors.Is(err, backend.ErrBusy):
 		return model.Status{Code: model.CodeUnavailable, Message: msgBackendBusy}
+	case backend.IsPermanent(err):
+		// No known sentinel, but the backend will not retry: a broken
+		// invariant. Unavailable would tell the caller to retry forever.
+		return model.Status{Code: model.CodeInternal, Message: msgBackendFailed}
 	default:
 		return model.Status{Code: model.CodeUnavailable, Message: msgBackendFailed}
 	}

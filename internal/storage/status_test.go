@@ -53,6 +53,18 @@ func TestGaveUpKeepsItsText(t *testing.T) {
 	}
 }
 
+// A permanent error with no sentinel is a broken invariant, not a transient
+// dependency failure: the caller must not be told to retry it.
+func TestPermanentBackendErrorIsInternal(t *testing.T) {
+	st := storage.StatusOf(context.Background(), backend.Permanent(errors.New("s3: the stored bytes changed under us")))
+	if st.Code != model.CodeInternal || st.Message != "the backend failed" {
+		t.Fatalf("status %+v", st)
+	}
+	if strings.Contains(st.Message, "changed under us") {
+		t.Fatalf("message %q carries backend text", st.Message)
+	}
+}
+
 // The text that reaches the client through a failed operation is the fixed one.
 func TestFailedOperationDoesNotCarryBackendText(t *testing.T) {
 	blk := fake.NewBlock()
