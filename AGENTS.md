@@ -43,7 +43,7 @@ A rule whose enforcer cell is `Judgment` has no check; the author and reviewer u
 | Health imports no package of this module. The process hands it the checks | `TestArchitectureRules` |
 | External dependencies live only in their owner package: generated code and protobuf in the server, gRPC in the server, health and `cmd`, SQL in the SQLite store, Kubernetes in the kube backend and `cmd`, the AWS SDK in the s3 backend | `TestArchitectureRules` |
 | Production code does not import `testing`. The exception is `storetest` | `TestArchitectureRules` |
-| Logs go through `log/slog` and vws-lib `obs`. The standard `log` is not used. The one remaining exception is `internal/server/convert.go` `toStatus` (it has no context) | `knownDebt` in `TestArchitectureRules`. Removing that entry makes the test block it |
+| Logs go through `log/slog` and vws-lib `obs`. The standard `log` is not used | `TestArchitectureRules` |
 | This repo keeps no proto and no copy of it. The generated code is the `github.com/popododo0720/vws-proto` module at a release tag (`vX.Y.Z`, no pseudo-version) from the module proxy, with no `replace` | `internal/policycheck` (`TestRepoPolicy`, `TestProtoModuleRules`). Lint excludes `third_party` (the vws-lib copy) |
 | No deployment manifests, logos or NOTICE | `internal/policycheck` |
 | The same token with the same request is the same operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |

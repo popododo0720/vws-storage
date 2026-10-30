@@ -88,11 +88,11 @@ var (
 func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeRequest) (*longrunningpb.Operation, error) {
 	req, name, err := s.volumeCreate(in)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
@@ -117,23 +117,23 @@ func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 	}
 	id, zone, err := s.parseVolumeName(in.GetVolume().GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if len(modify) > 0 {
 		return s.modifyVolume(ctx, in, id, zone, grow, modify)
 	}
 	size, err := model.VolumeSize(in.GetVolume().GetSpec().GetSizeGib())
 	if err != nil {
-		return nil, toStatus(invalidSpec("size_gib"))
+		return nil, toStatus(ctx, invalidSpec("size_gib"))
 	}
 	ver, err := expectedVersion(in.GetVolume().GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	req := model.ExpandVolumeRequest{Volume: id, Zone: zone, Size: size, Expected: ver}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(s.volumeName(zone, id), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
 	}
@@ -145,24 +145,24 @@ func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 ) (*longrunningpb.Operation, error) {
 	ver, err := expectedVersion(in.GetVolume().GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	req := model.ModifyVolumeRequest{Volume: id, Zone: zone, Expected: ver}
 	if paths["labels"] {
 		req.SetLabels = true
 		if req.Labels, err = model.ParseLabels(in.GetVolume().GetLabels()); err != nil {
-			return nil, toStatus(invalidSpec("labels"))
+			return nil, toStatus(ctx, invalidSpec("labels"))
 		}
 	}
 	spec := in.GetVolume().GetSpec()
 	if paths["spec.type"] {
 		if req.Type, err = volumeType(spec.GetType()); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 	}
 	if grow {
 		if req.Size, err = model.VolumeSize(spec.GetSizeGib()); err != nil {
-			return nil, toStatus(invalidSpec("size_gib"))
+			return nil, toStatus(ctx, invalidSpec("size_gib"))
 		}
 	}
 	if paths["spec.iops"] {
@@ -173,7 +173,7 @@ func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(s.volumeName(zone, id), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
 	}
@@ -184,11 +184,11 @@ func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 func (s *Server) DeleteVolume(ctx context.Context, in *storagev1.DeleteVolumeRequest) (*longrunningpb.Operation, error) {
 	id, zone, err := s.parseVolumeName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.submit(ctx, in.GetRequestId(), model.DeleteVolumeRequest{
 		Volume: id, Zone: zone, Expected: ver, AllowMissing: in.GetAllowMissing(),
@@ -199,14 +199,14 @@ func (s *Server) DeleteVolume(ctx context.Context, in *storagev1.DeleteVolumeReq
 func (s *Server) GetVolume(ctx context.Context, in *storagev1.GetVolumeRequest) (*storagev1.Volume, error) {
 	id, zone, err := s.parseVolumeName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	vol, err := s.svc.Volume(ctx, id)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if vol.Spec.Zone != zone {
-		return nil, toStatus(notFound("volume"))
+		return nil, toStatus(ctx, notFound("volume"))
 	}
 	return s.volumeMsg(ctx, vol), nil
 }
@@ -215,13 +215,13 @@ func (s *Server) GetVolume(ctx context.Context, in *storagev1.GetVolumeRequest) 
 func (s *Server) ListVolumes(ctx context.Context, in *storagev1.ListVolumesRequest) (*storagev1.ListVolumesResponse, error) {
 	project, zone, err := s.parseVolumeParent(in.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Volume], error) {
 		return s.svc.ListVolumes(ctx, project, zone, p)
 	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	out := &storagev1.ListVolumesResponse{NextPageToken: page.NextToken}
 	attached := s.svc.Attachments(ctx, page.Items)
@@ -240,11 +240,11 @@ func (s *Server) ReportVolumeStatus(context.Context, *storagev1.ReportVolumeStat
 func (s *Server) CreateSnapshot(ctx context.Context, in *storagev1.CreateSnapshotRequest) (*longrunningpb.Operation, error) {
 	req, name, err := s.snapshotCreate(in)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
@@ -260,11 +260,11 @@ func (s *Server) UpdateSnapshot(context.Context, *storagev1.UpdateSnapshotReques
 func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapshotRequest) (*longrunningpb.Operation, error) {
 	id, region, err := s.parseSnapshotName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.submit(ctx, in.GetRequestId(), model.DeleteSnapshotRequest{
 		Snapshot: id, Region: region, Expected: ver, AllowMissing: in.GetAllowMissing(),
@@ -275,14 +275,14 @@ func (s *Server) DeleteSnapshot(ctx context.Context, in *storagev1.DeleteSnapsho
 func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotRequest) (*storagev1.Snapshot, error) {
 	id, region, err := s.parseSnapshotName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	snap, err := s.svc.Snapshot(ctx, id)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if snap.Region != region {
-		return nil, toStatus(notFound("snapshot"))
+		return nil, toStatus(ctx, notFound("snapshot"))
 	}
 	return s.snapshotMsg(ctx, snap), nil
 }
@@ -291,13 +291,13 @@ func (s *Server) GetSnapshot(ctx context.Context, in *storagev1.GetSnapshotReque
 func (s *Server) ListSnapshots(ctx context.Context, in *storagev1.ListSnapshotsRequest) (*storagev1.ListSnapshotsResponse, error) {
 	project, region, err := s.parseSnapshotParent(in.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Snapshot], error) {
 		return s.svc.ListSnapshots(ctx, project, region, p)
 	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	out := &storagev1.ListSnapshotsResponse{NextPageToken: page.NextToken}
 	for _, snap := range page.Items {
@@ -315,11 +315,11 @@ func (s *Server) ReportSnapshotStatus(context.Context, *storagev1.ReportSnapshot
 func (s *Server) CreateBucket(ctx context.Context, in *storagev1.CreateBucketRequest) (*longrunningpb.Operation, error) {
 	req, name, err := s.bucketCreate(in)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(name, commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
@@ -335,11 +335,11 @@ func (s *Server) UpdateBucket(context.Context, *storagev1.UpdateBucketRequest) (
 func (s *Server) DeleteBucket(ctx context.Context, in *storagev1.DeleteBucketRequest) (*longrunningpb.Operation, error) {
 	name, err := s.parseBucketName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.submit(ctx, in.GetRequestId(), model.DeleteBucketRequest{
 		Bucket: name, Expected: ver, AllowMissing: in.GetAllowMissing(),
@@ -350,11 +350,11 @@ func (s *Server) DeleteBucket(ctx context.Context, in *storagev1.DeleteBucketReq
 func (s *Server) GetBucket(ctx context.Context, in *storagev1.GetBucketRequest) (*storagev1.Bucket, error) {
 	name, err := s.parseBucketName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	b, err := s.svc.Bucket(ctx, name)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.bucketMsg(b), nil
 }
@@ -363,13 +363,13 @@ func (s *Server) GetBucket(ctx context.Context, in *storagev1.GetBucketRequest) 
 func (s *Server) ListBuckets(ctx context.Context, in *storagev1.ListBucketsRequest) (*storagev1.ListBucketsResponse, error) {
 	project, err := s.parseBucketParent(in.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	page, err := listPage(ctx, in.GetPageSize(), in.GetPageToken(), func(ctx context.Context, p model.PageRequest) (model.Page[model.Bucket], error) {
 		return s.svc.ListBuckets(ctx, project, p)
 	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	out := &storagev1.ListBucketsResponse{NextPageToken: page.NextToken}
 	for _, b := range page.Items {
@@ -388,11 +388,11 @@ func (s *Server) ReportBucketStatus(context.Context, *storagev1.ReportBucketStat
 func (s *Server) CreateObject(ctx context.Context, in *storagev1.CreateObjectRequest) (*longrunningpb.Operation, error) {
 	req, path, contents, err := s.objectCreate(in)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_CREATE)
 	}
@@ -409,11 +409,11 @@ func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectReq
 	}
 	req, contents, err := s.objectUpdate(in)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(s.objectName(req.Path), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
 	}
@@ -427,27 +427,27 @@ func (s *Server) UpdateObject(ctx context.Context, in *storagev1.UpdateObjectReq
 func (s *Server) WriteObject(ctx context.Context, in *storagev1.WriteObjectRequest) (*longrunningpb.Operation, error) {
 	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.Contents == nil || len(in.Contents) > maxInlineObject {
-		return nil, toStatus(invalidSpec("contents"))
+		return nil, toStatus(ctx, invalidSpec("contents"))
 	}
 	body := in.GetContents()
 	sum := sha256.Sum256(body)
 	if in.GetSha256() != "" {
 		parsed, err := model.ParseDigest(in.GetSha256())
 		if err != nil || parsed != sum {
-			return nil, toStatus(invalidSpec("sha256"))
+			return nil, toStatus(ctx, invalidSpec("sha256"))
 		}
 	}
 	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	req := model.WriteObjectRequest{Path: path, Size: model.Bytes(len(body)), SHA256: sum, Expected: ver}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		return doneOnly(s.objectName(path), commonv1.OperationVerb_OPERATION_VERB_UPDATE)
 	}
@@ -460,20 +460,20 @@ func (s *Server) WriteObject(ctx context.Context, in *storagev1.WriteObjectReque
 func (s *Server) ReadObject(ctx context.Context, in *storagev1.ReadObjectRequest) (*storagev1.ReadObjectResponse, error) {
 	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	want, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	var lastErr error
 	for range readAttempts {
 		obj, loc, err := s.svc.LocateObject(ctx, path)
 		if err != nil {
-			return nil, toStatus(err)
+			return nil, toStatus(ctx, err)
 		}
 		if want != 0 && obj.Meta.Version != want {
-			return nil, toStatus(model.ErrETagMismatch)
+			return nil, toStatus(ctx, model.ErrETagMismatch)
 		}
 		if obj.Size > maxInlineObject {
 			return nil, status.Error(codes.FailedPrecondition, "stored payload exceeds the read limit")
@@ -483,7 +483,7 @@ func (s *Server) ReadObject(ctx context.Context, in *storagev1.ReadObjectRequest
 			return &storagev1.ReadObjectResponse{Contents: body, Object: s.objectMsg(obj)}, nil
 		}
 		if ctx.Err() != nil {
-			return nil, toStatus(ctx.Err())
+			return nil, toStatus(ctx, ctx.Err())
 		}
 		lastErr = err
 	}
@@ -511,11 +511,11 @@ func storedBytes(obj model.Object, body []byte) bool {
 func (s *Server) DeleteObject(ctx context.Context, in *storagev1.DeleteObjectRequest) (*longrunningpb.Operation, error) {
 	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	ver, err := expectedVersion(in.GetEtag())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.submit(ctx, in.GetRequestId(), model.DeleteObjectRequest{
 		Path: path, Expected: ver, AllowMissing: in.GetAllowMissing(),
@@ -526,11 +526,11 @@ func (s *Server) DeleteObject(ctx context.Context, in *storagev1.DeleteObjectReq
 func (s *Server) GetObject(ctx context.Context, in *storagev1.GetObjectRequest) (*storagev1.Object, error) {
 	path, err := s.parseObjectName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	obj, err := s.svc.Object(ctx, path)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.objectMsg(obj), nil
 }
@@ -539,15 +539,15 @@ func (s *Server) GetObject(ctx context.Context, in *storagev1.GetObjectRequest) 
 func (s *Server) ListObjects(ctx context.Context, in *storagev1.ListObjectsRequest) (*storagev1.ListObjectsResponse, error) {
 	bucket, err := s.parseObjectParent(in.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	n, err := pageSize(in.GetPageSize())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	page, err := s.svc.ListObjects(ctx, bucket, "", model.PageRequest{Size: n, Token: in.GetPageToken()})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	out := &storagev1.ListObjectsResponse{NextPageToken: page.NextToken}
 	for _, obj := range page.Items {
@@ -565,11 +565,11 @@ func (s *Server) ReportObjectStatus(context.Context, *storagev1.ReportObjectStat
 func (s *Server) GetOperation(ctx context.Context, in *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {
 	id, err := s.parseOpName(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	op, err := s.svc.Operation(ctx, id)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.operation(ctx, op)
 }
@@ -578,18 +578,18 @@ func (s *Server) GetOperation(ctx context.Context, in *longrunningpb.GetOperatio
 func (s *Server) ListOperations(ctx context.Context, in *longrunningpb.ListOperationsRequest) (*longrunningpb.ListOperationsResponse, error) {
 	project, err := s.parseOperationParent(in.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if in.GetFilter() != "" {
-		return nil, toStatus(invalidSpec("filter"))
+		return nil, toStatus(ctx, invalidSpec("filter"))
 	}
 	n, err := pageSize(in.GetPageSize())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	page, err := s.svc.ListOperations(ctx, storage.OperationQuery{Project: project}, model.PageRequest{Size: n, Token: in.GetPageToken()})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	out := &longrunningpb.ListOperationsResponse{NextPageToken: page.NextToken}
 	for _, op := range page.Items {
@@ -614,15 +614,15 @@ func (s *Server) CancelOperation(context.Context, *longrunningpb.CancelOperation
 
 func (s *Server) submitUpload(ctx context.Context, requestID string, req model.Request, body []byte) (*longrunningpb.Operation, error) {
 	if req.Project().IsZero() {
-		return nil, toStatus(invalidID("project"))
+		return nil, toStatus(ctx, invalidID("project"))
 	}
 	tok, err := tokenFor(requestID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	op, err := s.svc.Submit(ctx, tok, req)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	if op.Upload != nil {
 		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
@@ -679,15 +679,15 @@ func objectMaskOK(paths []string) bool {
 
 func (s *Server) submit(ctx context.Context, requestID string, req model.Request) (*longrunningpb.Operation, error) {
 	if req.Project().IsZero() {
-		return nil, toStatus(invalidID("project"))
+		return nil, toStatus(ctx, invalidID("project"))
 	}
 	tok, err := tokenFor(requestID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	op, err := s.svc.Submit(ctx, tok, req)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	return s.operation(ctx, op)
 }

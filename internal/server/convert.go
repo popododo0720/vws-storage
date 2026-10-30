@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -22,6 +22,8 @@ import (
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -532,7 +534,7 @@ func (s *Server) operation(ctx context.Context, st storage.OperationStatus) (*lo
 		return out, nil
 	}
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(ctx, err)
 	}
 	body, err := anypb.New(msg)
 	if err != nil {
@@ -828,7 +830,7 @@ func grpcCode(c model.Code) codes.Code {
 	}
 }
 
-func toStatus(err error) error {
+func toStatus(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -862,7 +864,7 @@ func toStatus(err error) error {
 	case errors.Is(err, model.ErrStale):
 		return statusError{code: codes.Aborted, reason: "GENERATION_CONFLICT", err: err}.grpc()
 	default:
-		log.Printf("vws-storage: internal error: %v", err)
+		slog.ErrorContext(ctx, "vws-storage: internal error", slog.String(obs.FieldErr, err.Error()))
 		return status.Error(codes.Internal, "internal error")
 	}
 }

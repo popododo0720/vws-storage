@@ -123,14 +123,7 @@ type debt struct {
 }
 
 // knownDebt is keyed by "<file> <import>".
-var knownDebt = map[string]debt{
-	// toStatus has no context and 65 callers; slog with context needs it plumbed.
-	server + "/convert.go log": {
-		issue: "#96",
-		why:   "logs go through log/slog and vws-lib/obs",
-		uses:  map[string]int{"toStatus": 1},
-	},
-}
+var knownDebt = map[string]debt{}
 
 // usesOf counts selector uses of the package imported as imp in f, keyed by
 // the enclosing top-level function ("" outside any function).
@@ -251,7 +244,6 @@ func TestArchitectureRules(t *testing.T) {
 		engine + "/w.go":            imp("storage", module+"/"+server),
 		server + "/s.go":            imp("server", module+"/"+store),
 		server + "/b.go":            imp("server", module+"/"+backend),
-		server + "/convert.go":      "package server; import \"log\"; func toStatus() { log.Printf(\"\") }",
 		server + "/l.go":            imp("server", "log"),
 		health + "/h.go":            imp("health", module+"/"+engine),
 		"internal/widget/a.go":      imp("widget", "github.com/aws/aws-sdk-go-v2/aws"),
@@ -288,17 +280,6 @@ func TestArchitectureRules(t *testing.T) {
 	sort.Strings(want)
 	if got := archViolations(loadProduction(t, probe)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("probe violations:\n got %q\nwant %q", got, want)
-	}
-
-	// The debt is pinned to its calls: one more use of log anywhere in
-	// convert.go is a violation again.
-	extra := t.TempDir()
-	writeFile(t, filepath.Join(extra, server, "convert.go"),
-		"package server; import \"log\"; func toStatus() { log.Printf(\"\") }; func other() { log.Println() }")
-	wantExtra := []string{server + " imports log: logs go through log/slog and vws-lib/obs" +
-		" (known debt #96 allows uses map[toStatus:1] in convert.go, found map[other:1 toStatus:1])"}
-	if got := archViolations(loadProduction(t, extra)); !reflect.DeepEqual(got, wantExtra) {
-		t.Fatalf("extra-call violations:\n got %q\nwant %q", got, wantExtra)
 	}
 
 	root := repoRoot(t)
