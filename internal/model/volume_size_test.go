@@ -112,7 +112,8 @@ func TestExpandAndRetypeKeepTheTypeSizeRange(t *testing.T) {
 			vol.Spec.Iops, vol.Spec.Throughput = 3000, 125
 		}
 		avail, _ := vol.AsAvailable()
-		_, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, vol.Labels, mustType(t, tc.to))
+		to := VolumeTarget{Labels: vol.Labels, Type: mustType(t, tc.to)}
+		_, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, to)
 		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrInvalidArgument)) {
 			t.Errorf("retype %d GiB %s to %s: err %v", tc.gib, tc.from, tc.to, err)
 		}

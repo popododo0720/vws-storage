@@ -210,9 +210,10 @@ func (s *Service) admitExpandVolume(ctx context.Context, r store.Reader, st mode
 	return avail.Expand(st, req.Size)
 }
 
-// admitModifyVolume sets an available volume's labels and type in one write.
-// A type change must be one the backend serves without touching the volume's
-// object (backend.Retyper); otherwise it is invalid.
+// admitModifyVolume sets an available volume's labels, type, size and
+// performance in one request (AvailableVolume.Modify). A type change must be
+// one the backend serves without touching the volume's object
+// (backend.Retyper); otherwise it is invalid. A smaller size is invalid.
 func (s *Service) admitModifyVolume(ctx context.Context, r store.Reader, st model.Start, req model.ModifyVolumeRequest) (model.Admitted, error) {
 	vol, err := r.Volume(ctx, req.Volume)
 	if err != nil {
@@ -254,7 +255,13 @@ func (s *Service) admitModifyVolume(ctx context.Context, r store.Reader, st mode
 		}
 		typ = req.Type
 	}
-	return avail.Modify(st, labels, typ)
+	if req.Size != 0 && req.Size < vol.Spec.Size {
+		return model.Admitted{}, fmt.Errorf("%w: volume cannot shrink", model.ErrInvalidArgument)
+	}
+	return avail.Modify(st, model.VolumeTarget{
+		Labels: labels, Type: typ, Size: req.Size,
+		SetIops: req.SetIops, Iops: req.Iops, SetThroughput: req.SetThroughput, Throughput: req.Throughput,
+	})
 }
 
 // unsupportedVolumeType is a type this deployment has no storage mapped for.

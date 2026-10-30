@@ -1133,7 +1133,10 @@ func TestUpdateVolumeExpandsAndRejectsShrink(t *testing.T) {
 		code codes.Code
 	}{
 		{"shrink", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 3}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.InvalidArgument},
-		{"size and labels", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib", "labels"}}}, codes.InvalidArgument},
+		{"shrink with labels", &storagev1.UpdateVolumeRequest{
+			Volume:     &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 3}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib", "labels"}},
+		}, codes.InvalidArgument},
 		{"other path", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.image"}}}, codes.Unimplemented},
 		{"no mask", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Spec: &storagev1.VolumeSpec{SizeGib: 6}}}, codes.Unimplemented},
 		{"stale etag", &storagev1.UpdateVolumeRequest{Volume: &storagev1.Volume{Name: name, Etag: "1", Spec: &storagev1.VolumeSpec{SizeGib: 6}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}}}, codes.Aborted},
