@@ -1074,10 +1074,11 @@ func TestModifyStoresLabelsAndTypeAtAdmission(t *testing.T) {
 	if vol.Spec.Type == VolumeTypeStandard {
 		other = VolumeTypeGP2
 	}
-	if _, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, labels, VolumeTypeUnspecified); !errors.Is(err, ErrInvalidArgument) {
+	unset := VolumeTarget{Labels: labels, Type: VolumeTypeUnspecified}
+	if _, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, unset); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("unspecified type: %v", err)
 	}
-	admitted, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, labels, other)
+	admitted, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, VolumeTarget{Labels: labels, Type: other})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1092,7 @@ func TestModifyStoresLabelsAndTypeAtAdmission(t *testing.T) {
 	if admitted.Op.Phase() != PhaseSucceeded {
 		t.Fatalf("phase %s", admitted.Op.Phase())
 	}
-	same, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, vol.Labels, vol.Spec.Type)
+	same, err := avail.Modify(Start{Op: NewOperationID(), Now: now}, VolumeTarget{Labels: vol.Labels, Type: vol.Spec.Type})
 	if err != nil {
 		t.Fatal(err)
 	}

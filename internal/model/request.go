@@ -420,23 +420,19 @@ func checkPerformance(t VolumeType, size Bytes, iops, mibs int64) error {
 	return nil
 }
 
-// retypePerformance is the IOPS and throughput a volume of size bytes stores
-// after a change to type to, as EC2 ModifyVolume without Iops or Throughput:
-// "If you change the volume type to io1, io2, or gp3, the default is 3,000"
-// IOPS, and throughput is 125 unless source and target are both gp3, which is
-// no type change. Other types store none. The result must fit the size; a
-// default over the IOPS-per-GiB cap is refused, as EC2 refuses it.
-func retypePerformance(to VolumeType, size Bytes) (int64, int64, error) {
+// retypePerformance is the IOPS and throughput a volume stores after a
+// change to type to, as EC2 ModifyVolume without Iops or Throughput: "If you
+// change the volume type to io1, io2, or gp3, the default is 3,000" IOPS, and
+// throughput is 125 unless source and target are both gp3, which is no type
+// change. Other types store none. The caller checks the result against the
+// size (checkPerformance); a default over the IOPS-per-GiB cap is refused, as
+// EC2 refuses it.
+func retypePerformance(to VolumeType) (iops, mibs int64) {
 	p := performanceOf[to]
-	var iops, mibs int64
 	if p.maxIops != 0 {
 		iops = 3000
 	}
-	mibs = p.defMibs
-	if err := checkPerformance(to, size, iops, mibs); err != nil {
-		return 0, 0, err
-	}
-	return iops, mibs, nil
+	return iops, p.defMibs
 }
 
 // Request is one client mutation. Adding a kind requires fingerprint so the
@@ -477,16 +473,28 @@ type ExpandVolumeRequest struct {
 	Expected Version
 }
 
-// ModifyVolumeRequest changes an available volume's labels, type, or both.
+// ModifyVolumeRequest changes an available volume's labels, type, size and
+// provisioned performance in one request, as EC2 ModifyVolume (#87).
 // SetLabels replaces the labels with Labels (empty clears them). A zero Type
-// keeps the type. Expected and Zone are as in ExpandVolumeRequest.
+// keeps the type. A zero Size keeps the size; a larger one grows the volume
+// and stores the other values when the growth finishes. SetIops sets Iops,
+// where zero is the type's EC2 CreateVolume default (gp3 3000; io1 and io2
+// have none, so zero is refused); without SetIops the volume keeps its IOPS,
+// or takes the EC2 ModifyVolume default when the type changes. SetThroughput
+// and Throughput work the same way (gp3 125 MiB/s). Expected and Zone are as
+// in ExpandVolumeRequest.
 type ModifyVolumeRequest struct {
-	Volume    VolumeID
-	Zone      Zone
-	SetLabels bool
-	Labels    Labels
-	Type      VolumeType
-	Expected  Version
+	Volume        VolumeID
+	Zone          Zone
+	SetLabels     bool
+	Labels        Labels
+	Type          VolumeType
+	Size          Bytes
+	SetIops       bool
+	Iops          int64
+	SetThroughput bool
+	Throughput    int64
+	Expected      Version
 }
 
 // CreateSnapshotRequest snapshots an available volume.
@@ -624,7 +632,13 @@ func (r ModifyVolumeRequest) Validate() error {
 	if r.Type != VolumeTypeUnspecified && !r.Type.Valid() {
 		return fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
-	if !r.SetLabels && r.Type == VolumeTypeUnspecified {
+	if r.Size != 0 && (r.Size < GiB || r.Size > maxVolume || r.Size%GiB != 0) {
+		return fmt.Errorf("%w: volume size", ErrInvalidArgument)
+	}
+	if r.Iops < 0 || r.Throughput < 0 {
+		return fmt.Errorf("%w: iops and throughput cannot be negative", ErrInvalidArgument)
+	}
+	if !r.SetLabels && r.Type == VolumeTypeUnspecified && r.Size == 0 && !r.SetIops && !r.SetThroughput {
 		return fmt.Errorf("%w: nothing to update", ErrInvalidArgument)
 	}
 	return nil
@@ -759,8 +773,14 @@ func (r ExpandVolumeRequest) fingerprint() string {
 	return fmt.Sprintf("expand-volume\n%s\n%s\n%d\n%d", r.Volume.String(), r.Zone.String(), r.Size, r.Expected)
 }
 
+// A request without size or performance keeps the pre-#87 fingerprint.
 func (r ModifyVolumeRequest) fingerprint() string {
-	return fmt.Sprintf("modify-volume\n%s\n%s\n%t\n%s\n%d\n%d", r.Volume.String(), r.Zone.String(), r.SetLabels, r.Labels.canonical(), r.Type, r.Expected)
+	f := fmt.Sprintf("modify-volume\n%s\n%s\n%t\n%s\n%d\n%d",
+		r.Volume.String(), r.Zone.String(), r.SetLabels, r.Labels.canonical(), r.Type, r.Expected)
+	if r.Size != 0 || r.SetIops || r.SetThroughput {
+		f += fmt.Sprintf("\nsize=%d\niops=%t,%d\nthroughput=%t,%d", r.Size, r.SetIops, r.Iops, r.SetThroughput, r.Throughput)
+	}
+	return f
 }
 
 func (r CreateSnapshotRequest) fingerprint() string {

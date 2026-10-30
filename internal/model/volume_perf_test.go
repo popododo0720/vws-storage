@@ -198,7 +198,7 @@ func TestModifyRederivesPerformance(t *testing.T) {
 			t.Fatal("not available")
 		}
 		st := Start{Op: NewOperationID(), Now: now}
-		ad, err := avail.Modify(st, vol.Labels, mustType(t, tc.to))
+		ad, err := avail.Modify(st, VolumeTarget{Labels: vol.Labels, Type: mustType(t, tc.to)})
 		if (err == nil) != tc.ok {
 			t.Errorf("%s->%s: err %v", tc.from, tc.to, err)
 			continue

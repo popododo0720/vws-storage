@@ -125,9 +125,8 @@ func TestUpdateVolumeCombinedIsIdempotentAndValidates(t *testing.T) {
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.size_gib", "spec.type", "spec.iops"}},
 		RequestId:  "87878787-8787-4787-8787-878787878787",
 	}
-	check := *req
-	check.RequestId, check.ValidateOnly = "", true
-	if _, err := vols.UpdateVolume(ctx, &check); err != nil {
+	check := &storagev1.UpdateVolumeRequest{Volume: req.GetVolume(), UpdateMask: req.GetUpdateMask(), ValidateOnly: true}
+	if _, err := vols.UpdateVolume(ctx, check); err != nil {
 		t.Fatal(err)
 	}
 	vol, err := vols.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
@@ -151,25 +150,32 @@ func TestUpdateVolumeRefusesIllegalTypeAndPerformance(t *testing.T) {
 	vols, _, _, _, ops := dial(t, "")
 	ctx := context.Background()
 	name := createGP2(t, vols, ops, "bad", 100)
+	const (
+		io1  = storagev1.VolumeType_VOLUME_TYPE_IO1
+		gp3  = storagev1.VolumeType_VOLUME_TYPE_GP3
+		std  = storagev1.VolumeType_VOLUME_TYPE_STANDARD
+		typ  = "spec.type"
+		iops = "spec.iops"
+		mibs = "spec.throughput_mibps"
+		size = "spec.size_gib"
+	)
+	type spec = storagev1.VolumeSpec
 	for _, tc := range []struct {
 		step  string
-		spec  *storagev1.VolumeSpec
+		spec  *spec
 		paths []string
 	}{
-		{"iops on gp2", &storagev1.VolumeSpec{Iops: 3000}, []string{"spec.iops"}},
-		{"throughput on gp2", &storagev1.VolumeSpec{ThroughputMibps: 125}, []string{"spec.throughput_mibps"}},
-		{"io1 with zero iops", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_IO1}, []string{"spec.type", "spec.iops"}},
-		{"io1 with throughput", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_IO1, Iops: 3000, ThroughputMibps: 125},
-			[]string{"spec.type", "spec.iops", "spec.throughput_mibps"}},
-		{"io1 over 50 per GiB", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_IO1, Iops: 5001}, []string{"spec.type", "spec.iops"}},
-		{"gp3 under 3000", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_GP3, Iops: 2999}, []string{"spec.type", "spec.iops"}},
-		{"gp3 over 0.25 MiB/s per iops", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_GP3, ThroughputMibps: 751},
-			[]string{"spec.type", "spec.throughput_mibps"}},
-		{"negative iops", &storagev1.VolumeSpec{Type: storagev1.VolumeType_VOLUME_TYPE_GP3, Iops: -1}, []string{"spec.type", "spec.iops"}},
-		{"shrink with a type", &storagev1.VolumeSpec{SizeGib: 50, Type: storagev1.VolumeType_VOLUME_TYPE_GP3}, []string{"spec.size_gib", "spec.type"}},
-		{"standard over 1024 GiB", &storagev1.VolumeSpec{SizeGib: 1025, Type: storagev1.VolumeType_VOLUME_TYPE_STANDARD},
-			[]string{"spec.size_gib", "spec.type"}},
-		{"unknown path", &storagev1.VolumeSpec{}, []string{"spec.iops", "spec.zone"}},
+		{"iops on gp2", &spec{Iops: 3000}, []string{iops}},
+		{"throughput on gp2", &spec{ThroughputMibps: 125}, []string{mibs}},
+		{"io1 with zero iops", &spec{Type: io1}, []string{typ, iops}},
+		{"io1 with throughput", &spec{Type: io1, Iops: 3000, ThroughputMibps: 125}, []string{typ, iops, mibs}},
+		{"io1 over 50 per GiB", &spec{Type: io1, Iops: 5001}, []string{typ, iops}},
+		{"gp3 under 3000", &spec{Type: gp3, Iops: 2999}, []string{typ, iops}},
+		{"gp3 over 0.25 MiB/s per iops", &spec{Type: gp3, ThroughputMibps: 751}, []string{typ, mibs}},
+		{"negative iops", &spec{Type: gp3, Iops: -1}, []string{typ, iops}},
+		{"shrink with a type", &spec{SizeGib: 50, Type: gp3}, []string{size, typ}},
+		{"standard over 1024 GiB", &spec{SizeGib: 1025, Type: std}, []string{size, typ}},
+		{"unknown path", &spec{}, []string{iops, "spec.zone"}},
 	} {
 		_, err := vols.UpdateVolume(ctx, &storagev1.UpdateVolumeRequest{
 			Volume:     &storagev1.Volume{Name: name, Spec: tc.spec},

@@ -124,7 +124,9 @@ IOPS and throughput follow the EC2 rules ([EBS volume types](https://docs.aws.am
 
 The `gp3` 500-per-GiB ratio applies above the included 3000 IOPS, so every `gp3` size keeps 3000. Create, expand and retype check the size range of the volume's (new) type.
 
-The values are stored and returned. The backend does not enforce them; the admin's StorageClass decides real performance. A retype follows EC2 `ModifyVolume` without `Iops` or `Throughput`: `io1`, `io2` and `gp3` get 3000 IOPS, `gp3` gets 125 MiB/s, the other types store 0. The ratio is then checked, so a retype to `io1` under 60 GiB is refused. `UpdateVolume` does not change `iops` or `throughput_mibps`.
+The values are stored and returned. The backend does not enforce them; the admin's StorageClass decides real performance. A retype follows EC2 `ModifyVolume` without `Iops` or `Throughput`: `io1`, `io2` and `gp3` get 3000 IOPS, `gp3` gets 125 MiB/s, the other types store 0. The ratio is then checked, so a retype to `io1` under 60 GiB is refused. `UpdateVolume` sets them with the mask paths `spec.iops` and `spec.throughput_mibps`; a zero value in the mask is the type's `CreateVolume` default (gp3 3000 and 125; io1 and io2 have none, so zero is refused). A path left out keeps the stored value, or takes the retype default above when `spec.type` changes.
+
+One `UpdateVolume` can carry `spec.size_gib`, `spec.type`, `spec.iops`, `spec.throughput_mibps` and `labels` together, as one EC2 `ModifyVolume` (#87). Every value is checked against the target type and size together, so a 10 GiB gp2 volume moves to st1 when the same mask grows it to 125 GiB. Without a size change the values are stored at once and the operation is already done. With one, the operation grows the claim and stores the size, type, performance and labels in the write that succeeds it; until then the volume shows its old values, and a failed growth changes nothing.
 
 #### SSD to gp2 migration
 

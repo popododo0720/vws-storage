@@ -206,6 +206,9 @@ type workWire struct {
 	// Create-volume performance. Absent in operations written before #124 r1.
 	Iops       int64 `json:"iops,omitempty"`
 	Throughput int64 `json:"throughput_mibps,omitempty"`
+	// Expand-volume: the type, labels and performance stored with the size
+	// (VolumeExpansion.Then). Absent in operations written before #87.
+	Then bool `json:"then,omitempty"`
 }
 
 func workTo(w Work) (workWire, error) {
@@ -219,10 +222,16 @@ func workTo(w Work) (workWire, error) {
 	case VolumeDeletion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Zone: w.Zone.String()}, nil
 	case VolumeExpansion:
-		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size)}, nil
+		out := workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size)}
+		if m := w.Then; m != nil {
+			out.Then, out.Type, out.Labels = true, m.Type.wireName(), m.Labels.Map()
+			out.Iops, out.Throughput = m.Iops, m.Throughput
+		}
+		return out, nil
 	case VolumeModification:
 		return workWire{
 			Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.wireName(), Labels: w.Labels.Map(),
+			Iops: w.Iops, Throughput: w.Throughput,
 		}, nil
 	case SnapshotCreation:
 		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Volume: w.Source.wire(), Zone: w.Region.String()}, nil
@@ -247,6 +256,18 @@ func workTo(w Work) (workWire, error) {
 	default:
 		return workWire{}, fmt.Errorf("work %T", w)
 	}
+}
+
+func modificationFrom(vol VolumeID, w workWire) (VolumeModification, error) {
+	typ, err := ParseVolumeType(w.Type)
+	if err != nil {
+		return VolumeModification{}, err
+	}
+	labels, err := ParseLabels(w.Labels)
+	if err != nil {
+		return VolumeModification{}, err
+	}
+	return VolumeModification{Volume: vol, Labels: labels, Type: typ, Iops: w.Iops, Throughput: w.Throughput}, nil
 }
 
 func workFrom(w workWire) (Work, error) {
@@ -281,21 +302,21 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		return VolumeExpansion{Volume: vol, Size: Bytes(w.Size)}, nil
+		out := VolumeExpansion{Volume: vol, Size: Bytes(w.Size)}
+		if w.Then {
+			m, err := modificationFrom(vol, w)
+			if err != nil {
+				return nil, err
+			}
+			out.Then = &m
+		}
+		return out, nil
 	case KindModifyVolume.String():
 		vol, err := ParseVolumeID(w.Volume)
 		if err != nil {
 			return nil, err
 		}
-		typ, err := ParseVolumeType(w.Type)
-		if err != nil {
-			return nil, err
-		}
-		labels, err := ParseLabels(w.Labels)
-		if err != nil {
-			return nil, err
-		}
-		return VolumeModification{Volume: vol, Labels: labels, Type: typ}, nil
+		return modificationFrom(vol, w)
 	case KindCreateSnapshot.String():
 		snap, err := ParseSnapshotID(w.Snapshot)
 		if err != nil {

@@ -139,52 +139,118 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
 
-// Expanded stores the new size and succeeds the operation. A volume already
-// at least that large only succeeds the operation.
+// Expanded stores the new size and, when the expansion carries one, the
+// labels, type and performance asked for with it (VolumeExpansion.Then), and
+// succeeds the operation in the same write. Values the volume already has
+// only succeed the operation.
 func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) (Change, error) {
-	if op.Work().Volume != a.v.ID {
+	w := op.Work()
+	if w.Volume != a.v.ID {
 		return Change{}, ErrStale
 	}
 	done := putUpdate(op.Operation(), succeedOp(op.Operation(), now))
-	if a.v.Spec.Size >= op.Work().Size {
+	next := a.v
+	next.Spec.Size = max(a.v.Spec.Size, w.Size)
+	if m := w.Then; m != nil {
+		next.Labels = m.Labels
+		next.Spec.Type, next.Spec.Iops, next.Spec.Throughput = m.Type, m.Iops, m.Throughput
+	}
+	if sameShape(a.v, next) {
 		return writes(guardRec(a.v), done), nil
 	}
-	next := a.v
-	next.Spec.Size = op.Work().Size
 	next.Meta = bump(a.v.Meta, now)
 	return writes(putUpdate(a.v, next), done), nil
 }
 
-// Modify stores labels and typ on the volume and records the operation as
-// succeeded in the same write: nothing outside the store changes. Values
-// equal to the stored ones only record the operation. A new type re-derives
-// IOPS and throughput (retypePerformance).
-func (a AvailableVolume) Modify(st Start, labels Labels, typ VolumeType) (Admitted, error) {
+// sameShape reports whether a and b have the same labels, size, type and
+// performance: the values UpdateVolume changes.
+func sameShape(a, b Volume) bool {
+	return a.Labels == b.Labels && a.Spec.Size == b.Spec.Size && a.Spec.Type == b.Spec.Type &&
+		a.Spec.Iops == b.Spec.Iops && a.Spec.Throughput == b.Spec.Throughput
+}
+
+// VolumeTarget is what Modify makes of a volume, as one EC2 ModifyVolume
+// (#87). Labels and Type replace the stored ones. A zero Size keeps the size.
+// SetIops stores Iops, where zero is the type's default (gp3 3000; io1 and io2
+// have none); without it the volume keeps its IOPS, or takes the EC2
+// ModifyVolume default when Type differs (retypePerformance). SetThroughput
+// and Throughput work the same way.
+type VolumeTarget struct {
+	Labels        Labels
+	Type          VolumeType
+	Size          Bytes
+	SetIops       bool
+	Iops          int64
+	SetThroughput bool
+	Throughput    int64
+}
+
+// Modify admits the change of the volume to to. Every value is checked
+// against the target type and size together, so a change that is legal only
+// with a new size (st1 needs 125 GiB, io1 IOPS need 50 per GiB) is accepted
+// in one request. Without growth nothing outside the store changes: the
+// values are stored and the operation recorded as succeeded in one write,
+// and values equal to the stored ones only record the operation. With growth
+// the volume row is guarded and an expansion carries the other values, which
+// Expanded stores with the new size.
+func (a AvailableVolume) Modify(st Start, to VolumeTarget) (Admitted, error) {
 	if st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: id", ErrInvalidArgument)
 	}
-	if !typ.Valid() {
+	if !to.Type.Valid() {
 		return Admitted{}, fmt.Errorf("%w: volume type", ErrInvalidArgument)
 	}
-	w := VolumeModification{Volume: a.v.ID, Labels: labels, Type: typ}
-	if a.v.Labels == labels && a.v.Spec.Type == typ {
-		return FinishNow(st, w, a.v)
+	cur := a.v.Spec
+	size := cur.Size
+	if to.Size != 0 {
+		size = to.Size
+	}
+	if size < cur.Size {
+		return Admitted{}, fmt.Errorf("%w: volume can only grow", ErrInvalidArgument)
+	}
+	retyped := to.Type != cur.Type
+	iops, mibs := cur.Iops, cur.Throughput
+	if retyped {
+		iops, mibs = retypePerformance(to.Type)
+	}
+	p := performanceOf[to.Type]
+	if to.SetIops {
+		iops = to.Iops
+		if iops == 0 {
+			iops = p.defIops
+		}
+	}
+	if to.SetThroughput {
+		mibs = to.Throughput
+		if mibs == 0 {
+			mibs = p.defMibs
+		}
+	}
+	perf := iops != cur.Iops || mibs != cur.Throughput
+	if retyped || size != cur.Size {
+		if err := checkSize(to.Type, size); err != nil {
+			return Admitted{}, err
+		}
+	}
+	if retyped || perf {
+		if err := checkPerformance(to.Type, size, iops, mibs); err != nil {
+			return Admitted{}, err
+		}
+	}
+	w := VolumeModification{Volume: a.v.ID, Labels: to.Labels, Type: to.Type, Iops: iops, Throughput: mibs}
+	if size > cur.Size {
+		op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size, Then: &w})
+		ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
+		return Admitted{Change: writes(ws...), Op: op}, nil
 	}
 	next := a.v
-	if typ != a.v.Spec.Type {
-		if err := checkSize(typ, a.v.Spec.Size); err != nil {
-			return Admitted{}, err
-		}
-		iops, mibs, err := retypePerformance(typ, a.v.Spec.Size)
-		if err != nil {
-			return Admitted{}, err
-		}
-		next.Spec.Iops, next.Spec.Throughput = iops, mibs
+	next.Labels = to.Labels
+	next.Spec.Type, next.Spec.Iops, next.Spec.Throughput = to.Type, iops, mibs
+	if sameShape(a.v, next) {
+		return FinishNow(st, w, a.v)
 	}
 	op := newOp(st, w)
 	op.State = OpSucceeded{}
-	next.Labels = labels
-	next.Spec.Type = typ
 	next.Meta = bump(a.v.Meta, st.Now)
 	ws := withToken(st, []Write{putUpdate(a.v, next), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil

@@ -99,26 +99,28 @@ func (s *Server) CreateVolume(ctx context.Context, in *storagev1.CreateVolumeReq
 	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-// UpdateVolume grows a volume (mask spec or spec.size_gib) or sets its labels
-// and type (mask labels, spec.type, or both). A size below the stored one is
-// INVALID_ARGUMENT, and the same size is a succeeded operation. Labels and
-// type are stored at once and the operation is already done; a type the
-// backend cannot serve in place is INVALID_ARGUMENT. Size and labels/type in
-// one mask is INVALID_ARGUMENT: they are separate operations.
+// UpdateVolume grows a volume (mask spec or spec.size_gib), sets its labels,
+// type and provisioned performance (mask labels, spec.type, spec.iops,
+// spec.throughput_mibps), or does all of it in one mask, as one EC2
+// ModifyVolume (#87). A size below the stored one is INVALID_ARGUMENT, and
+// the same size is a succeeded operation. Every value is checked against the
+// target type and size together, with the EC2 ranges of the type. Without a
+// size change the values are stored at once and the operation is already
+// done; with one they are stored when the growth finishes, in the same write
+// as the size. A type the backend cannot serve in place is INVALID_ARGUMENT.
+// A zero spec.iops or spec.throughput_mibps in the mask is the type's
+// default, as in CreateVolume.
 func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest) (*longrunningpb.Operation, error) {
 	grow, modify, ok := volumeMask(in.GetUpdateMask().GetPaths())
 	if !ok {
 		return nil, status.Error(codes.Unimplemented, "volume field mask")
-	}
-	if grow && len(modify) > 0 {
-		return nil, toStatus(invalidSpec("update_mask: size and labels or type are separate updates"))
 	}
 	id, zone, err := s.parseVolumeName(in.GetVolume().GetName())
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	if len(modify) > 0 {
-		return s.modifyVolume(ctx, in, id, zone, modify)
+		return s.modifyVolume(ctx, in, id, zone, grow, modify)
 	}
 	size, err := model.VolumeSize(in.GetVolume().GetSpec().GetSizeGib())
 	if err != nil {
@@ -138,7 +140,9 @@ func (s *Server) UpdateVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 	return s.submit(ctx, in.GetRequestId(), req)
 }
 
-func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest, id model.VolumeID, zone model.Zone, paths map[string]bool) (*longrunningpb.Operation, error) {
+func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeRequest,
+	id model.VolumeID, zone model.Zone, grow bool, paths map[string]bool,
+) (*longrunningpb.Operation, error) {
 	ver, err := expectedVersion(in.GetVolume().GetEtag())
 	if err != nil {
 		return nil, toStatus(err)
@@ -150,10 +154,22 @@ func (s *Server) modifyVolume(ctx context.Context, in *storagev1.UpdateVolumeReq
 			return nil, toStatus(invalidSpec("labels"))
 		}
 	}
+	spec := in.GetVolume().GetSpec()
 	if paths["spec.type"] {
-		if req.Type, err = volumeType(in.GetVolume().GetSpec().GetType()); err != nil {
+		if req.Type, err = volumeType(spec.GetType()); err != nil {
 			return nil, toStatus(err)
 		}
+	}
+	if grow {
+		if req.Size, err = model.VolumeSize(spec.GetSizeGib()); err != nil {
+			return nil, toStatus(invalidSpec("size_gib"))
+		}
+	}
+	if paths["spec.iops"] {
+		req.SetIops, req.Iops = true, spec.GetIops()
+	}
+	if paths["spec.throughput_mibps"] {
+		req.SetThroughput, req.Throughput = true, spec.GetThroughputMibps()
 	}
 	if in.GetValidateOnly() {
 		if err := req.Validate(); err != nil {
@@ -623,8 +639,8 @@ func (s *Server) submitUpload(ctx context.Context, requestID string, req model.R
 	return s.operation(ctx, op)
 }
 
-// volumeMask sorts the UpdateVolume mask into a size update and the labels
-// and type paths. An empty mask or any other path is not served.
+// volumeMask sorts the UpdateVolume mask into a size update and the labels,
+// type and performance paths. An empty mask or any other path is not served.
 func volumeMask(paths []string) (grow bool, modify map[string]bool, ok bool) {
 	if len(paths) == 0 {
 		return false, nil, false
@@ -634,7 +650,7 @@ func volumeMask(paths []string) (grow bool, modify map[string]bool, ok bool) {
 		switch p {
 		case "spec", "spec.size_gib":
 			grow = true
-		case "labels", "spec.type":
+		case "labels", "spec.type", "spec.iops", "spec.throughput_mibps":
 			modify[p] = true
 		default:
 			return false, nil, false
