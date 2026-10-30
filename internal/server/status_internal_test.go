@@ -16,7 +16,7 @@ import (
 )
 
 func TestUnclassifiedErrorIsInternalWithoutItsMessage(t *testing.T) {
-	err := toStatus(fmt.Errorf("sqlite: open /var/lib/vws/secret.db: %w", errors.New("disk on fire")))
+	err := toStatus(t.Context(), fmt.Errorf("sqlite: open /var/lib/vws/secret.db: %w", errors.New("disk on fire")))
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal || strings.Contains(st.Message(), "secret") || strings.Contains(st.Message(), "fire") {
 		t.Fatalf("status = %v", st)
@@ -25,7 +25,7 @@ func TestUnclassifiedErrorIsInternalWithoutItsMessage(t *testing.T) {
 
 func TestDependencyMissingIsAFailedPreconditionWithItsOwnReason(t *testing.T) {
 	reason := func(err error) string {
-		st, _ := status.FromError(toStatus(err))
+		st, _ := status.FromError(toStatus(t.Context(), err))
 		if st.Code() != codes.FailedPrecondition {
 			t.Fatalf("code = %v", st.Code())
 		}
