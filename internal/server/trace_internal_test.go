@@ -34,9 +34,9 @@ func TestObjectTransferContinuesTheTraceWithoutTheURL(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			var traceparent string
+			traceparent := make(chan string, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				traceparent = r.Header.Get("traceparent")
+				traceparent <- r.Header.Get("traceparent")
 				if r.Method == http.MethodGet {
 					_, _ = io.WriteString(w, "payload")
 				}
@@ -60,8 +60,8 @@ func TestObjectTransferContinuesTheTraceWithoutTheURL(t *testing.T) {
 			}
 			parent.End()
 
-			if !strings.Contains(traceparent, parent.SpanContext().TraceID().String()) {
-				t.Fatalf("traceparent = %q, want trace %s", traceparent, parent.SpanContext().TraceID())
+			if got := <-traceparent; !strings.Contains(got, parent.SpanContext().TraceID().String()) {
+				t.Fatalf("traceparent = %q, want trace %s", got, parent.SpanContext().TraceID())
 			}
 			var child sdktrace.ReadOnlySpan
 			for _, s := range recorder.Ended() {
