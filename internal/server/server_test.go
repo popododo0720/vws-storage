@@ -1284,3 +1284,31 @@ func TestStatusCarriesBackendObjectNames(t *testing.T) {
 		t.Fatalf("snapshot_object_name %q", got)
 	}
 }
+
+// S3 bucket names are global (#122): another project's name is
+// ALREADY_EXISTS with reason ALREADY_EXISTS, which console-api maps to 409
+// BucketAlreadyExists.
+func TestCreateBucketNameHeldByAnotherProject(t *testing.T) {
+	_, _, buckets, _, ops := dial(t, "")
+	ctx := context.Background()
+	bop, err := buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/a123", BucketId: "shared-name",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "vws-1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitOp(t, ops, bop.GetName())
+	_, err = buckets.CreateBucket(ctx, &storagev1.CreateBucketRequest{
+		Parent: "projects/a999", BucketId: "shared-name",
+		Bucket: &storagev1.Bucket{Spec: &storagev1.BucketSpec{Region: "vws-1"}},
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.AlreadyExists || reasonOf(st) != "ALREADY_EXISTS" {
+		t.Fatalf("code %v reason %q err %v", st.Code(), reasonOf(st), err)
+	}
+	_, err = buckets.GetBucket(ctx, &storagev1.GetBucketRequest{Name: "projects/a999/buckets/shared-name"})
+	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
+		t.Fatalf("refused create stored a bucket: %v", err)
+	}
+}

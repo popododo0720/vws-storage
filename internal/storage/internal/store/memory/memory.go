@@ -93,6 +93,12 @@ func (m *mem) Bucket(ctx context.Context, name model.BucketName) (model.Bucket, 
 	return view{m}.Bucket(ctx, name)
 }
 
+func (m *mem) BucketsNamed(ctx context.Context, name string) ([]model.Bucket, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return view{m}.BucketsNamed(ctx, name)
+}
+
 func (m *mem) ListBuckets(ctx context.Context, after model.BucketName, limit int) ([]model.Bucket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -227,6 +233,21 @@ func (v view) ListBuckets(_ context.Context, after model.BucketName, limit int) 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
 	return cut(out, limit), nil
+}
+
+func (v view) BucketsNamed(_ context.Context, name string) ([]model.Bucket, error) {
+	var out []model.Bucket
+	for _, rec := range v.m.rows["bucket"] {
+		b, err := store.Cast[model.Bucket](rec)
+		if err != nil {
+			return nil, err
+		}
+		if b.Name.Name() == name {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
+	return out, nil
 }
 
 func (v view) Object(_ context.Context, p model.ObjectPath) (model.Object, error) {

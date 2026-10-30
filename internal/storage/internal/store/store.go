@@ -27,6 +27,9 @@ type Reader interface {
 	ListSnapshots(ctx context.Context, after model.SnapshotID, limit int) ([]model.Snapshot, error)
 	Bucket(ctx context.Context, name model.BucketName) (model.Bucket, error)
 	ListBuckets(ctx context.Context, after model.BucketName, limit int) ([]model.Bucket, error)
+	// BucketsNamed returns every bucket row, in any project, whose raw name
+	// is name. S3 bucket names are one namespace shared by all accounts.
+	BucketsNamed(ctx context.Context, name string) ([]model.Bucket, error)
 	Object(ctx context.Context, p model.ObjectPath) (model.Object, error)
 	ListObjects(ctx context.Context, b model.BucketName, prefix string, after model.ObjectKey, limit int) ([]model.Object, error)
 	HasObjects(ctx context.Context, b model.BucketName) (bool, error)
