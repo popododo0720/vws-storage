@@ -15,6 +15,10 @@ import (
 	"time"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -612,7 +616,10 @@ func (s *Server) CancelOperation(context.Context, *longrunningpb.CancelOperation
 	return nil, status.Error(codes.Unimplemented, "operation cancel is not a storage transition")
 }
 
-func (s *Server) submitUpload(ctx context.Context, requestID string, req model.Request, body []byte) (*longrunningpb.Operation, error) {
+func (s *Server) submitUpload(
+	ctx context.Context, requestID string, req model.Request, body []byte,
+) (op *longrunningpb.Operation, err error) {
+	defer func() { s.audit(ctx, req, err) }()
 	if req.Project().IsZero() {
 		return nil, toStatus(ctx, invalidID("project"))
 	}
@@ -620,23 +627,23 @@ func (s *Server) submitUpload(ctx context.Context, requestID string, req model.R
 	if err != nil {
 		return nil, toStatus(ctx, err)
 	}
-	op, err := s.svc.Submit(ctx, tok, req)
+	st, err := s.svc.Submit(ctx, tok, req)
 	if err != nil {
 		return nil, toStatus(ctx, err)
 	}
-	if op.Upload != nil {
+	if st.Upload != nil {
 		putCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		err := putBytes(putCtx, *op.Upload, body)
+		err := putBytes(putCtx, *st.Upload, body)
 		cancel()
 		if err != nil {
-			again, gerr := s.svc.Operation(ctx, op.ID)
+			again, gerr := s.svc.Operation(ctx, st.ID)
 			if gerr != nil || !again.Terminal() || !again.Err().IsZero() {
 				return nil, status.Error(codes.Unavailable, err.Error())
 			}
-			op = again
+			st = again
 		}
 	}
-	return s.operation(ctx, op)
+	return s.operation(ctx, st)
 }
 
 // volumeMask sorts the UpdateVolume mask into a size update and the labels,
@@ -677,7 +684,10 @@ func objectMaskOK(paths []string) bool {
 	return spec && labels
 }
 
-func (s *Server) submit(ctx context.Context, requestID string, req model.Request) (*longrunningpb.Operation, error) {
+func (s *Server) submit(
+	ctx context.Context, requestID string, req model.Request,
+) (op *longrunningpb.Operation, err error) {
+	defer func() { s.audit(ctx, req, err) }()
 	if req.Project().IsZero() {
 		return nil, toStatus(ctx, invalidID("project"))
 	}
@@ -685,11 +695,11 @@ func (s *Server) submit(ctx context.Context, requestID string, req model.Request
 	if err != nil {
 		return nil, toStatus(ctx, err)
 	}
-	op, err := s.svc.Submit(ctx, tok, req)
+	st, err := s.svc.Submit(ctx, tok, req)
 	if err != nil {
 		return nil, toStatus(ctx, err)
 	}
-	return s.operation(ctx, op)
+	return s.operation(ctx, st)
 }
 
 func (s *Server) objectCreate(in *storagev1.CreateObjectRequest) (model.PutObjectRequest, model.ObjectPath, []byte, error) {
@@ -842,17 +852,36 @@ func checkPutETag(etag string, body []byte) error {
 	return nil
 }
 
+// objectTracer is the instrumentation scope of the object byte transfer spans.
+// The presigned URL carries the bucket and key, so no span attribute or name
+// may carry the path or query.
+const objectTracer = "github.com/popododo0720/vws-storage/internal/server"
+
 func doLocator(ctx context.Context, method string, loc model.Locator, body io.Reader) (*http.Response, error) {
+	ctx, span := otel.Tracer(objectTracer).Start(ctx, "object transfer")
+	defer span.End()
+	span.SetAttributes(attribute.String("http.request.method", method))
 	req, err := http.NewRequestWithContext(ctx, method, loc.URL, body)
 	if err != nil {
+		span.SetStatus(otelcodes.Error, "build object request")
 		return nil, fmt.Errorf("build object request: %w", err)
 	}
+	span.SetAttributes(
+		attribute.String("url.scheme", req.URL.Scheme),
+		attribute.String("server.address", req.URL.Hostname()),
+	)
 	for k, v := range loc.Headers {
 		req.Header.Set(k, v)
 	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		span.SetStatus(otelcodes.Error, "object request")
 		return nil, fmt.Errorf("object request: %w", err)
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if resp.StatusCode >= http.StatusInternalServerError {
+		span.SetStatus(otelcodes.Error, resp.Status)
 	}
 	return resp, nil
 }
