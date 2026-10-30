@@ -502,7 +502,7 @@ func (v view) Operation(ctx context.Context, id model.OperationID) (model.Operat
 }
 
 func (v view) ListOperations(ctx context.Context, f store.OperationFilter, after model.OperationID, limit int) ([]model.Operation, error) {
-	all, err := v.ops(ctx)
+	all, err := v.ops(ctx, f.NonTerminal)
 	if err != nil {
 		return nil, err
 	}
@@ -567,18 +567,38 @@ func (v view) Token(ctx context.Context, tok model.TokenKey) (model.TokenRecord,
 	return store.Cast[model.TokenRecord](rec)
 }
 
-func (v view) ops(ctx context.Context) ([]model.Operation, error) {
-	all, err := v.s.byKind(ctx, "operation")
-	if err != nil {
-		return nil, err
+// ops reads operation rows. A pending-only read joins the scheduler index, so
+// it decodes only non-terminal rows: a terminal row this build cannot decode
+// must not fail the queue sample on every scan (#119).
+func (v view) ops(ctx context.Context, nonTerminal bool) (out []model.Operation, err error) {
+	query := `SELECT payload FROM records WHERE kind = 'operation'`
+	if nonTerminal {
+		query = `SELECT r.payload FROM op_sched s
+			JOIN records r ON r.kind = 'operation' AND r.key = s.id
+			WHERE s.terminal = 0`
 	}
-	out := make([]model.Operation, 0, len(all))
-	for _, rec := range all {
+	rows, err := v.s.query().QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list operation: %w", err)
+	}
+	defer closeInto(rows, &err)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("sqlite: scan operation: %w", err)
+		}
+		rec, err := model.UnmarshalRecord(payload)
+		if err != nil {
+			return nil, err
+		}
 		op, err := store.Cast[model.Operation](rec)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list operation: %w", err)
 	}
 	return out, nil
 }
