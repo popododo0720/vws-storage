@@ -15,6 +15,7 @@ import (
 
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/backend/kube"
+	"github.com/popododo0720/vws-storage/internal/health"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/server"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -94,6 +95,28 @@ func TestHealthTargetsCoverEveryRegisteredService(t *testing.T) {
 	sort.Strings(got)
 	if !slices.Equal(want, got) {
 		t.Fatalf("health targets %v, registered services %v", got, want)
+	}
+}
+
+// /readyz must not answer 200 from the empty handler while the process is
+// still starting.
+func TestReadyCheckStaysClosedUntilTheMonitorIsWired(t *testing.T) {
+	var c monitorCheck
+	if err := c.Ready(context.Background()); err == nil {
+		t.Fatal("ready before the monitor exists")
+	}
+	mon := health.New(health.Options{Targets: []health.Target{{Service: "a.Block"}}})
+	c.mon.Store(mon)
+	if err := c.Ready(context.Background()); err == nil {
+		t.Fatal("ready before the first evaluation")
+	}
+	mon.Evaluate(context.Background())
+	if err := c.Ready(context.Background()); err != nil {
+		t.Fatalf("ready after evaluation: %v", err)
+	}
+	mon.Shutdown()
+	if err := c.Ready(context.Background()); err == nil {
+		t.Fatal("ready after shutdown")
 	}
 }
 

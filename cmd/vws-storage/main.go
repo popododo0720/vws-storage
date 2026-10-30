@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -89,6 +90,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Register the storage check before Setup starts serving /readyz: an empty
+	// handler answers 200, so a probe could otherwise see ready before the
+	// monitor exists.
+	ready := &monitorCheck{}
+	obshealth.Default().Register("storage", ready.Ready)
 	shutdownObs, err := obs.Setup(context.Background(), obs.ForService(server.Service))
 	if err != nil {
 		return fmt.Errorf("observability: %w", err)
@@ -157,9 +163,8 @@ func run(args []string) error {
 	mon := health.New(health.Options{
 		Targets: healthTargets(svc, block), Period: *healthPeriod, Timeout: *healthTimeout,
 	})
+	ready.mon.Store(mon)
 	healthpb.RegisterHealthServer(gs, mon.Server())
-	// obs.Setup serves /healthz and /readyz on VWS_HEALTH_ADDR; /readyz reads the same verdict.
-	obshealth.Default().Register("storage", mon.Ready)
 	go mon.Run(ctx)
 	grpcErr := make(chan error, 1)
 	go func() { grpcErr <- gs.Serve(grpcLn) }()
@@ -193,6 +198,19 @@ func run(args []string) error {
 		serveErr = errors.Join(serveErr, err)
 	}
 	return serveErr
+}
+
+// monitorCheck is the /readyz storage check. It fails until the health monitor
+// exists, so the empty handler cannot answer 200 during startup.
+type monitorCheck struct {
+	mon atomic.Pointer[health.Monitor]
+}
+
+func (c *monitorCheck) Ready(ctx context.Context) error {
+	if m := c.mon.Load(); m != nil {
+		return m.Ready(ctx)
+	}
+	return errors.New("storage is starting")
 }
 
 // healthTargets names what each service needs. Every service needs the engine
