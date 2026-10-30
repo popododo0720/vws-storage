@@ -25,6 +25,19 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
+	// S3 bucket names are one namespace shared by all accounts (CreateBucket
+	// returns 409 BucketAlreadyExists). A row in any other project, whether
+	// creating, available or deleting, holds the name. admit runs inside the
+	// store's write transaction, so this read and the insert are atomic.
+	holders, err := r.BucketsNamed(ctx, req.Bucket.Name())
+	if err != nil {
+		return model.Admitted{}, err
+	}
+	for _, h := range holders {
+		if h.Name.Project() != req.Bucket.Project() {
+			return model.Admitted{}, fmt.Errorf("%w: bucket name is held by another account", model.ErrAlreadyExists)
+		}
+	}
 	return model.NewBucket(st, req)
 }
 

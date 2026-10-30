@@ -250,6 +250,16 @@ func (s *dbStore) ListBuckets(ctx context.Context, after model.BucketName, limit
 	return out, err
 }
 
+func (s *dbStore) BucketsNamed(ctx context.Context, name string) ([]model.Bucket, error) {
+	var out []model.Bucket
+	err := s.lock(func() error {
+		var err error
+		out, err = view{s}.BucketsNamed(ctx, name)
+		return err
+	})
+	return out, err
+}
+
 func (s *dbStore) Object(ctx context.Context, p model.ObjectPath) (model.Object, error) {
 	var out model.Object
 	err := s.lock(func() error {
@@ -414,6 +424,25 @@ func (v view) ListBuckets(ctx context.Context, after model.BucketName, limit int
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
 	return cut(out, limit), nil
+}
+
+func (v view) BucketsNamed(ctx context.Context, name string) ([]model.Bucket, error) {
+	all, err := v.s.byKind(ctx, "bucket")
+	if err != nil {
+		return nil, err
+	}
+	var out []model.Bucket
+	for _, rec := range all {
+		b, err := store.Cast[model.Bucket](rec)
+		if err != nil {
+			return nil, err
+		}
+		if b.Name.Name() == name {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
+	return out, nil
 }
 
 func (v view) Object(ctx context.Context, p model.ObjectPath) (model.Object, error) {
