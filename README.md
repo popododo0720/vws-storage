@@ -171,7 +171,11 @@ When `VWS_HEALTH_ADDR` is set, the process also serves HTTP probes on that addre
 | `VWS_HEALTH_ADDR` | HTTP probe address, e.g. `0.0.0.0:8086`. Empty serves no HTTP probes |
 | `VWS_LOG_LEVEL`, `VWS_LOG_FORMAT` | slog level (default `info`) and format (`json` or `text`, default `json`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for traces, metrics and logs. Empty exports nothing |
-| `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_TRACES_SAMPLER(_ARG)` | standard OpenTelemetry settings |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS` | `grpc` (default) or `http/protobuf`; collector headers as comma-separated `key=value` pairs |
+| `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_RESOURCE_ATTRIBUTES` | standard OpenTelemetry service name, kill switch and resource attributes (`key=value,...`) |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | sampler (default `parentbased_traceidratio`) and its ratio (default `0.1`) |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` or `none`. Default `otlp` when the endpoint is set, otherwise `none` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | metric export interval in milliseconds (default `60000`) |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | error reports to Sentry when the DSN is set |
 | `VWS_S3_ACCESS_KEY`, `VWS_S3_SECRET_KEY` | S3 keys for `-object-backend=s3` |
 
