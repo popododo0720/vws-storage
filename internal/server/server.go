@@ -15,6 +15,10 @@ import (
 	"time"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -842,17 +846,36 @@ func checkPutETag(etag string, body []byte) error {
 	return nil
 }
 
+// objectTracer is the instrumentation scope of the object byte transfer spans.
+// The presigned URL carries the bucket and key, so no span attribute or name
+// may carry the path or query.
+const objectTracer = "github.com/popododo0720/vws-storage/internal/server"
+
 func doLocator(ctx context.Context, method string, loc model.Locator, body io.Reader) (*http.Response, error) {
+	ctx, span := otel.Tracer(objectTracer).Start(ctx, "object transfer")
+	defer span.End()
+	span.SetAttributes(attribute.String("http.request.method", method))
 	req, err := http.NewRequestWithContext(ctx, method, loc.URL, body)
 	if err != nil {
+		span.SetStatus(otelcodes.Error, "build object request")
 		return nil, fmt.Errorf("build object request: %w", err)
 	}
+	span.SetAttributes(
+		attribute.String("url.scheme", req.URL.Scheme),
+		attribute.String("server.address", req.URL.Hostname()),
+	)
 	for k, v := range loc.Headers {
 		req.Header.Set(k, v)
 	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		span.SetStatus(otelcodes.Error, "object request")
 		return nil, fmt.Errorf("object request: %w", err)
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if resp.StatusCode >= http.StatusInternalServerError {
+		span.SetStatus(otelcodes.Error, resp.Status)
 	}
 	return resp, nil
 }
