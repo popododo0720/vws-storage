@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-30
-- Issue: #155 (follow-up of #154)
+- Issue: #155 (follow-up of #154). Parity gap: #170
 
 ## Context
 
@@ -12,8 +12,9 @@ selected by `x-amz-bucket-namespace`.
 - `global` is the default. A name is unique across all AWS accounts and
   regions.
 - `account-regional` is a subdivision of the global namespace that only one AWS
-  account can create buckets in. A name is unique inside that account and
-  region, and it must end with `-{12-digit-account-id}-{region}-an`
+  account can create buckets in. A name must end with
+  `-{12-digit-account-id}-{region}-an`, so the full name stays unique across
+  AWS and only the prefix can repeat across accounts
   (AWS SDK `CreateBucket`, `BucketNamespace`, and the S3 User Guide page
   "Namespaces for general purpose buckets").
 
@@ -41,7 +42,8 @@ include the region.
 ## Decision
 
 Option 2. VWS keeps one global bucket namespace across projects. The
-account-regional namespace is a documented parity gap, tracked by #155.
+missing account-regional namespace is a documented parity gap, tracked by
+#170.
 
 ## Rationale
 
@@ -52,19 +54,22 @@ account-regional namespace is a documented parity gap, tracked by #155.
   suffix and adds an API choice. Implementing it touches the resource name, the
   store key, the proto surface, the migration, and every caller. That is larger
   than the follow-up #155 asks for.
-- A global namespace is stricter than account-regional. It refuses some names
-  that account-regional AWS accepts, and it never accepts a name that the global
-  AWS namespace refuses.
+- A global namespace refuses a name another project holds, which is stricter
+  than the account-regional uniqueness rule. VWS also accepts names AWS
+  rejects, because it reserves no account-regional suffix.
 - The scan is independent of the namespace choice. The name index makes the
   existing global check cheap without changing what a caller observes.
 
 ## Consequences
 
 - Two projects cannot hold the same raw bucket name, and one project cannot
-  hold the same raw name in two regions. Account-regional AWS allows both. This
-  is the tracked parity gap.
+  hold the same raw name in two regions. Account-regional AWS allows the same
+  prefix under different account and region suffixes, because the full name
+  still differs. VWS reserves no suffix and has no namespace header, so it
+  accepts names AWS rejects. This is the tracked parity gap (#170).
 - The gRPC API has no namespace field. A caller cannot request an
-  account-regional bucket, and no request sets `x-amz-bucket-namespace`.
+  account-regional bucket. The S3 front end ignores `x-amz-bucket-namespace`,
+  so a request that asks for one creates a global bucket.
 - A name is free again after `DeleteBucket` finishes, as before.
 - SQLite schema version 3 adds the `bucket_names` index table and fills it from
   existing bucket rows at `Open`.
@@ -77,8 +82,11 @@ account-regional namespace is a documented parity gap, tracked by #155.
 
 - `CreateBucket` in the global namespace: another account's name is 409
   `BucketAlreadyExists`. VWS matches this with `ALREADY_EXISTS` across projects.
-- `CreateBucket` in an account-regional namespace: another project could use
-  the same prefix, but VWS refuses it. This is the gap.
+- `CreateBucket` in an account-regional namespace: AWS reserves the
+  `-{account}-{region}-an` suffix and rejects another account's use of it. VWS
+  reserves no suffix, so another project can take a name with someone else's
+  suffix. The S3 front end also ignores `x-amz-bucket-namespace`. This is the
+  gap (#170).
 - Account-regional names must end with `-{12-digit-account-id}-{region}-an`.
   VWS accepts and stores its own resource-id grammar without that suffix.
 - `DeleteBucket` frees the name in both AWS namespaces and in VWS.

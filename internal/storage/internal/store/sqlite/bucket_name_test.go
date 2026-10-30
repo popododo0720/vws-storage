@@ -46,6 +46,14 @@ func TestBucketNameIndexIsMaintained(t *testing.T) {
 	if err := s.Delete(ctx, b); err != nil {
 		t.Fatal(err)
 	}
+	var indexed int
+	const countSQL = `SELECT COUNT(*) FROM bucket_names WHERE key = ?`
+	if err := s.sql.QueryRowContext(ctx, countSQL, b.String()).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("bucket_names rows for %s after delete = %d, want 0", b, indexed)
+	}
 	got, err = st.BucketsNamed(ctx, "logs")
 	if err != nil {
 		t.Fatal(err)
