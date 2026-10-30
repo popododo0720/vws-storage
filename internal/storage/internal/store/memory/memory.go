@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -14,13 +15,20 @@ import (
 
 // Open returns an empty memory store.
 func Open() store.Store {
-	return &mem{rows: map[string]map[string]model.Record{}, refs: map[string]map[string]struct{}{}}
+	return &mem{
+		rows:  map[string]map[string]model.Record{},
+		names: map[string]map[string]struct{}{},
+		refs:  map[string]map[string]struct{}{},
+	}
 }
 
 type mem struct {
 	mu   sync.Mutex
 	rows map[string]map[string]model.Record
-	refs map[string]map[string]struct{}
+	// names indexes a raw bucket name to the full keys that hold it, so a
+	// create never scans every bucket row.
+	names map[string]map[string]struct{}
+	refs  map[string]map[string]struct{}
 }
 
 func (m *mem) Close() error { return nil }
@@ -39,6 +47,7 @@ func (m *mem) Update(ctx context.Context, fn func(store.Reader) (model.Change, e
 		return err
 	}
 	m.rows = next.rows
+	m.names = next.names
 	m.refs = next.refs
 	return nil
 }
@@ -52,6 +61,14 @@ func (m *mem) clone() *mem {
 		}
 		rows[kind] = cp
 	}
+	names := make(map[string]map[string]struct{}, len(m.names))
+	for name, set := range m.names {
+		cp := make(map[string]struct{}, len(set))
+		for key := range set {
+			cp[key] = struct{}{}
+		}
+		names[name] = cp
+	}
 	refs := make(map[string]map[string]struct{}, len(m.refs))
 	for ref, set := range m.refs {
 		cp := make(map[string]struct{}, len(set))
@@ -60,7 +77,7 @@ func (m *mem) clone() *mem {
 		}
 		refs[ref] = cp
 	}
-	return &mem{rows: rows, refs: refs}
+	return &mem{rows: rows, names: names, refs: refs}
 }
 
 func (m *mem) Volume(ctx context.Context, id model.VolumeID) (model.Volume, error) {
@@ -236,15 +253,18 @@ func (v view) ListBuckets(_ context.Context, after model.BucketName, limit int) 
 }
 
 func (v view) BucketsNamed(_ context.Context, name string) ([]model.Bucket, error) {
-	var out []model.Bucket
-	for _, rec := range v.m.rows["bucket"] {
+	keys := v.m.names[name]
+	out := make([]model.Bucket, 0, len(keys))
+	for key := range keys {
+		rec, ok := v.m.rows["bucket"][key]
+		if !ok {
+			return nil, fmt.Errorf("memory: bucket name index points to missing row %q", key)
+		}
 		b, err := store.Cast[model.Bucket](rec)
 		if err != nil {
 			return nil, err
 		}
-		if b.Name.Name() == name {
-			out = append(out, b)
-		}
+		out = append(out, b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
 	return out, nil
@@ -391,6 +411,12 @@ func (m *mem) Put(_ context.Context, rec model.Record) error {
 		m.rows[kind] = map[string]model.Record{}
 	}
 	m.rows[kind][idOf(rec.RecordKey())] = rec
+	if b, ok := rec.(model.Bucket); ok {
+		if m.names[b.Name.Name()] == nil {
+			m.names[b.Name.Name()] = map[string]struct{}{}
+		}
+		m.names[b.Name.Name()][idOf(rec.RecordKey())] = struct{}{}
+	}
 	return nil
 }
 
@@ -400,6 +426,14 @@ func (m *mem) Delete(_ context.Context, key model.Key) error {
 		return err
 	}
 	delete(m.rows[kind], idOf(key))
+	if b, ok := key.(model.BucketName); ok {
+		if set := m.names[b.Name()]; set != nil {
+			delete(set, idOf(key))
+			if len(set) == 0 {
+				delete(m.names, b.Name())
+			}
+		}
+	}
 	return nil
 }
 

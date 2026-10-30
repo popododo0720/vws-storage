@@ -25,10 +25,11 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
-	// S3 bucket names are one namespace shared by all accounts (CreateBucket
-	// returns 409 BucketAlreadyExists). A row in any other project, whether
-	// creating, available or deleting, holds the name. admit runs inside the
-	// store's write transaction, so this read and the insert are atomic.
+	// VWS keeps one bucket namespace for every project, as the S3 global
+	// namespace did (docs/decisions/0002-bucket-namespace.md). A row in any
+	// other project, whether creating, available or deleting, holds the name.
+	// admit runs inside the store's write transaction, so this read and the
+	// insert are atomic.
 	holders, err := r.BucketsNamed(ctx, req.Bucket.Name())
 	if err != nil {
 		return model.Admitted{}, err
