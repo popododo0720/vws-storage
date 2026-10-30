@@ -19,7 +19,9 @@ import (
 func TestBucketNameIsGlobalAcrossProjects(t *testing.T) {
 	for name, cfg := range map[string]func(t *testing.T) storage.StoreConfig{
 		"memory": func(*testing.T) storage.StoreConfig { return storage.Memory() },
-		"sqlite": func(t *testing.T) storage.StoreConfig { return storage.SQLite(filepath.Join(t.TempDir(), "vws.db")) },
+		"sqlite": func(t *testing.T) storage.StoreConfig {
+			return storage.SQLite(filepath.Join(t.TempDir(), "vws.db"))
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc, cancel := openRunning(t, cfg(t), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
@@ -37,7 +39,8 @@ func TestBucketNameIsGlobalAcrossProjects(t *testing.T) {
 			}
 
 			// Another project: ALREADY_EXISTS, and nothing stored.
-			if _, err := svc.Submit(ctx, token(t, "b-create"), model.CreateBucketRequest{Bucket: b}); !errors.Is(err, model.ErrAlreadyExists) {
+			_, err = svc.Submit(ctx, token(t, "b-create"), model.CreateBucketRequest{Bucket: b})
+			if !errors.Is(err, model.ErrAlreadyExists) {
 				t.Fatalf("other project create: %v, want ALREADY_EXISTS", err)
 			}
 			if _, err := svc.Bucket(ctx, b); !errors.Is(err, model.ErrNotFound) {
@@ -95,7 +98,8 @@ func TestBucketNameIsHeldWhileCreatingAndDeleting(t *testing.T) {
 	if _, err := svc.Submit(ctx, token(t, "a-delete"), model.DeleteBucketRequest{Bucket: a}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Submit(ctx, token(t, "b-create"), model.CreateBucketRequest{Bucket: b}); !errors.Is(err, model.ErrAlreadyExists) {
+	_, err = svc.Submit(ctx, token(t, "b-create"), model.CreateBucketRequest{Bucket: b})
+	if !errors.Is(err, model.ErrAlreadyExists) {
 		t.Fatalf("create while deleting: %v, want ALREADY_EXISTS", err)
 	}
 
@@ -104,14 +108,16 @@ func TestBucketNameIsHeldWhileCreatingAndDeleting(t *testing.T) {
 	if _, err := svc.Submit(ctx, token(t, "c-create"), model.CreateBucketRequest{Bucket: c}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Submit(ctx, token(t, "d-create"), model.CreateBucketRequest{Bucket: d}); !errors.Is(err, model.ErrAlreadyExists) {
+	_, err = svc.Submit(ctx, token(t, "d-create"), model.CreateBucketRequest{Bucket: d})
+	if !errors.Is(err, model.ErrAlreadyExists) {
 		t.Fatalf("create while creating: %v, want ALREADY_EXISTS", err)
 	}
 }
 
 // Projects racing for one name: exactly one wins.
 func TestConcurrentCreateBucketAcrossProjectsHasOneWinner(t *testing.T) {
-	svc, cancel := openRunning(t, storage.SQLite(filepath.Join(t.TempDir(), "vws.db")), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	path := filepath.Join(t.TempDir(), "vws.db")
+	svc, cancel := openRunning(t, storage.SQLite(path), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
 	defer cancel()
 	ctx := context.Background()
 	const n = 16
