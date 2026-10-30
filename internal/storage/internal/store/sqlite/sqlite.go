@@ -41,10 +41,22 @@ CREATE TABLE op_refs (
   op TEXT NOT NULL,
   PRIMARY KEY (ref, op)
 );
+CREATE TABLE bucket_names (
+  name TEXT NOT NULL,
+  key TEXT NOT NULL,
+  PRIMARY KEY (name, key)
+);
 `
 
+const bucketsNamedQuery = `
+SELECT r.payload
+FROM bucket_names AS n
+JOIN records AS r ON r.kind = 'bucket' AND r.key = n.key
+WHERE n.name = ?
+ORDER BY n.key`
+
 // schemaVersion is the PRAGMA user_version this code writes.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // Open opens path and migrates it to schemaVersion.
 // path may be relative. The parent directory is created. The connection is
@@ -118,10 +130,13 @@ func (s *dbStore) migrate(ctx context.Context) error {
 		if _, err := s.query().ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("sqlite: create schema: %w", err)
 		}
-	case 1:
+	case 1, 2:
 		// Version 2 adds the "failed" lifecycle and its reason to volume
-		// payloads. Existing rows are valid as they are. The bump makes a
-		// version 1 binary refuse the file at Open rather than on a row.
+		// payloads. Version 3 adds the bucket name index. The bump makes an
+		// older binary refuse the file at Open rather than on a row.
+		if err := s.addBucketNames(ctx); err != nil {
+			return err
+		}
 	default:
 		return errSchema(v)
 	}
@@ -134,6 +149,28 @@ func (s *dbStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("sqlite: commit migration: %w", err)
 	}
 	committed = true
+	return nil
+}
+
+// addBucketNames creates the name index and fills it from existing bucket
+// rows. Duplicate names are kept, because an older store may hold one name in
+// more than one project and admission still has to see every holder.
+func (s *dbStore) addBucketNames(ctx context.Context) error {
+	if _, err := s.query().ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS bucket_names (
+			name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			PRIMARY KEY (name, key)
+		)`); err != nil {
+		return fmt.Errorf("sqlite: create bucket name index: %w", err)
+	}
+	if _, err := s.query().ExecContext(ctx, `
+		INSERT OR IGNORE INTO bucket_names(name, key)
+		SELECT substr(key, instr(key, '/buckets/') + 9), key
+		FROM records
+		WHERE kind = 'bucket' AND instr(key, '/buckets/') > 0`); err != nil {
+		return fmt.Errorf("sqlite: fill bucket name index: %w", err)
+	}
 	return nil
 }
 
@@ -426,22 +463,30 @@ func (v view) ListBuckets(ctx context.Context, after model.BucketName, limit int
 	return cut(out, limit), nil
 }
 
-func (v view) BucketsNamed(ctx context.Context, name string) ([]model.Bucket, error) {
-	all, err := v.s.byKind(ctx, "bucket")
+func (v view) BucketsNamed(ctx context.Context, name string) (out []model.Bucket, err error) {
+	rows, err := v.s.query().QueryContext(ctx, bucketsNamedQuery, name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: list buckets named %q: %w", name, err)
 	}
-	var out []model.Bucket
-	for _, rec := range all {
+	defer closeInto(rows, &err)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("sqlite: scan bucket: %w", err)
+		}
+		rec, err := model.UnmarshalRecord(payload)
+		if err != nil {
+			return nil, err
+		}
 		b, err := store.Cast[model.Bucket](rec)
 		if err != nil {
 			return nil, err
 		}
-		if b.Name.Name() == name {
-			out = append(out, b)
-		}
+		out = append(out, b)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name.String() < out[j].Name.String() })
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list buckets named %q: %w", name, err)
+	}
 	return out, nil
 }
 
@@ -634,6 +679,12 @@ func (s *dbStore) Put(ctx context.Context, rec model.Record) error {
 	if err != nil {
 		return err
 	}
+	if b, ok := rec.(model.Bucket); ok {
+		if _, err := s.query().ExecContext(ctx,
+			`INSERT OR IGNORE INTO bucket_names(name, key) VALUES(?, ?)`, b.Name.Name(), id); err != nil {
+			return fmt.Errorf("sqlite: index bucket name: %w", err)
+		}
+	}
 	op, ok := rec.(model.Operation)
 	if !ok {
 		return nil
@@ -657,6 +708,11 @@ func (s *dbStore) Delete(ctx context.Context, key model.Key) error {
 	}
 	if _, err := s.query().ExecContext(ctx, `DELETE FROM records WHERE kind = ? AND key = ?`, kind, id); err != nil {
 		return err
+	}
+	if kind == "bucket" {
+		if _, err := s.query().ExecContext(ctx, `DELETE FROM bucket_names WHERE key = ?`, id); err != nil {
+			return fmt.Errorf("sqlite: remove bucket name index: %w", err)
+		}
 	}
 	if kind == "operation" {
 		_, err = s.query().ExecContext(ctx, `DELETE FROM op_sched WHERE id = ?`, id)
