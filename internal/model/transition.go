@@ -134,6 +134,9 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 	if err := checkSize(a.v.Spec.Type, size); err != nil {
 		return Admitted{}, err
 	}
+	if err := a.v.Modified.admit(st.Now); err != nil {
+		return Admitted{}, err
+	}
 	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size})
 	ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
@@ -142,7 +145,9 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 // Expanded stores the new size and, when the expansion carries one, the
 // labels, type and performance asked for with it (VolumeExpansion.Then), and
 // succeeds the operation in the same write. Values the volume already has
-// only succeed the operation.
+// only succeed the operation. A stored change counts against the EC2
+// modification limit from the time the expansion was admitted; a failed
+// expansion changes nothing and does not count.
 func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) (Change, error) {
 	w := op.Work()
 	if w.Volume != a.v.ID {
@@ -158,6 +163,7 @@ func (a AvailableVolume) Expanded(op RunningOp[VolumeExpansion], now time.Time) 
 	if sameShape(a.v, next) {
 		return writes(guardRec(a.v), done), nil
 	}
+	next.Modified = a.v.Modified.add(op.Operation().Meta.CreateTime)
 	next.Meta = bump(a.v.Meta, now)
 	return writes(putUpdate(a.v, next), done), nil
 }
@@ -237,6 +243,15 @@ func (a AvailableVolume) Modify(st Start, to VolumeTarget) (Admitted, error) {
 			return Admitted{}, err
 		}
 	}
+	// Size, type, IOPS and throughput are what EC2 ModifyVolume changes, so
+	// only they count against its limit. Labels are EC2 tags (CreateTags),
+	// which do not.
+	counted := retyped || perf || size != cur.Size
+	if counted {
+		if err := a.v.Modified.admit(st.Now); err != nil {
+			return Admitted{}, err
+		}
+	}
 	w := VolumeModification{Volume: a.v.ID, Labels: to.Labels, Type: to.Type, Iops: iops, Throughput: mibs}
 	if size > cur.Size {
 		op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size, Then: &w})
@@ -251,6 +266,9 @@ func (a AvailableVolume) Modify(st Start, to VolumeTarget) (Admitted, error) {
 	}
 	op := newOp(st, w)
 	op.State = OpSucceeded{}
+	if counted {
+		next.Modified = a.v.Modified.add(st.Now)
+	}
 	next.Meta = bump(a.v.Meta, st.Now)
 	ws := withToken(st, []Write{putUpdate(a.v, next), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil

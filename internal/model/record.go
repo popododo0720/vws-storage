@@ -65,6 +65,9 @@ type Volume struct {
 	Labels Labels
 	State  Lifecycle
 	Meta   Meta
+	// Modified is the start times of the modifications that count against
+	// the EC2 ModifyVolume limit (#157).
+	Modified Modifications
 }
 
 // Snapshot is a point-in-time copy of a volume.

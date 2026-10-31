@@ -28,6 +28,22 @@ func timeFrom(w timeWire) time.Time {
 	return time.UnixMicro(int64(w)).UTC()
 }
 
+func timesTo(ts []time.Time) []timeWire {
+	var out []timeWire
+	for _, t := range ts {
+		out = append(out, timeTo(t))
+	}
+	return out
+}
+
+func timesFrom(ws []timeWire) []time.Time {
+	var out []time.Time
+	for _, w := range ws {
+		out = append(out, timeFrom(w))
+	}
+	return out
+}
+
 type metaWire struct {
 	Version Version  `json:"version"`
 	Create  timeWire `json:"create"`
@@ -463,12 +479,16 @@ func marshalBody(r Record) ([]byte, string, error) {
 			return nil, "", err
 		}
 		b, err := json.Marshal(struct {
-			ID     string            `json:"id"`
-			Spec   specWire          `json:"spec"`
-			Labels map[string]string `json:"labels,omitempty"`
-			Life   lifeWire          `json:"life"`
-			Meta   metaWire          `json:"meta"`
-		}{ID: r.ID.wire(), Spec: specTo(r.Spec), Labels: r.Labels.Map(), Life: life, Meta: metaTo(r.Meta)})
+			ID       string            `json:"id"`
+			Spec     specWire          `json:"spec"`
+			Labels   map[string]string `json:"labels,omitempty"`
+			Life     lifeWire          `json:"life"`
+			Meta     metaWire          `json:"meta"`
+			Modified []timeWire        `json:"modified,omitempty"`
+		}{
+			ID: r.ID.wire(), Spec: specTo(r.Spec), Labels: r.Labels.Map(), Life: life, Meta: metaTo(r.Meta),
+			Modified: timesTo(r.Modified.times()),
+		})
 		if err != nil {
 			return nil, "", fmt.Errorf("model: encode volume: %w", err)
 		}
@@ -575,11 +595,12 @@ func UnmarshalRecord(data []byte) (Record, error) {
 	switch env.Record {
 	case "volume":
 		var w struct {
-			ID     string            `json:"id"`
-			Spec   specWire          `json:"spec"`
-			Labels map[string]string `json:"labels"`
-			Life   lifeWire          `json:"life"`
-			Meta   metaWire          `json:"meta"`
+			ID       string            `json:"id"`
+			Spec     specWire          `json:"spec"`
+			Labels   map[string]string `json:"labels"`
+			Life     lifeWire          `json:"life"`
+			Meta     metaWire          `json:"meta"`
+			Modified []timeWire        `json:"modified"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
 			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
@@ -600,7 +621,10 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
-		return Volume{ID: id, Spec: spec, Labels: labels, State: life, Meta: metaFrom(w.Meta)}, nil
+		return Volume{
+			ID: id, Spec: spec, Labels: labels, State: life, Meta: metaFrom(w.Meta),
+			Modified: modificationsOf(timesFrom(w.Modified)),
+		}, nil
 	case "snapshot":
 		var w struct {
 			ID          string            `json:"id"`
