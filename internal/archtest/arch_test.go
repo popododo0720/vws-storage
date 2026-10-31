@@ -151,11 +151,14 @@ func usesOf(f *ast.File, spec *ast.ImportSpec, imp string) map[string]int {
 }
 
 // excused reports whether f's use of imp is exactly a knownDebt entry for r.
-func excused(dir string, f file, spec *ast.ImportSpec, imp, why string) (bool, string) {
-	d, ok := knownDebt[dir+"/"+f.name+" "+imp]
+// A matching entry is marked in used, so an entry that matches no rule is stale.
+func excused(dir string, f file, spec *ast.ImportSpec, imp, why string, used map[string]bool) (bool, string) {
+	key := dir + "/" + f.name + " " + imp
+	d, ok := knownDebt[key]
 	if !ok || d.why != why {
 		return false, ""
 	}
+	used[key] = true
 	got := usesOf(f.ast, spec, imp)
 	if reflect.DeepEqual(got, d.uses) {
 		return true, ""
@@ -179,9 +182,10 @@ type file struct {
 }
 
 // archViolations applies every rule to the non-test files in pkgs, keyed by
-// slash-separated directory relative to the module root.
-func archViolations(pkgs map[string][]file) []string {
-	var bad []string
+// slash-separated directory relative to the module root. It also returns the
+// knownDebt entries that matched no violation.
+func archViolations(pkgs map[string][]file) (bad, stale []string) {
+	used := map[string]bool{}
 	for dir, files := range pkgs {
 		if under(dir, testSupport...) {
 			continue
@@ -198,7 +202,7 @@ func archViolations(pkgs map[string][]file) []string {
 					if !r.match(imp) || under(dir, r.owners...) {
 						continue
 					}
-					if ok, detail := excused(dir, f, spec, imp, r.why); !ok {
+					if ok, detail := excused(dir, f, spec, imp, r.why, used); !ok {
 						bad = append(bad, fmt.Sprintf("%s imports %s: %s%s", dir, imp, r.why, detail))
 					}
 				}
@@ -206,7 +210,13 @@ func archViolations(pkgs map[string][]file) []string {
 		}
 	}
 	sort.Strings(bad)
-	return bad
+	for key, d := range knownDebt {
+		if !used[key] {
+			stale = append(stale, fmt.Sprintf("%s: known debt %s matches no violation", key, d.issue))
+		}
+	}
+	sort.Strings(stale)
+	return bad, stale
 }
 
 func loadProduction(t *testing.T, root string) map[string][]file {
@@ -230,7 +240,12 @@ func loadProduction(t *testing.T, root string) map[string][]file {
 	return pkgs
 }
 
-func TestArchitectureRules(t *testing.T) {
+// checkProbe applies every rule to a synthetic tree with one violation of
+// each. The tree is not the repository, so the probe runs with an empty
+// knownDebt table: the repository's entries name files the tree lacks and
+// would all report as stale here.
+func checkProbe(t *testing.T) {
+	t.Helper()
 	probe := t.TempDir()
 	imp := func(pkg, path string) string { return "package " + pkg + `; import _ "` + path + `"` }
 	for rel, src := range map[string]string{
@@ -278,9 +293,18 @@ func TestArchitectureRules(t *testing.T) {
 		store + "/sqlite imports " + module + "/" + backend + ": a store sees only the store contract and the model",
 	}
 	sort.Strings(want)
-	if got := archViolations(loadProduction(t, probe)); !reflect.DeepEqual(got, want) {
-		t.Fatalf("probe violations:\n got %q\nwant %q", got, want)
+
+	old := knownDebt
+	knownDebt = map[string]debt{}
+	defer func() { knownDebt = old }()
+	got, stale := archViolations(loadProduction(t, probe))
+	if !reflect.DeepEqual(got, want) || len(stale) != 0 {
+		t.Fatalf("probe violations:\n got %q\nwant %q\nstale %q", got, want, stale)
 	}
+}
+
+func TestArchitectureRules(t *testing.T) {
+	checkProbe(t)
 
 	root := repoRoot(t)
 	for _, dir := range constrainedDirs() {
@@ -288,7 +312,11 @@ func TestArchitectureRules(t *testing.T) {
 			t.Errorf("rule directory %s: %v", dir, err)
 		}
 	}
-	for _, v := range archViolations(loadProduction(t, root)) {
+	bad, stale := archViolations(loadProduction(t, root))
+	for _, v := range bad {
+		t.Error(v)
+	}
+	for _, v := range stale {
 		t.Error(v)
 	}
 }
