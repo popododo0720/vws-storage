@@ -128,6 +128,16 @@ The values are stored and returned. The backend does not enforce them; the admin
 
 One `UpdateVolume` can carry `spec.size_gib`, `spec.type`, `spec.iops`, `spec.throughput_mibps` and `labels` together, as one EC2 `ModifyVolume` (#87). Every value is checked against the target type and size together, so a 10 GiB gp2 volume moves to st1 when the same mask grows it to 125 GiB. Without a size change the values are stored at once and the operation is already done. With one, the operation grows the claim and stores the size, type, performance and labels in the write that succeeds it; until then the volume shows its old values, and a failed growth changes nothing.
 
+#### Modification limit
+
+vws-storage enforces the EC2 `ModifyVolume` limit (#157): a volume can be modified up to four times within a rolling 24-hour period, and each modification must finish before the next ([ModifyVolume](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_ModifyVolume.html)).
+
+- What counts: an `UpdateVolume` or expansion that changes the size, type, IOPS or throughput, the values EC2 `ModifyVolume` changes. A labels-only update does not count (labels are EC2 tags, set with `CreateTags`), nor does an update that changes nothing, nor a resent request with the same `request_id` (it is the same operation).
+- When it counts: a change with no growth counts from its admission. A growth counts from its admission too, but is recorded in the write that stores the new size, so a failed growth changed nothing and does not count.
+- Where it is kept: the start times are stored on the volume row (`modified`, at most four, older than 24 hours dropped at the next write), so the count survives retries and restarts. A build from before #157 ignores the field and drops it at its next write of the row.
+- The refusal: the fifth counted change is `RESOURCE_EXHAUSTED` with `ErrorInfo.reason` `VOLUME_MODIFICATION_RATE_EXCEEDED` and the message `volume modification rate exceeded: wait until <UTC time> before the next modification of this volume`, the time the oldest counted change leaves the window. Its EC2 equivalent, for console-api to map, is `VolumeModificationRateExceeded`. That error code is not in the EC2 error code list; it is the one AWS shows for this limit in [this AWS knowledge center article](https://repost.aws/knowledge-center/ebs-resolve-modify-volume-issues) and the [AWS Storage Blog](https://aws.amazon.com/blogs/storage/optimize-amazon-ebs-volume-performance-the-right-amount-at-the-right-time/), whose message also names the time.
+- A change while another operation on the volume is in flight stays `FAILED_PRECONDITION` (`DEPENDENCY_NOT_READY`); the EC2 equivalent is `IncorrectModificationState` ("the volume is currently being modified", [EC2 error codes](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/errors-overview.html)).
+
 #### SSD to gp2 migration
 
 Before #123 the second type was `ssd` (`VOLUME_TYPE_SSD`, now deprecated). It is `gp2`:
