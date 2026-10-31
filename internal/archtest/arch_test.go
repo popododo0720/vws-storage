@@ -240,7 +240,12 @@ func loadProduction(t *testing.T, root string) map[string][]file {
 	return pkgs
 }
 
-func TestArchitectureRules(t *testing.T) {
+// checkProbe applies every rule to a synthetic tree with one violation of
+// each. The tree is not the repository, so the probe runs with an empty
+// knownDebt table: the repository's entries name files the tree lacks and
+// would all report as stale here.
+func checkProbe(t *testing.T) {
+	t.Helper()
 	probe := t.TempDir()
 	imp := func(pkg, path string) string { return "package " + pkg + `; import _ "` + path + `"` }
 	for rel, src := range map[string]string{
@@ -288,10 +293,18 @@ func TestArchitectureRules(t *testing.T) {
 		store + "/sqlite imports " + module + "/" + backend + ": a store sees only the store contract and the model",
 	}
 	sort.Strings(want)
+
+	old := knownDebt
+	knownDebt = map[string]debt{}
+	defer func() { knownDebt = old }()
 	got, stale := archViolations(loadProduction(t, probe))
 	if !reflect.DeepEqual(got, want) || len(stale) != 0 {
 		t.Fatalf("probe violations:\n got %q\nwant %q\nstale %q", got, want, stale)
 	}
+}
+
+func TestArchitectureRules(t *testing.T) {
+	checkProbe(t)
 
 	root := repoRoot(t)
 	for _, dir := range constrainedDirs() {
