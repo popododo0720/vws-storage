@@ -198,6 +198,23 @@ Mutations return a long-running operation. Poll `GetOperation` until `done` is s
 
 `Run` is the only driver. After a restart it scans the same runnable operations and continues them. A failed operation records the error. The volume, snapshot, or bucket does not gain a failed state. An object row exists only after its bytes are committed.
 
+### Volume modification state
+
+EC2 reports a volume modification as `modifying`, `optimizing`, `completed` or `failed` ([VolumeModification](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_VolumeModification.html), [Monitor the progress of volume modifications](https://docs.aws.amazon.com/ebs/latest/userguide/monitoring-volume-modifications.html)). In VWS the state is the operation `UpdateVolume` returns (#157); console-api maps it for `ModifyVolume`:
+
+| Operation | EC2 `modificationState` |
+| --- | --- |
+| `done` unset | `modifying` |
+| `done`, no `error` | `completed` |
+| `done` with `error` | `failed` (the volume keeps its old values) |
+
+`OperationMetadata.create_time` is `startTime` and `end_time` is `endTime`; the verb is `UPDATE`. A change without growth is stored at admission, so its operation is already `completed`. A growth is `modifying` until the claim has grown and the new size is stored, then `completed`.
+
+Intentional gaps:
+
+- `optimizing` never appears. In EC2 it is the phase where performance moves between the source and target configuration and a size increase already applies. VWS stores IOPS and throughput but the backend does not enforce them (see Volume types), so there is nothing to migrate, and the new size is shown only when the claim resize has succeeded, which is when the operation completes. Storage reports no `progress`.
+- The operation carries the target values, not the original ones, and `ListOperations` takes no per-volume filter, so storage cannot answer `DescribeVolumesModifications` for a volume yet. Tracked in #173.
+
 ## Object payload contract (WriteObject, ReadObject)
 
 For `vws-console-api` and other callers. The authority is `vws/storage/v1/object.proto` in `github.com/popododo0720/vws-proto` at the tag `go.mod` requires; this section states what this service does with it. `name` is `projects/{project}/buckets/{bucket}/objects/{object}`, with the key percent-encoded.
