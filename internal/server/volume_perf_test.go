@@ -133,7 +133,12 @@ func TestUpdateVolumeTypeRederivesPerformance(t *testing.T) {
 	want("gp3 to io2", vol, err, 3000, 0)
 	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_ST1)
 	want("io2 to st1", vol, err, 0, 0)
-	vol, err = retype(storagev1.VolumeType_VOLUME_TYPE_IO1)
+	// EC2 allows four modifications per volume in 24 hours (#157), so the
+	// next step starts from a second volume.
+	other := createGP2(t, vols, ops, "retype-st1", 200)
+	vol, err = retypeVolume(t, vols, ops, other, storagev1.VolumeType_VOLUME_TYPE_ST1)
+	want("gp2 to st1", vol, err, 0, 0)
+	vol, err = retypeVolume(t, vols, ops, other, storagev1.VolumeType_VOLUME_TYPE_IO1)
 	want("st1 to io1", vol, err, 3000, 0)
 
 	// 3000 IOPS is over io1's 50 per GiB of 10 GiB: EC2 refuses the default.
