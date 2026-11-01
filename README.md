@@ -274,6 +274,20 @@ A read that races a committed write returns either the old record or the new one
 - Same id and a different fingerprint is `ABORTED` / `IDEMPOTENCY_CONFLICT` and writes nothing.
 - A rejected request records no id.
 
+## Image
+
+`.github/workflows/publish.yml` publishes `ghcr.io/popododo0720/vws/storage:sha-<7-char commit>` on every push to main (and on `workflow_dispatch` for an older main commit). The package is public. There is no semver image tag: the git tag `0.1.0` (`0c874bc3c6f4`) predates the workflow, so `ghcr.io/popododo0720/vws/storage:0.1.0` does not exist.
+
+Minimum image for `-kube-volume-type` (#124, merged as `dac2dd298f0d`), which vws-deploy renders for the EBS volume-type mapping (vws-deploy#391, #611):
+
+| Field | Value |
+| --- | --- |
+| Tag | `sha-3f70420` |
+| Digest | `sha256:a4df6ec1b2ac4c47418c9483eef4918d92fe773a1bb9b3f3069e0f2053f35c9d` |
+| Commit | `3f7042024360cfa76bf9eeb44d1840b79044e81a` (#127, the first commit the workflow published) |
+
+Pin by digest: `ghcr.io/popododo0720/vws/storage:sha-3f70420@sha256:a4df6ec1b2ac4c47418c9483eef4918d92fe773a1bb9b3f3069e0f2053f35c9d`. Any later `sha-*` tag on main also accepts the flag. A binary from `0.1.0` exits with `parse flags: flag provided but not defined: -kube-volume-type`. `TestKubeVolumeTypeFlags` (`cmd/vws-storage/types_test.go`) pins the flag parsing.
+
 ## Proto
 
 Storage RPCs come from `github.com/popododo0720/vws-proto` at a release tag (`go.mod` pins it; today `v0.5.0`). The repo is public, so `go mod download` fetches it through the default module proxy with no token or `GOPRIVATE`. To take a new proto release, run `go get github.com/popododo0720/vws-proto@vX.Y.Z` and `go mod tidy`. Never copy or `replace` the module.
