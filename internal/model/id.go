@@ -289,7 +289,8 @@ func (g Generation) String() string { return g.s }
 // IsZero reports whether g is unset.
 func (g Generation) IsZero() bool { return g.s == "" }
 
-// BucketName is the final segment of a bucket name. The grammar is a VWS resource id.
+// BucketName is the final segment of a bucket name. The grammar is a VWS
+// resource id or an S3 bucket name with periods (see bucketID).
 type BucketName struct {
 	project Project
 	s       string
@@ -299,13 +300,13 @@ type BucketName struct {
 // or "projects/{project}/buckets/{name}".
 func ParseBucketName(s string) (BucketName, error) {
 	if p, name, ok := splitScoped(s, "buckets"); ok {
-		if !resourceID(name) {
+		if !bucketID(name) {
 			return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
 		}
 		return BucketName{project: p, s: name}, nil
 	}
 	s = strings.TrimPrefix(s, "buckets/")
-	if !resourceID(s) {
+	if !bucketID(s) {
 		return BucketName{}, fmt.Errorf("%w: bucket name", ErrInvalidArgument)
 	}
 	return BucketName{s: s}, nil
@@ -489,6 +490,46 @@ func resourceID(s string) bool {
 	for i := 1; i < len(s)-1; i++ {
 		if c := s[i]; !isAlnum(c) && c != '-' {
 			return false
+		}
+	}
+	return true
+}
+
+// bucketID is the bucket id grammar. It accepts every VWS resource id, so
+// names stored before periods were allowed still parse. It also accepts the
+// S3 general purpose bucket name rules: 3 to 63 characters of lowercase
+// letters, digits, '.' and '-', starting and ending with a letter or digit,
+// with no two adjacent periods, and not shaped like an IPv4 address.
+func bucketID(s string) bool {
+	if resourceID(s) {
+		return true
+	}
+	if len(s) < 3 || len(s) > 63 || !isAlnum(s[0]) || !isAlnum(s[len(s)-1]) {
+		return false
+	}
+	for i := 1; i < len(s)-1; i++ {
+		if c := s[i]; !isAlnum(c) && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return !strings.Contains(s, "..") && !ipv4Shaped(s)
+}
+
+// ipv4Shaped reports whether s is four dot-separated runs of digits, such as
+// 192.168.5.4. S3 refuses such bucket names whatever the numbers are.
+func ipv4Shaped(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for i := 0; i < len(p); i++ {
+			if p[i] < '0' || p[i] > '9' {
+				return false
+			}
 		}
 	}
 	return true
