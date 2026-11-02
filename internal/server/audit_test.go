@@ -10,7 +10,14 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc/metadata"
+
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
+
+	"github.com/popododo0720/vws-lib/obs"
+	"github.com/popododo0720/vws-lib/obs/grpcobs"
+
+	"github.com/popododo0720/vws-storage/internal/server"
 )
 
 type lockedBuffer struct {
@@ -48,6 +55,7 @@ type auditRecord struct {
 	ResourceID   string `json:"resource_id"`
 	Outcome      string `json:"outcome"`
 	ErrCode      string `json:"err_code"`
+	RequestID    string `json:"request_id"`
 }
 
 func lastAudit(t *testing.T, logs *lockedBuffer) auditRecord {
@@ -66,13 +74,26 @@ func lastAudit(t *testing.T, logs *lockedBuffer) auditRecord {
 }
 
 func TestMutatingRPCWritesAnAuditRecord(t *testing.T) {
+	// The service logger from obs.Setup adds request_id from the context; the
+	// gRPC interceptor puts the caller's x-request-id there.
 	logs := &lockedBuffer{}
 	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	shutdown, err := obs.Setup(context.Background(), obs.ForService(server.Service),
+		obs.WithOverride(func(c *obs.Config) {
+			c.HealthAddr = ""
+			c.LogOutput = logs
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = shutdown(context.Background())
+		slog.SetDefault(old)
+	})
 
 	vols, _, _, _, _ := dial(t, "")
-	ctx := context.Background()
+	const incomingID = "audit-req-0001"
+	ctx := metadata.AppendToOutgoingContext(context.Background(), grpcobs.RequestIDHeader, incomingID)
 	req := &storagev1.CreateVolumeRequest{
 		Parent:    "projects/local/zones/az-1",
 		VolumeId:  "audit-1",
@@ -88,7 +109,7 @@ func TestMutatingRPCWritesAnAuditRecord(t *testing.T) {
 	got := lastAudit(t, logs)
 	want := auditRecord{
 		Audit: true, Actor: "local", Action: "create_volume", ResourceType: "volume",
-		ResourceID: "projects/local/volumes/audit-1", Outcome: "ok",
+		ResourceID: "projects/local/volumes/audit-1", Outcome: "ok", RequestID: incomingID,
 	}
 	if got != want {
 		t.Fatalf("audit = %+v, want %+v", got, want)
@@ -100,7 +121,7 @@ func TestMutatingRPCWritesAnAuditRecord(t *testing.T) {
 		t.Fatal("bad request id accepted")
 	}
 	got = lastAudit(t, logs)
-	if got.Outcome != "error" || got.ErrCode != "InvalidArgument" || got.Action != "create_volume" {
+	if got.Outcome != "error" || got.ErrCode != "InvalidArgument" || got.Action != "create_volume" || got.RequestID != incomingID {
 		t.Fatalf("failed audit = %+v", got)
 	}
 
