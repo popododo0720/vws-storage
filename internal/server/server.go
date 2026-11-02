@@ -907,13 +907,13 @@ func (b *spanBody) Read(p []byte) (int, error) {
 	if err != nil && !errors.Is(err, io.EOF) {
 		b.span.SetStatus(otelcodes.Error, "read object body")
 	}
-	return n, err
+	return n, err //nolint:wrapcheck // io.Reader contract: io.EOF must reach the caller unwrapped
 }
 
 func (b *spanBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(func() { b.span.End() })
-	return err
+	return err //nolint:wrapcheck // io.Closer pass-through; callers add context in closeBody
 }
 
 // statusErr reports a non-2xx object response with the start of its body.
