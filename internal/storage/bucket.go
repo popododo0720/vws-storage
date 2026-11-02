@@ -14,7 +14,8 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 	b, err := r.Bucket(ctx, req.Bucket)
 	switch {
 	case err == nil:
-		if _, del := b.State.(model.Deleting); del || b.Region != req.Region || b.Labels != req.Labels {
+		_, del := b.State.(model.Deleting)
+		if del || b.Region != req.Region || b.Labels != req.Labels || b.Namespace != req.Namespace {
 			return model.Admitted{}, fmt.Errorf("%w: bucket", model.ErrAlreadyExists)
 		}
 		var creating model.OperationID
@@ -25,11 +26,17 @@ func (s *Service) admitCreateBucket(ctx context.Context, r store.Reader, st mode
 	case !errors.Is(err, model.ErrNotFound):
 		return model.Admitted{}, err
 	}
-	// VWS keeps one bucket namespace for every project, as the S3 global
-	// namespace did (docs/decisions/0002-bucket-namespace.md). A row in any
-	// other project, whether creating, available or deleting, holds the name.
-	// admit runs inside the store's write transaction, so this read and the
-	// insert are atomic.
+	// The namespace rules apply to a new name only, so a bucket stored before
+	// the rules existed keeps replaying above (docs/decisions/0002).
+	if err := req.CheckNamespace(); err != nil {
+		return model.Admitted{}, err
+	}
+	// Full bucket names are one namespace for every project, as in S3, where
+	// the account-regional namespace is a subdivision of the global one
+	// (docs/decisions/0002-bucket-namespace.md). A row in any other project,
+	// whether creating, available or deleting, holds the name. admit runs
+	// inside the store's write transaction, so this read and the insert are
+	// atomic.
 	holders, err := r.BucketsNamed(ctx, req.Bucket.Name())
 	if err != nil {
 		return model.Admitted{}, err

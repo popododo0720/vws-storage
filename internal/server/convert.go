@@ -847,6 +847,8 @@ func toStatus(ctx context.Context, err error) error {
 		return statusError{code: codes.Aborted, reason: "IDEMPOTENCY_CONFLICT", err: err}.grpc()
 	case errors.Is(err, model.ErrModificationRateExceeded):
 		return statusError{code: codes.ResourceExhausted, reason: "VOLUME_MODIFICATION_RATE_EXCEEDED", err: err}.grpc()
+	case errors.Is(err, model.ErrInvalidBucketNamespace):
+		return statusError{code: codes.InvalidArgument, reason: "INVALID_BUCKET_NAMESPACE", err: err}.grpc()
 	case errors.Is(err, model.ErrUnsupportedVolumeType):
 		return statusError{code: codes.InvalidArgument, reason: "UNSUPPORTED_VOLUME_TYPE", err: err}.grpc()
 	case errors.Is(err, model.ErrInvalidArgument):

@@ -517,13 +517,23 @@ func marshalBody(r Record) ([]byte, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
+		// A global bucket writes no namespace, so its row is byte-identical to
+		// the rows of a build without namespaces (docs/decisions/0002).
+		var namespace string
+		if r.Namespace != BucketNamespaceGlobal {
+			namespace = r.Namespace.String()
+		}
 		b, err := json.Marshal(struct {
-			Name   string            `json:"name"`
-			Region string            `json:"region,omitempty"`
-			Labels map[string]string `json:"labels,omitempty"`
-			Life   lifeWire          `json:"life"`
-			Meta   metaWire          `json:"meta"`
-		}{Name: r.Name.wire(), Region: r.Region.String(), Labels: r.Labels.Map(), Life: life, Meta: metaTo(r.Meta)})
+			Name      string            `json:"name"`
+			Region    string            `json:"region,omitempty"`
+			Labels    map[string]string `json:"labels,omitempty"`
+			Namespace string            `json:"namespace,omitempty"`
+			Life      lifeWire          `json:"life"`
+			Meta      metaWire          `json:"meta"`
+		}{
+			Name: r.Name.wire(), Region: r.Region.String(), Labels: r.Labels.Map(), Namespace: namespace,
+			Life: life, Meta: metaTo(r.Meta),
+		})
 		if err != nil {
 			return nil, "", fmt.Errorf("model: encode bucket: %w", err)
 		}
@@ -669,11 +679,12 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		return Snapshot{ID: id, Source: src, Region: region, Labels: labels, Description: desc, Size: Bytes(w.Size), State: life, Meta: metaFrom(w.Meta)}, nil
 	case "bucket":
 		var w struct {
-			Name   string            `json:"name"`
-			Region string            `json:"region"`
-			Labels map[string]string `json:"labels"`
-			Life   lifeWire          `json:"life"`
-			Meta   metaWire          `json:"meta"`
+			Name      string            `json:"name"`
+			Region    string            `json:"region"`
+			Labels    map[string]string `json:"labels"`
+			Namespace string            `json:"namespace"`
+			Life      lifeWire          `json:"life"`
+			Meta      metaWire          `json:"meta"`
 		}
 		if err := json.Unmarshal(env.Body, &w); err != nil {
 			return nil, fmt.Errorf("model: decode %s: %w", env.Record, err)
@@ -693,11 +704,17 @@ func UnmarshalRecord(data []byte) (Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		namespace, err := ParseBucketNamespace(w.Namespace)
+		if err != nil {
+			return nil, err
+		}
 		life, err := lifeFrom(w.Life)
 		if err != nil {
 			return nil, err
 		}
-		return Bucket{Name: name, Region: region, Labels: labels, State: life, Meta: metaFrom(w.Meta)}, nil
+		return Bucket{
+			Name: name, Region: region, Labels: labels, Namespace: namespace, State: life, Meta: metaFrom(w.Meta),
+		}, nil
 	case "object":
 		var w struct {
 			Bucket      string            `json:"bucket"`

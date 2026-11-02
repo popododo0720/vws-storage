@@ -30,7 +30,11 @@ var (
 )
 
 // refinedError is a more specific sentinel that still matches its parent.
-type refinedError struct{ parent error }
+// name keeps two refinements of the same parent distinct under errors.Is.
+type refinedError struct {
+	name   string
+	parent error
+}
 
 func (e refinedError) Error() string { return e.parent.Error() }
 func (e refinedError) Unwrap() error { return e.parent }
@@ -522,9 +526,10 @@ type DeleteSnapshotRequest struct {
 
 // CreateBucketRequest creates a bucket.
 type CreateBucketRequest struct {
-	Bucket BucketName
-	Region Region
-	Labels Labels
+	Bucket    BucketName
+	Region    Region
+	Labels    Labels
+	Namespace BucketNamespace
 }
 
 // DeleteBucketRequest deletes an empty bucket.
@@ -792,7 +797,13 @@ func (r DeleteSnapshotRequest) fingerprint() string {
 }
 
 func (r CreateBucketRequest) fingerprint() string {
-	return "create-bucket\n" + r.Bucket.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical()
+	f := "create-bucket\n" + r.Bucket.String() + "\n" + r.Region.String() + "\n" + r.Labels.canonical()
+	// A global create keeps the pre-namespace fingerprint, so a token from
+	// before the upgrade still matches its request.
+	if r.Namespace != BucketNamespaceGlobal {
+		f += "\nnamespace=" + r.Namespace.String()
+	}
+	return f
 }
 
 func (r DeleteBucketRequest) fingerprint() string {
