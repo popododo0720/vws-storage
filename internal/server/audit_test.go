@@ -121,7 +121,8 @@ func TestMutatingRPCWritesAnAuditRecord(t *testing.T) {
 		t.Fatal("bad request id accepted")
 	}
 	got = lastAudit(t, logs)
-	if got.Outcome != "error" || got.ErrCode != "InvalidArgument" || got.Action != "create_volume" || got.RequestID != incomingID {
+	if got.Outcome != "error" || got.ErrCode != "InvalidArgument" || got.Action != "create_volume" ||
+		got.RequestID != incomingID {
 		t.Fatalf("failed audit = %+v", got)
 	}
 
