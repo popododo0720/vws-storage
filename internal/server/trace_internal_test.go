@@ -157,8 +157,9 @@ func TestObjectTransferSpanEndsOnRequestError(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
+	loc := model.Locator{URL: url + "/b/k"}
 	//nolint:bodyclose // the request fails, so there is no response body to close
-	if _, err := doLocator(context.Background(), http.MethodGet, model.Locator{URL: url + "/b/k"}, http.NoBody); err == nil {
+	if _, err := doLocator(context.Background(), http.MethodGet, loc, http.NoBody); err == nil {
 		t.Fatal("want a request error")
 	}
 	ended := transferSpans(recorder)
