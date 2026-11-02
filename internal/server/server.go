@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
@@ -19,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -857,13 +859,16 @@ func checkPutETag(etag string, body []byte) error {
 // may carry the path or query.
 const objectTracer = "github.com/popododo0720/vws-storage/internal/server"
 
+// doLocator sends the object request inside a client span. The span stays
+// open while the caller reads the body and ends when the body is closed, so it
+// covers the byte transfer. On a request error it ends at once.
 func doLocator(ctx context.Context, method string, loc model.Locator, body io.Reader) (*http.Response, error) {
-	ctx, span := otel.Tracer(objectTracer).Start(ctx, "object transfer")
-	defer span.End()
+	ctx, span := otel.Tracer(objectTracer).Start(ctx, "object transfer", trace.WithSpanKind(trace.SpanKindClient))
 	span.SetAttributes(attribute.String("http.request.method", method))
 	req, err := http.NewRequestWithContext(ctx, method, loc.URL, body)
 	if err != nil {
 		span.SetStatus(otelcodes.Error, "build object request")
+		span.End()
 		return nil, fmt.Errorf("build object request: %w", err)
 	}
 	span.SetAttributes(
@@ -877,13 +882,38 @@ func doLocator(ctx context.Context, method string, loc model.Locator, body io.Re
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		span.SetStatus(otelcodes.Error, "object request")
+		span.End()
 		return nil, fmt.Errorf("object request: %w", err)
 	}
 	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
-	if resp.StatusCode >= http.StatusInternalServerError {
-		span.SetStatus(otelcodes.Error, resp.Status)
+	// OTel HTTP client semantic conventions mark 4xx and 5xx as errors.
+	if resp.StatusCode >= http.StatusBadRequest {
+		span.SetStatus(otelcodes.Error, http.StatusText(resp.StatusCode))
 	}
+	resp.Body = &spanBody{ReadCloser: resp.Body, span: span}
 	return resp, nil
+}
+
+// spanBody ends the transfer span when the response body is closed. A read
+// error other than io.EOF marks the span as failed.
+type spanBody struct {
+	io.ReadCloser
+	span trace.Span
+	once sync.Once
+}
+
+func (b *spanBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		b.span.SetStatus(otelcodes.Error, "read object body")
+	}
+	return n, err
+}
+
+func (b *spanBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() { b.span.End() })
+	return err
 }
 
 // statusErr reports a non-2xx object response with the start of its body.
