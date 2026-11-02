@@ -441,7 +441,10 @@ func NewBucket(st Start, req CreateBucketRequest) (Admitted, error) {
 	if req.Bucket.IsZero() || st.Op.IsZero() {
 		return Admitted{}, fmt.Errorf("%w: bucket", ErrInvalidArgument)
 	}
-	b := Bucket{Name: req.Bucket, Region: req.Region, Labels: req.Labels, State: Creating{Op: st.Op}, Meta: fresh(st.Now)}
+	b := Bucket{
+		Name: req.Bucket, Region: req.Region, Labels: req.Labels, Namespace: req.Namespace,
+		State: Creating{Op: st.Op}, Meta: fresh(st.Now),
+	}
 	op := newOp(st, BucketCreation{Bucket: req.Bucket})
 	ws := withToken(st, []Write{putNew(b), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil

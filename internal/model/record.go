@@ -87,8 +87,10 @@ type Bucket struct {
 	Name   BucketName
 	Region Region
 	Labels Labels
-	State  Lifecycle
-	Meta   Meta
+	// Namespace is the S3 namespace the bucket was created in. Immutable.
+	Namespace BucketNamespace
+	State     Lifecycle
+	Meta      Meta
 }
 
 // Object is the committed head of an object path.
