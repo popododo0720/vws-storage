@@ -90,10 +90,11 @@ A background loop evaluates the checks (`-health-period`, default 10s, sooner wh
 
 ### Storage preflight
 
-vws-storage does not install or operate storage. The StorageClasses, the CSI driver behind them, the VolumeSnapshotClass (if one is set) and the storage itself (a Ceph cluster, or an NFS export reachable from every node) must exist before it starts. The kube readiness check is the preflight, both at startup and on every period:
+vws-storage does not install or operate storage. The StorageClasses, the CSI driver behind them, the VolumeSnapshotClass (if one is set) and the storage itself (a Ceph cluster, an NFS export reachable from every node, or LINSTOR on the nodes' local disks) must exist before it starts. The kube readiness check is the preflight, both at startup and on every period:
 
 - Each StorageClass must exist. Its provisioner is logged once at startup (`storage class` with `class` and `provisioner`).
 - A provisioner that serves only Filesystem (`nfs.csi.k8s.io`, `smb.csi.k8s.io`) with `-kube-volume-mode=Block` is not ready.
+- A LINSTOR StorageClass (`linstor.csi.linbit.com`) must set `allowVolumeExpansion: true`, and every type mapped to it must have a VolumeSnapshotClass.
 - A VolumeSnapshotClass that is set must exist, and its `driver` must be the provisioner of one of the StorageClasses.
 - In Filesystem mode, the CDI DataVolume API must answer in the namespace.
 
@@ -164,6 +165,16 @@ allowVolumeExpansion: true
 Then run with `-kube-class-standard=nfs-csi -kube-class-ssd=nfs-csi -kube-volume-mode=Filesystem`, or map types one by one with `-kube-volume-type=gp2=nfs-csi/Filesystem`. `-kube-snapshot-class` is the csi-driver-nfs VolumeSnapshotClass, or empty for no snapshots.
 
 iSCSI has no option of its own. The kubernetes-csi `csi-driver-iscsi` only attaches LUNs that already exist and cannot provision them. An iSCSI SAN whose vendor CSI driver provisions dynamically is a generic CSI StorageClass, in Block mode.
+
+### Local storage (LINSTOR)
+
+The installer's `local` driver is [LINSTOR](https://linbit.com/linstor/) with DRBD (the Piraeus operator), as in Cozystack. Each node's local disks form a ZFS pool (LVM thin as a fallback), and DRBD replicates every volume to other nodes, so any claim can be used on any node ([decision 0001](docs/decisions/0001-zone-and-pvc-topology.md)). vws-deploy installs it and renders the flags (popododo0720/vws-deploy#671). vws-storage only reads it, in Block mode:
+
+```
+-kube-volume-type=gp2=linstor-replicated/Block/linstor-snapshots
+```
+
+The preflight above refuses a LINSTOR class without `allowVolumeExpansion: true` (`UpdateVolume` growth needs it) or a type mapped to one without a VolumeSnapshotClass, and the snapshot class's `driver` must be `linstor.csi.linbit.com`.
 
 ### HTTP probes
 
