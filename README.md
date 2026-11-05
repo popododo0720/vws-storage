@@ -168,11 +168,13 @@ iSCSI has no option of its own. The kubernetes-csi `csi-driver-iscsi` only attac
 
 ### Local storage (LINSTOR)
 
-The installer's `local` driver is [LINSTOR](https://linbit.com/linstor/) with DRBD (the Piraeus operator), as in Cozystack. Each node's local disks form a ZFS pool (LVM thin as a fallback), and DRBD replicates every volume to other nodes, so any claim can be used on any node ([decision 0001](docs/decisions/0001-zone-and-pvc-topology.md)). vws-deploy installs it and renders the flags (popododo0720/vws-deploy#671). vws-storage only reads it, in Block mode:
+The installer's `local` driver is [LINSTOR](https://linbit.com/linstor/) with DRBD (the Piraeus operator), as in Cozystack. Each node's local disks form a ZFS pool (LVM thin as a fallback), and DRBD replicates every volume to other nodes, so any claim can be used on any node ([decision 0001](docs/decisions/0001-zone-and-pvc-topology.md)). vws-deploy installs it and renders the flags (popododo0720/vws-deploy#671). vws-storage only reads it, in Block mode. The class and snapshot class flags default to Ceph (`ceph-block`), so a LINSTOR-only cluster sets all three:
 
 ```
--kube-volume-type=gp2=linstor-replicated/Block/linstor-snapshots
+-kube-class-standard=linstor-replicated -kube-class-ssd=linstor-replicated -kube-snapshot-class=linstor-snapshots
 ```
+
+A further type maps one by one, such as `-kube-volume-type=gp3=linstor-replicated/Block/linstor-snapshots`.
 
 The preflight above refuses a LINSTOR class without `allowVolumeExpansion: true` (`UpdateVolume` growth needs it) or a type mapped to one without a VolumeSnapshotClass, and the snapshot class's `driver` must be `linstor.csi.linbit.com`.
 
