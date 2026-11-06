@@ -171,6 +171,54 @@ func TestCrashAfterCommitIsFinishedByTheNextWriter(t *testing.T) {
 	}
 }
 
+func TestReadOnlyUpdateRetriesAcrossACommit(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	reader, writer := open(t, Options{Namespace: ns}), open(t, Options{Namespace: ns})
+	a := admit(t, "read-only")
+	var volumeMissing, operationPresent bool
+	calls := 0
+	err := reader.Update(ctx, func(r store.Reader) (model.Change, error) {
+		calls++
+		_, verr := r.Volume(ctx, volumeOf(t, a))
+		volumeMissing = errors.Is(verr, model.ErrNotFound)
+		if calls == 1 {
+			if err := writer.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err != nil {
+				return model.Change{}, err
+			}
+		}
+		_, oerr := r.Operation(ctx, a.Op.ID)
+		operationPresent = oerr == nil
+		return model.Change{}, nil
+	})
+	if err != nil || calls != 2 || volumeMissing || !operationPresent {
+		t.Fatalf("err=%v calls=%d volumeMissing=%t operationPresent=%t", err, calls, volumeMissing, operationPresent)
+	}
+}
+
+func TestSuspendedWriterWritesNothingAfterTakeover(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	old := open(t, Options{Namespace: ns, WriterBudget: 100 * time.Millisecond})
+	a := admit(t, "zombie")
+	old.afterCommit = func() {
+		time.Sleep(200 * time.Millisecond)
+		later := func(d time.Duration) func() time.Time { return func() time.Time { return time.Now().Add(d) } }
+		taker := open(t, Options{Namespace: ns, Now: later(time.Minute)})
+		removeAll(t, taker, a.Change)
+		open(t, Options{Namespace: ns, Now: later(25 * time.Hour)})
+	}
+	if err := old.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err == nil {
+		t.Fatal("a writer past its budget reported success")
+	}
+	if _, err := old.Volume(ctx, volumeOf(t, a)); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("the suspended writer resurrected the removed volume: %v", err)
+	}
+	if _, err := old.Operation(ctx, a.Op.ID); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("the suspended writer resurrected the removed operation: %v", err)
+	}
+}
+
 func TestConcurrentWritersCommitEachChangeOnce(t *testing.T) {
 	ctx := context.Background()
 	ns := namespace(t)

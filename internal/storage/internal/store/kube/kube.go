@@ -103,6 +103,9 @@ func (o Options) withDefaults() Options {
 type Store struct {
 	c kubernetes.Interface
 	o Options
+	// afterCommit, when set by a test, runs between the commit and the roll
+	// forward, where a writer can be suspended.
+	afterCommit func()
 }
 
 var _ store.Store = (*Store)(nil)

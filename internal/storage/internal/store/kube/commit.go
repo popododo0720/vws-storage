@@ -71,11 +71,13 @@ func (s *Store) transact(ctx context.Context, build func(context.Context) ([]wri
 			return err
 		}
 		ws, err := build(ctx)
-		if err != nil || len(ws) == 0 {
-			return err
+		if err == nil && len(ws) > 0 {
+			err = s.commitAndFinish(ctx, head, ws)
+		} else if s.moved(ctx, head) {
+			// The reads may straddle another commit, so their result
+			// (an error included) is not one serial order allows.
+			err = errLostRace
 		}
-		in := intent{Txn: newTxn(), Start: s.o.Now(), Writes: ws}
-		next, err := s.commit(ctx, head, in)
 		if errors.Is(err, errLostRace) {
 			if attempt == maxCommitAttempts {
 				return fmt.Errorf("kubestore: %d commits lost the head race: %w", attempt, err)
@@ -86,19 +88,37 @@ func (s *Store) transact(ctx context.Context, build func(context.Context) ([]wri
 			delay = min(2*delay, 200*time.Millisecond)
 			continue
 		}
-		if err != nil {
-			return err
-		}
-		// The change is durable from here. A client that gave up must not
-		// leave the head blocked until a takeover, so the budget ignores ctx.
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.o.WriterBudget)
-		err = s.finish(rctx, next, in)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("kubestore: txn %s committed, the next writer finishes it: %w", in.Txn, err)
-		}
-		return nil
+		return err
 	}
+}
+
+// commitAndFinish commits ws and rolls them forward.
+func (s *Store) commitAndFinish(ctx context.Context, head *corev1.ConfigMap, ws []write) error {
+	in := intent{Txn: newTxn(), Start: s.o.Now(), Writes: ws}
+	// The budget starts before the commit, so a writer suspended after the
+	// commit wakes past its deadline and writes nothing; by then a takeover
+	// owns the intent. A client that gave up must not leave the head
+	// blocked until a takeover, so the budget ignores ctx's cancellation.
+	rctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), time.Now().Add(s.o.WriterBudget))
+	defer cancel()
+	next, err := s.commit(ctx, head, in)
+	if err != nil {
+		return err
+	}
+	if s.afterCommit != nil {
+		s.afterCommit()
+	}
+	if err := s.finish(rctx, next, in); err != nil {
+		return fmt.Errorf("kubestore: txn %s committed, the next writer finishes it: %w", in.Txn, err)
+	}
+	return nil
+}
+
+// moved reports whether a commit started since head was read. A head that
+// cannot be read counts as moved, so the caller retries.
+func (s *Store) moved(ctx context.Context, head *corev1.ConfigMap) bool {
+	cur, err := s.head(ctx)
+	return err != nil || cur.ResourceVersion != head.ResourceVersion
 }
 
 // clearHead returns the head with no intent. An intent younger than
@@ -132,7 +152,12 @@ func (s *Store) clearHead(ctx context.Context) (*corev1.ConfigMap, error) {
 			slog.String("txn", in.Txn),
 			slog.Int("writes", len(in.Writes)),
 		)
-		if err := s.finish(ctx, head, in); err != nil {
+		// Bounded like the writer's own roll, so a taker that is suspended
+		// wakes past its deadline instead of writing late.
+		rctx, cancel := context.WithTimeout(ctx, s.o.WriterBudget)
+		err = s.finish(rctx, head, in)
+		cancel()
+		if err != nil {
 			return nil, err
 		}
 	}
