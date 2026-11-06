@@ -42,6 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
@@ -138,6 +139,23 @@ func Open(ctx context.Context, c kubernetes.Interface, o Options) (*Store, error
 		return nil, err
 	}
 	return s, nil
+}
+
+// Connect opens the store with a client built from the kubeconfig at path.
+// An empty path uses the in-cluster credentials.
+func Connect(ctx context.Context, path string, o Options) (*Store, error) {
+	rc, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		return nil, fmt.Errorf("kubestore: kubeconfig: %w", err)
+	}
+	// client-go's default of 5 calls a second throttles one commit (about
+	// five calls) plus the engine's scan of two lists a tick.
+	rc.QPS, rc.Burst = 50, 100
+	c, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		return nil, fmt.Errorf("kubestore: client: %w", err)
+	}
+	return Open(ctx, c, o)
 }
 
 // Close releases nothing; the client belongs to the caller.
