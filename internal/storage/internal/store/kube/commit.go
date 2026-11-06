@@ -21,6 +21,9 @@ import (
 const (
 	maxCommitAttempts = 30
 	maxCallAttempts   = 5
+	purgeBatch        = 100
+	// maxIntentBytes keeps the head well under the 1 MiB object limit.
+	maxIntentBytes = 900 << 10
 )
 
 // errLostRace means another commit moved the head after this one read it.
@@ -101,15 +104,18 @@ func (s *Store) commitAndFinish(ctx context.Context, head *corev1.ConfigMap, ws 
 	// blocked until a takeover, so the budget ignores ctx's cancellation.
 	rctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), time.Now().Add(s.o.WriterBudget))
 	defer cancel()
-	next, err := s.commit(ctx, head, in)
-	if err != nil {
+	if _, err := s.commit(ctx, head, in); err != nil {
 		return err
 	}
 	if s.afterCommit != nil {
 		s.afterCommit()
 	}
-	if err := s.finish(rctx, next, in); err != nil {
-		return fmt.Errorf("kubestore: txn %s committed, the next writer finishes it: %w", in.Txn, err)
+	if err := s.finish(rctx, in); err != nil {
+		// The head holds the intent, so the change is durable and the next
+		// writer finishes it. An error here would tell the caller nothing
+		// was written.
+		s.o.Log.WarnContext(ctx, "kubestore: committed change left for the next writer to finish",
+			slog.String("txn", in.Txn), slog.String("err", err.Error()))
 	}
 	return nil
 }
@@ -155,7 +161,7 @@ func (s *Store) clearHead(ctx context.Context) (*corev1.ConfigMap, error) {
 		// Bounded like the writer's own roll, so a taker that is suspended
 		// wakes past its deadline instead of writing late.
 		rctx, cancel := context.WithTimeout(ctx, s.o.WriterBudget)
-		err = s.finish(rctx, head, in)
+		err = s.finish(rctx, in)
 		cancel()
 		if err != nil {
 			return nil, err
@@ -183,6 +189,10 @@ func (s *Store) commit(ctx context.Context, head *corev1.ConfigMap, in intent) (
 	if err != nil {
 		return nil, fmt.Errorf("kubestore: encode intent: %w", err)
 	}
+	if len(raw) > maxIntentBytes {
+		return nil, fmt.Errorf("kubestore: change of %d writes is %d bytes, over %d: %w",
+			len(in.Writes), len(raw), maxIntentBytes, model.ErrInvalidArgument)
+	}
 	next := head.DeepCopy()
 	if next.Data == nil {
 		next.Data = map[string]string{}
@@ -208,8 +218,17 @@ func (s *Store) commit(ctx context.Context, head *corev1.ConfigMap, in intent) (
 	return out, nil
 }
 
-// finish rolls in forward and clears it from head.
-func (s *Store) finish(ctx context.Context, head *corev1.ConfigMap, in intent) error {
+// finish rolls in forward and clears it from the head. ctx carries the
+// roller's deadline. The head is read again under it, so a roller suspended
+// before its deadline started finds the intent gone and writes nothing.
+func (s *Store) finish(ctx context.Context, in intent) error {
+	head, err := s.head(ctx)
+	if err != nil {
+		return err
+	}
+	if !holds(head, in.Txn) {
+		return nil
+	}
 	for _, w := range in.Writes {
 		if err := s.roll(ctx, in.Txn, w); err != nil {
 			return err
@@ -217,19 +236,12 @@ func (s *Store) finish(ctx context.Context, head *corev1.ConfigMap, in intent) e
 	}
 	next := head.DeepCopy()
 	delete(next.Data, dataIntent)
-	err := s.call(ctx, func(ctx context.Context) error {
+	err = s.call(ctx, func(ctx context.Context) error {
 		_, err := s.cms().Update(ctx, next, metav1.UpdateOptions{})
 		return apiErr(err)
 	})
 	if apierrors.IsConflict(err) {
-		cur, gerr := s.head(ctx)
-		if gerr != nil {
-			return gerr
-		}
-		if !holds(cur, in.Txn) {
-			return nil
-		}
-		return s.finish(ctx, cur, in)
+		return s.finish(ctx, in)
 	}
 	if err != nil {
 		return fmt.Errorf("kubestore: clear head: %w", err)
@@ -302,47 +314,61 @@ func (s *Store) roll(ctx context.Context, txn string, w write) error {
 }
 
 // purge removes tombstones older than TombstoneTTL, through the head so no
-// commit can have read one it is about to delete.
+// commit can have read one it is about to delete. It commits purgeBatch at a
+// time, so the intent stays far below the ConfigMap size limit and inside
+// WriterBudget however many tombstones there are.
 func (s *Store) purge(ctx context.Context) error {
-	return s.transact(ctx, func(ctx context.Context) ([]write, error) {
-		sel := labelManagedBy + "=" + managedBy + "," + labelTombstone + "=true"
-		var ws []write
-		cont := ""
-		for {
-			var page *corev1.ConfigMapList
-			err := s.call(ctx, func(ctx context.Context) error {
-				var err error
-				page, err = s.cms().List(ctx, metav1.ListOptions{LabelSelector: sel, Limit: listPage, Continue: cont})
-				return apiErr(err)
+	for {
+		n := 0
+		err := s.transact(ctx, func(ctx context.Context) ([]write, error) {
+			ws, err := s.oldTombstones(ctx)
+			n = len(ws)
+			return ws, err
+		})
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			s.o.Log.InfoContext(ctx, "kubestore: purged tombstones", slog.Int("count", n))
+		}
+		if n < purgeBatch {
+			return nil
+		}
+	}
+}
+
+// oldTombstones returns up to purgeBatch purges of expired tombstones.
+func (s *Store) oldTombstones(ctx context.Context) ([]write, error) {
+	sel := labelManagedBy + "=" + managedBy + "," + labelTombstone + "=true"
+	var ws []write
+	cont := ""
+	for {
+		var page *corev1.ConfigMapList
+		err := s.call(ctx, func(ctx context.Context) error {
+			var err error
+			page, err = s.cms().List(ctx, metav1.ListOptions{LabelSelector: sel, Limit: listPage, Continue: cont})
+			return apiErr(err)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("kubestore: list tombstones: %w", err)
+		}
+		for _, cm := range page.Items {
+			at, err := time.Parse(time.RFC3339, cm.Annotations[annRemovedAt])
+			if err == nil && s.o.Now().Sub(at) < s.o.TombstoneTTL {
+				continue
+			}
+			ws = append(ws, write{
+				Name: cm.Name, Kind: cm.Labels[labelRecord], Key: cm.Annotations[annKey],
+				RV: cm.ResourceVersion, Purge: true,
 			})
-			if err != nil {
-				return nil, fmt.Errorf("kubestore: list tombstones: %w", err)
-			}
-			for _, cm := range page.Items {
-				at, err := time.Parse(time.RFC3339, cm.Annotations[annRemovedAt])
-				if err == nil && s.o.Now().Sub(at) < s.o.TombstoneTTL {
-					continue
-				}
-				ws = append(
-					ws,
-					write{
-						Name:  cm.Name,
-						Kind:  cm.Labels[labelRecord],
-						Key:   cm.Annotations[annKey],
-						RV:    cm.ResourceVersion,
-						Purge: true,
-					},
-				)
-			}
-			if cont = page.Continue; cont == "" {
-				break
+			if len(ws) == purgeBatch {
+				return ws, nil
 			}
 		}
-		if len(ws) > 0 {
-			s.o.Log.InfoContext(ctx, "kubestore: purging tombstones", slog.Int("count", len(ws)))
+		if cont = page.Continue; cont == "" {
+			return ws, nil
 		}
-		return ws, nil
-	})
+	}
 }
 
 // stage is the Table store.Apply checks a change against. Reads go to the

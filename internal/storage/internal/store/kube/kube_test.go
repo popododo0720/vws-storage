@@ -125,7 +125,7 @@ func TestCrashAfterCommitIsFinishedByTheNextWriter(t *testing.T) {
 	if len(in.Writes) < 2 {
 		t.Fatalf("want a multi-record change, got %d writes", len(in.Writes))
 	}
-	committed, err := crashed.commit(ctx, head, in)
+	_, err = crashed.commit(ctx, head, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestCrashAfterCommitIsFinishedByTheNextWriter(t *testing.T) {
 	}
 
 	// The crashed writer wakes up and finishes too: nothing changes.
-	if err := crashed.finish(ctx, committed, in); err != nil {
+	if err := crashed.finish(ctx, in); err != nil {
 		t.Fatalf("late finish: %v", err)
 	}
 	again, err := next.Volume(ctx, vol.ID)
@@ -196,6 +196,28 @@ func TestReadOnlyUpdateRetriesAcrossACommit(t *testing.T) {
 	}
 }
 
+func TestUpdateErrorFromReadsAcrossACommitRetries(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	resend, first := open(t, Options{Namespace: ns}), open(t, Options{Namespace: ns})
+	a := admit(t, "resend")
+	calls := 0
+	err := resend.Update(ctx, func(r store.Reader) (model.Change, error) {
+		calls++
+		if calls == 1 {
+			if err := first.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err != nil {
+				return model.Change{}, err
+			}
+			return model.Change{}, model.ErrStale
+		}
+		_, err := r.Operation(ctx, a.Op.ID)
+		return model.Change{}, err
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("err=%v calls=%d, want a retry that sees the commit", err, calls)
+	}
+}
+
 func TestSuspendedWriterWritesNothingAfterTakeover(t *testing.T) {
 	ctx := context.Background()
 	ns := namespace(t)
@@ -208,14 +230,96 @@ func TestSuspendedWriterWritesNothingAfterTakeover(t *testing.T) {
 		removeAll(t, taker, a.Change)
 		open(t, Options{Namespace: ns, Now: later(25 * time.Hour)})
 	}
-	if err := old.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err == nil {
-		t.Fatal("a writer past its budget reported success")
+	if err := old.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err != nil {
+		t.Fatalf("a committed change reported failure: %v", err)
 	}
 	if _, err := old.Volume(ctx, volumeOf(t, a)); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("the suspended writer resurrected the removed volume: %v", err)
 	}
 	if _, err := old.Operation(ctx, a.Op.ID); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("the suspended writer resurrected the removed operation: %v", err)
+	}
+}
+
+func TestLateRollerWritesNothingAfterPurge(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	start := time.Now()
+	now := start
+	old := open(t, Options{Namespace: ns, Now: func() time.Time { return now }})
+	a := admit(t, "zombie")
+	head, err := old.clearHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := intent{Txn: newTxn(), Start: start, Writes: stageWrites(t, old, a.Change)}
+	_, err = old.commit(ctx, head, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The roller is suspended before its deadline starts.
+	now = start.Add(time.Minute)
+	next := open(t, Options{Namespace: ns, Now: func() time.Time { return now }})
+	removeAll(t, next, a.Change)
+	now = start.Add(25 * time.Hour)
+	next = open(t, Options{Namespace: ns, Now: func() time.Time { return now }})
+	_, before := next.Volume(ctx, volumeOf(t, a))
+	if !errors.Is(before, model.ErrNotFound) {
+		t.Fatalf("before zombie: %v", before)
+	}
+	rctx, cancel := context.WithTimeout(ctx, old.o.WriterBudget)
+	defer cancel()
+	if err := old.finish(rctx, in); err != nil {
+		t.Fatal(err)
+	}
+	_, after := next.Volume(ctx, volumeOf(t, a))
+	if !errors.Is(after, model.ErrNotFound) {
+		t.Fatalf("the late roller resurrected a removed volume: %v", after)
+	}
+}
+
+func TestCommittedChangeSucceedsWhenTheNextWriterFinishesIt(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	slow := open(t, Options{Namespace: ns, WriterBudget: 50 * time.Millisecond})
+	slow.afterCommit = func() { time.Sleep(100 * time.Millisecond) }
+	a := admit(t, "slow")
+	if err := slow.Update(ctx, func(store.Reader) (model.Change, error) { return a.Change, nil }); err != nil {
+		t.Fatalf("committed change: %v", err)
+	}
+	next := open(t, Options{Namespace: ns, Now: func() time.Time { return time.Now().Add(time.Minute) }})
+	if _, err := next.Volume(ctx, volumeOf(t, a)); err != nil {
+		t.Fatalf("volume after takeover: %v", err)
+	}
+	if _, err := next.Operation(ctx, a.Op.ID); err != nil {
+		t.Fatalf("operation after takeover: %v", err)
+	}
+}
+
+func TestOpenPurgesManyTombstonesInBatches(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t)
+	open(t, Options{Namespace: ns})
+	const n = 2*purgeBatch + 50
+	old := time.Now().Add(-48 * time.Hour)
+	for range n {
+		id := model.NewVolumeID()
+		name, err := recordName(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cm := configMap(write{Name: name, Kind: "volume", Key: id.String()}, "seed", old)
+		if _, err := kc.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open(t, Options{Namespace: ns})
+	left, err := kc.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{LabelSelector: labelTombstone + "=true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left.Items) != 0 {
+		t.Fatalf("%d of %d tombstones left", len(left.Items), n)
 	}
 }
 

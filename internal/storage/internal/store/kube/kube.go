@@ -11,10 +11,13 @@
 // A writer that crashes after the commit leaves the intent in the head. The
 // next writer waits TakeoverAfter from the intent's start and rolls it
 // forward itself, so a crash between two record writes is repaired before
-// anything else is written. The original writer stops after WriterBudget,
-// well inside TakeoverAfter, so two writers never roll the same intent at
-// once in practice. If they do, the resourceVersion preconditions and the txn
-// annotation make the second roll a no-op.
+// anything else is written. An Update whose intent is in the head has
+// succeeded, even when its own roll forward did not finish. Every roll runs
+// under a deadline of WriterBudget, well inside TakeoverAfter, and reads the
+// head again under it, so a roller that wakes late writes nothing. A second
+// roll of the same intent is a no-op: the resourceVersion preconditions and
+// the txn annotation see the writes already made. An Update that wrote
+// nothing checks that the head did not move during its reads.
 //
 // A removed record stays as a tombstone, so a create can never land on a name
 // a later commit removed. Open purges tombstones older than TombstoneTTL
@@ -66,10 +69,11 @@ type Options struct {
 	Namespace string
 	// CallTimeout bounds one API call (default 10s).
 	CallTimeout time.Duration
-	// WriterBudget bounds the roll forward after a commit (default 5s).
+	// WriterBudget bounds the roll forward after a commit (default 20s). It
+	// exceeds CallTimeout, so one slow call does not leave the intent behind.
 	WriterBudget time.Duration
 	// TakeoverAfter is how old an intent must be before another writer rolls
-	// it forward (default 30s). It must exceed WriterBudget plus clock skew.
+	// it forward (default 60s). It must exceed WriterBudget plus clock skew.
 	TakeoverAfter time.Duration
 	// TombstoneTTL is how long a removed record's tombstone stays (default 24h).
 	TombstoneTTL time.Duration
@@ -82,10 +86,10 @@ func (o Options) withDefaults() Options {
 		o.CallTimeout = 10 * time.Second
 	}
 	if o.WriterBudget <= 0 {
-		o.WriterBudget = 5 * time.Second
+		o.WriterBudget = 20 * time.Second
 	}
 	if o.TakeoverAfter <= 0 {
-		o.TakeoverAfter = 30 * time.Second
+		o.TakeoverAfter = time.Minute
 	}
 	if o.TombstoneTTL <= 0 {
 		o.TombstoneTTL = 24 * time.Hour
