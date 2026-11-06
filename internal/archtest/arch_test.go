@@ -107,7 +107,11 @@ var ownerRules = []struct {
 	},
 	{hasPrefix("google.golang.org/grpc"), []string{server, health, cmd}, "gRPC stays at the edge"},
 	{hasPrefix("database/sql", "modernc.org/sqlite"), []string{store + "/sqlite"}, "SQL stays in the SQLite store"},
-	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{backend + "/kube", cmd}, "Kubernetes types stay in the kube backend and its flags"},
+	{
+		hasPrefix("k8s.io", "sigs.k8s.io"),
+		[]string{backend + "/kube", store + "/kube", cmd},
+		"Kubernetes types stay in the kube backend, the kube store and its flags",
+	},
 	{hasPrefix("github.com/aws"), []string{backend + "/s3"}, "the AWS SDK stays in the S3 backend"},
 	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
 	{func(imp string) bool { return imp == "log" }, nil, "logs go through log/slog and vws-lib/obs"},
@@ -285,7 +289,8 @@ func checkProbe(t *testing.T) {
 		"internal/widget imports google.golang.org/grpc: gRPC stays at the edge",
 		"internal/widget imports testing: production code does not import testing",
 		model + " imports " + module + "/" + backend + ": the model imports nothing from this module",
-		model + " imports k8s.io/apimachinery/pkg/types: Kubernetes types stay in the kube backend and its flags",
+		model + " imports k8s.io/apimachinery/pkg/types: " +
+			"Kubernetes types stay in the kube backend, the kube store and its flags",
 		server + " imports " + module + "/" + backend + ": the server calls the engine only: no backend, no store",
 		server + " imports " + module + "/" + store + ": the server calls the engine only: no backend, no store",
 		server + " imports log: logs go through log/slog and vws-lib/obs",
