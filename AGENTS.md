@@ -41,7 +41,7 @@ A rule whose enforcer cell is `Judgment` has no check; the author and reviewer u
 | The engine knows no gRPC, generated code or fake. The engine sees only the backend contract and does not import the kube, s3 or fake implementations or the server | depguard `engine`, `store`, `backend`, `TestArchitectureRules`. Test files are excluded |
 | Backends import only the backend contract and the model. They know no engine, server or other backend | depguard `backend`, `TestArchitectureRules` |
 | Health imports no package of this module. The process hands it the checks | `TestArchitectureRules` |
-| External dependencies live only in their owner package: generated code and protobuf in the server, gRPC in the server, health and `cmd`, SQL in the SQLite store, Kubernetes in the kube backend and `cmd`, the AWS SDK in the s3 backend | `TestArchitectureRules` |
+| External dependencies live only in their owner package: generated code and protobuf in the server, gRPC in the server, health and `cmd`, SQL in the SQLite store, Kubernetes in the kube backend, the kube store and `cmd`, the AWS SDK in the s3 backend | `TestArchitectureRules` |
 | Production code does not import `testing`. The exception is `storetest` | `TestArchitectureRules` |
 | Logs go through `log/slog` and vws-lib `obs`. The standard `log` is not used | `TestArchitectureRules` |
 | This repo keeps no proto and no copy of it. The generated code is the `github.com/popododo0720/vws-proto` module at a release tag (`vX.Y.Z`, no pseudo-version) from the module proxy, with no `replace` | `internal/policycheck` (`TestRepoPolicy`, `TestProtoModuleRules`). Lint excludes `third_party` (the vws-lib copy) |
