@@ -104,6 +104,10 @@ func (s *dbStore) Close() error {
 	return nil
 }
 
+// Lead runs run at once: the exclusive lock already keeps the file to one
+// process.
+func (s *dbStore) Lead(ctx context.Context, run func(context.Context) error) error { return run(ctx) }
+
 func (s *dbStore) migrate(ctx context.Context) error {
 	// BEGIN IMMEDIATE takes the write lock. locking_mode=EXCLUSIVE keeps it
 	// until the connection closes, so a second process fails here.

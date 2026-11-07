@@ -14,6 +14,12 @@ import (
 type Store interface {
 	Reader
 	Update(ctx context.Context, fn func(r Reader) (model.Change, error)) error
+	// Lead runs run while this process is the one that drives operations on
+	// the store. run's context ends when leadership is lost or ctx ends. Lead
+	// ends run's context before another process can lead, and waits for run
+	// to return before it campaigns again or returns. It returns when ctx is
+	// done.
+	Lead(ctx context.Context, run func(context.Context) error) error
 	Close() error
 }
 

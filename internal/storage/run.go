@@ -16,7 +16,8 @@ import (
 )
 
 // Run drives non-terminal operations until ctx is cancelled and the workers
-// have returned. Restart recovery is this scan. There is no second path.
+// have returned, while this process leads the store (one replica of a Kube
+// store at a time). Restart recovery is this scan. There is no second path.
 func (s *Service) Run(ctx context.Context) error {
 	s.mu.Lock()
 	if s.running {
@@ -30,7 +31,17 @@ func (s *Service) Run(ctx context.Context) error {
 		s.running = false
 		s.mu.Unlock()
 	}()
+	return s.st.Lead(ctx, s.runQueue)
+}
 
+// runQueue is the scan loop of one leadership term. ctx ends when the term
+// does, and runQueue returns only after its workers have.
+func (s *Service) runQueue(ctx context.Context) error {
+	// A follower reports an empty queue, so the replicas sum to the leader's.
+	defer func() {
+		s.queueDepth.Store(0)
+		s.queueOldest.Store(0)
+	}()
 	inflight := map[model.OperationID]struct{}{}
 	hold := map[model.OperationID]time.Time{}
 	done := make(chan drove, s.workers)

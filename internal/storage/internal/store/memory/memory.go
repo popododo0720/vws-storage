@@ -33,6 +33,9 @@ type mem struct {
 
 func (m *mem) Close() error { return nil }
 
+// Lead runs run at once: the store lives in one process.
+func (m *mem) Lead(ctx context.Context, run func(context.Context) error) error { return run(ctx) }
+
 func (m *mem) Update(ctx context.Context, fn func(store.Reader) (model.Change, error)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
