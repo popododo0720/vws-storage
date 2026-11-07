@@ -182,9 +182,7 @@ func (s *Store) head(ctx context.Context) (*corev1.ConfigMap, error) {
 	return head, nil
 }
 
-// commit writes in into the clear head it was read from. It is the commit
-// point: either the head names in, or it does not and nothing was written.
-func (s *Store) commit(ctx context.Context, head *corev1.ConfigMap, in intent) (*corev1.ConfigMap, error) {
+func encodeIntent(in intent) ([]byte, error) {
 	raw, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("kubestore: encode intent: %w", err)
@@ -192,6 +190,40 @@ func (s *Store) commit(ctx context.Context, head *corev1.ConfigMap, in intent) (
 	if len(raw) > maxIntentBytes {
 		return nil, fmt.Errorf("kubestore: change of %d writes is %d bytes, over %d: %w",
 			len(in.Writes), len(raw), maxIntentBytes, model.ErrInvalidArgument)
+	}
+	return raw, nil
+}
+
+// Fits reports whether a change that writes only rec can commit: its intent
+// must stay under the head's size limit. A ConfigMap with a resourceVersion
+// stands in for the record's own, which the commit records too.
+func Fits(rec model.Record) error {
+	name, err := recordName(rec.RecordKey())
+	if err != nil {
+		return err
+	}
+	kind, err := kindOf(rec.RecordKey())
+	if err != nil {
+		return err
+	}
+	raw, err := model.MarshalRecord(rec)
+	if err != nil {
+		return fmt.Errorf("kubestore: %w", err)
+	}
+	w := write{
+		Name: name, Kind: kind, Key: rec.RecordKey().String(),
+		RV: "18446744073709551615", Record: raw, Live: live(rec),
+	}
+	_, err = encodeIntent(intent{Txn: newTxn(), Start: time.Now(), Writes: []write{w}})
+	return err
+}
+
+// commit writes in into the clear head it was read from. It is the commit
+// point: either the head names in, or it does not and nothing was written.
+func (s *Store) commit(ctx context.Context, head *corev1.ConfigMap, in intent) (*corev1.ConfigMap, error) {
+	raw, err := encodeIntent(in)
+	if err != nil {
+		return nil, err
 	}
 	next := head.DeepCopy()
 	if next.Data == nil {

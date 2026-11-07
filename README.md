@@ -40,6 +40,28 @@ One process may open a given SQLite file.
 
 The Kubernetes store (`storage.Kube`, not offered by `cmd` yet, #141) keeps desired state in ConfigMaps of one namespace, so several replicas can share it. Every replica serves requests; only the holder of the `vws-storage-run` Lease in that namespace drives operations, and a replica that stops cleanly releases it. The service account needs `get`, `list`, `create`, `update` and `delete` on `configmaps` and `get`, `create` and `update` on `leases.coordination.k8s.io` in that namespace.
 
+### Import a SQLite file
+
+`vws-storage import-sqlite` copies the records of a SQLite file into the Kubernetes store. Stop the service that holds the file first: a file with a `-journal` or `-wal` beside it is refused.
+
+```sh
+vws-storage import-sqlite -from=/var/lib/vws/storage.db -store-namespace=vws-storage -dry-run
+vws-storage import-sqlite -from=/var/lib/vws/storage.db -store-namespace=vws-storage
+vws-storage import-sqlite -from=/var/lib/vws/storage.db -store-namespace=vws-storage -verify
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-from` | required | SQLite file. It is read from a copy, so the file stays as it is |
+| `-store-namespace` | required | Namespace of the Kubernetes store |
+| `-store-kube-config` | empty | kubeconfig path. Empty uses in-cluster credentials |
+| `-dry-run` | false | Print `create <kind> <key>` for each record the import would create. Writes nothing, not even the store's head ConfigMap |
+| `-verify` | false | Print `missing`, `differs` or `removed` for each record of the file the store does not hold as it is. Writes nothing |
+
+Each record keeps its version, so etags and client tokens work as before. A record the store already holds unchanged is skipped, so a second import writes nothing. A record the store holds otherwise is never overwritten. Every record is checked before the first write. A record that differs is printed as `differs`, the run exits non-zero as `-verify` does on any line, and nothing of the file is written, so an operation of the file never lands beside a resource the store holds otherwise. A record that changes while the import writes stops it, and what it wrote stays.
+
+A run that writes every record leaves the ConfigMap `vws-storage-import`, which never expires. After that, a record of the file the store does not hold was deleted there, so it is printed as `removed` and never created again, even once its tombstone is purged (24 h). A run cut off before the marker is resumed by running it again. Start the service on the store only after a run that ends with `-verify` passing. A record too large for one commit of the store (900 KiB) is refused before any write. So is a file with object records or object operations still running, because the Kubernetes store does not serve objects yet (#141).
+
 ## Kubernetes block backend
 
 `internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.

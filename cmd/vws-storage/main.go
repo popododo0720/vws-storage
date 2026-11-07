@@ -1,6 +1,7 @@
 // Command vws-storage serves the storage control plane over gRPC.
 // -block-backend picks the fake or Kubernetes. -object-backend picks the
 // in-process fake or an S3-compatible endpoint (Ceph RGW or MinIO).
+// `vws-storage import-sqlite` copies a SQLite file into the Kubernetes store.
 package main
 
 import (
@@ -44,6 +45,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "import-sqlite" {
+		return runImport(args[1:], os.Stdout)
+	}
 	fs := flag.NewFlagSet("vws-storage", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:7400", "gRPC listen address")
 	db := fs.String("db", "", "SQLite file; empty keeps state in memory")
