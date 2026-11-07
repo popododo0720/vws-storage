@@ -44,9 +44,10 @@ type ImportReport struct {
 // ErrImportDiffers is returned when Differences is not empty.
 var ErrImportDiffers = errors.New("storage: the store differs from the file")
 
-// ErrImportObjects refuses a file with object records: the Kubernetes store
-// does not keep them yet (#141 AC 6).
-var ErrImportObjects = errors.New("storage: the file has object records, which the Kubernetes store does not keep yet")
+// ErrImportObjects refuses a file with object records or object operations
+// still running: the Kubernetes store does not keep objects yet (#141 AC 6).
+var ErrImportObjects = errors.New(
+	"storage: the file has object records or running object operations, which the Kubernetes store does not serve yet")
 
 // ImportSQLite copies the records of the SQLite file at from into the
 // Kubernetes store, one model.Import change per record. It never overwrites:
@@ -63,7 +64,7 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 	rep := ImportReport{Records: len(recs)}
 	objects := 0
 	for _, rec := range recs {
-		if _, ok := rec.(model.Object); ok {
+		if objectState(rec) {
 			objects++
 		}
 	}
@@ -103,9 +104,20 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 
 // compare fills rep from what r holds of recs. ImportDryRun lists an absent
 // record to create; ImportVerify lists it as missing.
-func compare(ctx context.Context, r store.Reader, recs []model.Record, mode ImportMode, rep *ImportReport) error {
+// A tombstone is a record the store removed later, so it is a difference.
+func compare(ctx context.Context, r kube.Reader, recs []model.Record, mode ImportMode, rep *ImportReport) error {
 	for _, rec := range recs {
 		cur, err := readRecord(ctx, r, rec.RecordKey())
+		if errors.Is(err, model.ErrNotFound) {
+			removed, rerr := r.Removed(ctx, rec.RecordKey())
+			if rerr != nil {
+				return rerr
+			}
+			if removed {
+				rep.Differences = append(rep.Differences, "removed "+describe(rec))
+				continue
+			}
+		}
 		switch {
 		case errors.Is(err, model.ErrNotFound) && mode == ImportDryRun:
 			rep.Create = append(rep.Create, describe(rec))
@@ -151,6 +163,21 @@ func importAll(ctx context.Context, st store.Store, recs []model.Record, rep *Im
 		}
 	}
 	return nil
+}
+
+// objectState is a record of the object path: an object row, or an object
+// operation still running, which reads object rows when it resumes.
+func objectState(rec model.Record) bool {
+	switch r := rec.(type) {
+	case model.Object:
+		return true
+	case model.Operation:
+		switch r.Work.(type) {
+		case model.ObjectUpload, model.ObjectPurge:
+			return !r.Terminal()
+		}
+	}
+	return false
 }
 
 func differs(rep ImportReport) error {

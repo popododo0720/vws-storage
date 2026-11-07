@@ -177,7 +177,7 @@ func Connect(ctx context.Context, path string, o Options) (*Store, error) {
 // ConnectReader is Connect for reads only. It writes nothing, not even the
 // head, so a namespace the store never used reads as empty. An intent in the
 // head means a commit is not finished, and is refused rather than rolled.
-func ConnectReader(ctx context.Context, path string, o Options) (store.Reader, error) {
+func ConnectReader(ctx context.Context, path string, o Options) (Reader, error) {
 	c, err := client(path)
 	if err != nil {
 		return nil, err
@@ -197,6 +197,22 @@ func ConnectReader(ctx context.Context, path string, o Options) (store.Reader, e
 		return nil, fmt.Errorf("kubestore: a commit in %s is not finished: open the store for writing once", o.Namespace)
 	}
 	return s, nil
+}
+
+// Reader is the read side plus Removed.
+type Reader interface {
+	store.Reader
+	Removed(ctx context.Context, key model.Key) (bool, error)
+}
+
+// Removed reports whether key's record was removed: its tombstone is still
+// there, which a read reports as missing.
+func (s *Store) Removed(ctx context.Context, key model.Key) (bool, error) {
+	rec, rv, err := s.fetch(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return rec == nil && rv != "", nil
 }
 
 func client(path string) (kubernetes.Interface, error) {

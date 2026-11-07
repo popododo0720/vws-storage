@@ -357,6 +357,73 @@ func TestImportRefusesObjectRecords(t *testing.T) {
 	}
 }
 
+// A record the store removed after an import stays removed: a second import
+// reports it and writes nothing, so a later delete is never undone.
+func TestImportDoesNotBringBackARemovedRecord(t *testing.T) {
+	path, ns := kubeEnv(t)
+	if _, err := importInto(t, fixture010, path, ns, storage.ImportWrite); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := startService(t, kubeOpts(storage.Kube(path, ns), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{})))
+	project, err := model.ParseProject("a123456789012")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := svc.ListSnapshots(context.Background(), project, model.Region{}, model.PageRequest{Size: 10})
+	if err != nil || len(snaps.Items) != 1 {
+		t.Fatalf("snapshots %v %v", snaps, err)
+	}
+	snap := snaps.Items[0].ID
+	submitDone(t, svc, "del-snap", model.DeleteSnapshotRequest{Snapshot: snap})
+	count := configMaps(t, ns)
+	for _, mode := range []storage.ImportMode{storage.ImportDryRun, storage.ImportWrite, storage.ImportVerify} {
+		rep, err := importInto(t, fixture010, path, ns, mode)
+		if !errors.Is(err, storage.ErrImportDiffers) || len(rep.Create) != 0 {
+			t.Fatalf("mode %d: created %v, %v; want ErrImportDiffers and nothing", mode, rep.Create, err)
+		}
+		if len(rep.Differences) != 1 || rep.Differences[0] != "removed snapshot "+snap.String() {
+			t.Fatalf("mode %d differences %v", mode, rep.Differences)
+		}
+	}
+	if n := configMaps(t, ns); n != count {
+		t.Fatalf("import wrote: %d ConfigMaps, want %d", n, count)
+	}
+	if _, err := svc.Snapshot(context.Background(), snap); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("snapshot after import: %v, want not found", err)
+	}
+}
+
+// An upload admitted but not finished has no object row yet. Its operation
+// would read object rows when it resumes, so the file is refused too.
+func TestImportRefusesAnUnfinishedUpload(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "storage.db")
+	svc, stop := openRunning(t, storage.SQLite(file), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	bucket, err := model.ParseBucketName("logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitDone(t, svc, "bkt", model.CreateBucketRequest{Bucket: bucket})
+	key, err := model.ParseObjectKey("day.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := model.PutObjectRequest{Path: model.ObjectPath{Bucket: bucket, Key: key}, Size: 5}
+	if _, err := svc.Submit(context.Background(), token(t, "put"), put); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path, ns := kubeEnv(t)
+	if _, err := importInto(t, file, path, ns, storage.ImportWrite); !errors.Is(err, storage.ErrImportObjects) {
+		t.Fatalf("import %v, want ErrImportObjects", err)
+	}
+	if n := configMaps(t, ns); n != 0 {
+		t.Fatalf("refused import left %d ConfigMaps", n)
+	}
+}
+
 // A file with a journal beside it is still held, or was not closed cleanly.
 func TestImportRefusesAFileWithAJournal(t *testing.T) {
 	dir := t.TempDir()
