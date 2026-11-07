@@ -3,10 +3,10 @@ package kube
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -41,11 +41,7 @@ func identity() string {
 	if err != nil || host == "" {
 		host = managedBy
 	}
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("kubestore: crypto/rand: %v", err))
-	}
-	return host + "-" + hex.EncodeToString(b)
+	return host + "-" + strings.ToLower(rand.Text()[:8])
 }
 
 // Lead campaigns for the vws-storage-run Lease and runs run while it holds
