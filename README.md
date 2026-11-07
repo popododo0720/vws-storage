@@ -58,7 +58,7 @@ vws-storage import-sqlite -from=/var/lib/vws/storage.db -store-namespace=vws-sto
 | `-dry-run` | false | Print `create <kind> <key>` for each record the import would create. Writes nothing, not even the store's head ConfigMap |
 | `-verify` | false | Print `missing` or `differs` for each record of the file the store does not hold as it is. Writes nothing |
 
-Each record keeps its version, so etags and client tokens work as before. A record the store already holds unchanged is skipped, so a second import writes nothing. A record the store holds otherwise is never overwritten. It is printed as `differs`, and the run exits non-zero, as `-verify` does on any line. A file with object records is refused and nothing is written, because the Kubernetes store does not keep object records yet (#141).
+Each record keeps its version, so etags and client tokens work as before. A record the store already holds unchanged is skipped, so a second import writes nothing. A record the store holds otherwise is never overwritten. It is printed as `differs`, the run exits non-zero as `-verify` does on any line, and nothing of the file is written. Every record is checked first, so an operation of the file never lands beside a resource the store holds otherwise. A record too large for one commit of the store (900 KiB) is refused before any write. So is a file with object records, because the Kubernetes store does not keep object records yet (#141).
 
 ## Kubernetes block backend
 

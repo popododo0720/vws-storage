@@ -52,8 +52,9 @@ var ErrImportObjects = errors.New("storage: the file has object records, which t
 // Kubernetes store, one model.Import change per record. It never overwrites:
 // a record the store already holds unchanged is skipped, so a second run
 // writes nothing, and one it holds otherwise is a difference. Nothing is
-// written when the file has object records or in ImportDryRun and
-// ImportVerify. The file itself is not changed.
+// written when any record differs, when the file has object records or a
+// record too large for the store, or in ImportDryRun and ImportVerify. The
+// file itself is not changed.
 func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode ImportMode) (ImportReport, error) {
 	recs, err := sqlite.Export(ctx, from)
 	if err != nil {
@@ -69,20 +70,40 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 	if objects > 0 {
 		return rep, fmt.Errorf("%w: %d", ErrImportObjects, objects)
 	}
+	for _, rec := range recs {
+		if err := kube.Fits(rec); err != nil {
+			return rep, fmt.Errorf("storage: import %s: %w", describe(rec), err)
+		}
+	}
 	opts := kube.Options{Namespace: to.Namespace}
-	if mode == ImportWrite {
-		st, err := kube.Connect(ctx, to.Kubeconfig, opts)
+	if mode != ImportWrite {
+		r, err := kube.ConnectReader(ctx, to.Kubeconfig, opts)
 		if err != nil {
 			return rep, err
 		}
-		defer closeLogged(ctx, st)
-		err = importAll(ctx, st, recs, &rep)
+		err = compare(ctx, r, recs, mode, &rep)
 		return rep, errors.Join(err, differs(rep))
 	}
-	r, err := kube.ConnectReader(ctx, to.Kubeconfig, opts)
+	st, err := kube.Connect(ctx, to.Kubeconfig, opts)
 	if err != nil {
 		return rep, err
 	}
+	defer closeLogged(ctx, st)
+	// Every record is checked before the first write: an operation of the
+	// file must not land beside a record the store holds otherwise, where Run
+	// would act on the store's resource.
+	if err := compare(ctx, st, recs, ImportDryRun, &rep); err != nil || len(rep.Differences) > 0 {
+		rep.Create = nil
+		return rep, errors.Join(err, differs(rep))
+	}
+	rep.Create = nil
+	err = importAll(ctx, st, recs, &rep)
+	return rep, errors.Join(err, differs(rep))
+}
+
+// compare fills rep from what r holds of recs. ImportDryRun lists an absent
+// record to create; ImportVerify lists it as missing.
+func compare(ctx context.Context, r store.Reader, recs []model.Record, mode ImportMode, rep *ImportReport) error {
 	for _, rec := range recs {
 		cur, err := readRecord(ctx, r, rec.RecordKey())
 		switch {
@@ -91,14 +112,16 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 		case errors.Is(err, model.ErrNotFound):
 			rep.Differences = append(rep.Differences, "missing "+describe(rec))
 		case err != nil:
-			return rep, err
+			return err
 		case !model.SameRecord(cur, rec):
 			rep.Differences = append(rep.Differences, "differs "+describe(rec))
 		}
 	}
-	return rep, differs(rep)
+	return nil
 }
 
+// importAll writes each absent record. A record that changed since compare
+// stops the import, so nothing more of the file lands beside it.
 func importAll(ctx context.Context, st store.Store, recs []model.Record, rep *ImportReport) error {
 	for _, rec := range recs {
 		var created, conflict bool
@@ -119,11 +142,12 @@ func importAll(ctx context.Context, st store.Store, recs []model.Record, rep *Im
 		if err != nil {
 			return fmt.Errorf("storage: import %s: %w", describe(rec), err)
 		}
-		switch {
-		case created:
-			rep.Create = append(rep.Create, describe(rec))
-		case conflict:
+		if conflict {
 			rep.Differences = append(rep.Differences, "differs "+describe(rec))
+			return nil
+		}
+		if created {
+			rep.Create = append(rep.Create, describe(rec))
 		}
 	}
 	return nil

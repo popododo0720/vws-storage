@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/backend/fake"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage"
@@ -226,8 +228,12 @@ func TestImportNeverOverwritesAndVerifyFindsTheDifference(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	count := configMaps(t, ns)
 	for _, mode := range []storage.ImportMode{storage.ImportVerify, storage.ImportWrite, storage.ImportDryRun} {
 		rep, err := importInto(t, fixture010, path, ns, mode)
+		if n := configMaps(t, ns); n != count {
+			t.Fatalf("mode %d wrote: %d ConfigMaps, want %d", mode, n, count)
+		}
 		if !errors.Is(err, storage.ErrImportDiffers) {
 			t.Fatalf("mode %d: %v, want ErrImportDiffers", mode, err)
 		}
@@ -237,6 +243,73 @@ func TestImportNeverOverwritesAndVerifyFindsTheDifference(t *testing.T) {
 	}
 	if got, err := svc.Volume(context.Background(), v.ID); err != nil || !reflect.DeepEqual(got, changed) {
 		t.Fatalf("after import %+v %v, want the relabelled volume kept", got, err)
+	}
+}
+
+// A pending operation of the file never lands beside a record the store
+// holds otherwise: Run would act on the store's resource. A conflict writes
+// nothing at all.
+func TestImportWithAConflictWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "storage.db")
+	src, stopSrc := openRunning(t, storage.SQLite(file), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	made := submitDone(t, src, "src-create", labeled(t, "shared", map[string]string{"owner": "file"}))
+	stopSrc()
+	del := model.DeleteVolumeRequest{Volume: made.Target().(model.VolumeID)}
+	deletion, err := src.Submit(ctx, token(t, "src-delete"), del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path, ns := kubeEnv(t)
+	blk := fake.NewBlock()
+	dst, _ := startService(t, kubeOpts(storage.Kube(path, ns), blk, fake.NewObjects(fake.ObjectOptions{})))
+	submitDone(t, dst, "dst-create", labeled(t, "shared", map[string]string{"owner": "store"}))
+	count := configMaps(t, ns)
+	rep, err := importInto(t, file, path, ns, storage.ImportWrite)
+	if !errors.Is(err, storage.ErrImportDiffers) || len(rep.Create) != 0 {
+		t.Fatalf("import created %v, %v; want ErrImportDiffers and nothing", rep.Create, err)
+	}
+	if n := configMaps(t, ns); n != count {
+		t.Fatalf("conflicting import: %d ConfigMaps, want %d", n, count)
+	}
+	if _, err := dst.Operation(ctx, deletion.ID); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("the file's deletion is in the store: %v", err)
+	}
+	for _, c := range blk.Calls() {
+		if c.Method == "DeleteVolume" {
+			t.Fatal("the store's volume was deleted")
+		}
+	}
+}
+
+// A record over the store's commit limit is refused before anything is
+// written, in every mode, so a dry run does not promise an import that fails.
+func TestImportRefusesARecordTooLargeForTheStore(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "storage.db")
+	blk := fake.NewBlock()
+	huge := strings.Repeat("x", 930000)
+	blk.FailNext("CreateVolume", backend.Permanent(fmt.Errorf("%w: %s", backend.ErrInvalid, huge)))
+	svc, stop := openRunning(t, storage.SQLite(file), blk, fake.NewObjects(fake.ObjectOptions{}))
+	op, err := svc.Submit(context.Background(), token(t, "huge"), labeled(t, "huge", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, svc, op.ID)
+	stop()
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path, ns := kubeEnv(t)
+	for _, mode := range []storage.ImportMode{storage.ImportDryRun, storage.ImportWrite, storage.ImportVerify} {
+		if _, err := importInto(t, file, path, ns, mode); !errors.Is(err, model.ErrInvalidArgument) {
+			t.Fatalf("mode %d: %v, want the record refused", mode, err)
+		}
+	}
+	if n := configMaps(t, ns); n != 0 {
+		t.Fatalf("refused import left %d ConfigMaps", n)
 	}
 }
 
