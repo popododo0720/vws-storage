@@ -98,7 +98,9 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 		return rep, errors.Join(err, differs(rep))
 	}
 	rep.Create = nil
-	if err := importAll(ctx, st, recs, &rep); err != nil || len(rep.Differences) > 0 {
+	// Only Import is used: the service has no backends and never runs.
+	svc := &Service{st: st}
+	if err := importAll(ctx, svc, recs, &rep); err != nil || len(rep.Differences) > 0 {
 		return rep, errors.Join(err, differs(rep))
 	}
 	return rep, st.MarkImported(ctx)
@@ -143,38 +145,52 @@ func compare(ctx context.Context, r kube.Reader, recs []model.Record, mode Impor
 	return nil
 }
 
-// importAll writes each absent record. A record that changed since compare
-// stops the import, so nothing more of the file lands beside it; what was
-// written before stays, and the import is not marked finished.
-func importAll(ctx context.Context, st store.Store, recs []model.Record, rep *ImportReport) error {
+// importAll writes each absent record through Service.Import. A record that
+// changed since compare stops the import, so nothing more of the file lands
+// beside it; what was written before stays, and the import is not marked
+// finished.
+func importAll(ctx context.Context, svc *Service, recs []model.Record, rep *ImportReport) error {
 	for _, rec := range recs {
-		var created, conflict bool
-		err := st.Update(ctx, func(r store.Reader) (model.Change, error) {
-			created, conflict = false, false
-			cur, err := readRecord(ctx, r, rec.RecordKey())
-			switch {
-			case errors.Is(err, model.ErrNotFound):
-				created = true
-				return model.Import(rec)
-			case err != nil:
-				return model.Change{}, err
-			case !model.SameRecord(cur, rec):
-				conflict = true
-			}
-			return model.Change{}, nil
-		})
-		if err != nil {
-			return fmt.Errorf("storage: import %s: %w", describe(rec), err)
-		}
-		if conflict {
+		created, err := svc.Import(ctx, rec)
+		switch {
+		case errors.Is(err, ErrImportDiffers):
 			rep.Differences = append(rep.Differences, "differs "+describe(rec))
 			return nil
-		}
-		if created {
+		case err != nil:
+			return fmt.Errorf("storage: import %s: %w", describe(rec), err)
+		case created:
 			rep.Create = append(rep.Create, describe(rec))
 		}
 	}
 	return nil
+}
+
+// Import writes rec, unchanged and with its version, when the store lacks its
+// key (#141, the SQLite import). An equal stored record writes nothing and
+// reports false. A different one is ErrImportDiffers and is never overwritten.
+func (s *Service) Import(ctx context.Context, rec model.Record) (bool, error) {
+	if rec == nil || rec.RecordKey() == nil {
+		return false, fmt.Errorf("%w: record", model.ErrInvalidArgument)
+	}
+	var created bool
+	err := s.st.Update(ctx, func(r store.Reader) (model.Change, error) {
+		created = false
+		cur, err := readRecord(ctx, r, rec.RecordKey())
+		switch {
+		case errors.Is(err, model.ErrNotFound):
+			created = true
+			return model.Import(rec)
+		case err != nil:
+			return model.Change{}, err
+		case !model.SameRecord(cur, rec):
+			return model.Change{}, ErrImportDiffers
+		}
+		return model.Change{}, nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
 // objectState is a record of the object path: an object row, or an object

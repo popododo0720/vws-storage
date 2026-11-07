@@ -500,6 +500,39 @@ func TestImportRefusesAnUnfinishedUpload(t *testing.T) {
 	}
 }
 
+// Service.Import creates an absent record as it is, skips an equal one, and
+// refuses a different one without writing.
+func TestServiceImportWritesOnlyAbsentKeys(t *testing.T) {
+	ctx := context.Background()
+	src, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	made := submitDone(t, src, "vol", labeled(t, "data", map[string]string{"team": "db"}))
+	vol, err := src.Volume(ctx, made.Target().(model.VolumeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	if created, err := dst.Import(ctx, vol); err != nil || !created {
+		t.Fatalf("first import created %v, %v", created, err)
+	}
+	if got, err := dst.Volume(ctx, vol.ID); err != nil || !reflect.DeepEqual(got, vol) {
+		t.Fatalf("imported %+v %v, want %+v", got, err, vol)
+	}
+	if created, err := dst.Import(ctx, vol); err != nil || created {
+		t.Fatalf("second import created %v, %v; want nothing", created, err)
+	}
+	other := vol
+	other.Meta.Version++
+	if _, err := dst.Import(ctx, other); !errors.Is(err, storage.ErrImportDiffers) {
+		t.Fatalf("different record: %v, want ErrImportDiffers", err)
+	}
+	if got, err := dst.Volume(ctx, vol.ID); err != nil || !reflect.DeepEqual(got, vol) {
+		t.Fatalf("after refused import %+v %v, want it unchanged", got, err)
+	}
+	if _, err := dst.Import(ctx, nil); !errors.Is(err, model.ErrInvalidArgument) {
+		t.Fatalf("nil record: %v", err)
+	}
+}
+
 // A file with a journal beside it is still held, or was not closed cleanly.
 func TestImportRefusesAFileWithAJournal(t *testing.T) {
 	dir := t.TempDir()
