@@ -336,6 +336,42 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 	return model.Page[OperationStatus]{Items: items, NextToken: next}, nil
 }
 
+// ListVolumeModifications lists the size, type, IOPS and throughput changes of
+// vol in operation id order, as ListOperations does; the ids are random, so
+// that is not time order. A volume with no row is ErrNotFound, so the modifications
+// of a deleted volume are not listed. Labels-only and no-op updates are not
+// modifications.
+func (s *Service) ListVolumeModifications(
+	ctx context.Context, vol model.VolumeID, p model.PageRequest,
+) (model.Page[model.VolumeModificationStatus], error) {
+	var none model.Page[model.VolumeModificationStatus]
+	if _, err := s.st.Volume(ctx, vol); err != nil {
+		return none, err
+	}
+	n, err := model.NormalizePage(p)
+	if err != nil {
+		return none, err
+	}
+	after, err := decodeID(p.Token, model.ParseOperationID)
+	if err != nil {
+		return none, err
+	}
+	matched, err := s.matchOperations(ctx, store.OperationFilter{Target: vol}, after, n, func(op model.Operation) bool {
+		_, ok := op.Modification()
+		return ok && op.ID.Project() == vol.Project()
+	})
+	if err != nil {
+		return none, err
+	}
+	ops, next := trim(matched, n, func(op model.Operation) string { return op.ID.String() })
+	items := make([]model.VolumeModificationStatus, 0, len(ops))
+	for _, op := range ops {
+		m, _ := op.Modification()
+		items = append(items, m)
+	}
+	return model.Page[model.VolumeModificationStatus]{Items: items, NextToken: next}, nil
+}
+
 // matchOperations returns up to n+1 operations in id order after the given
 // id that f admits and keep accepts. It reads the store in batches, because
 // keep can reject most of a batch.
