@@ -43,6 +43,13 @@ func TestMain(m *testing.M) {
 // server. Without KUBEBUILDER_ASSETS the test is skipped.
 func kubeStore(t *testing.T) (storage.StoreConfig, string) {
 	t.Helper()
+	path, ns := kubeEnv(t)
+	return storage.Kube(path, ns), ns
+}
+
+// kubeEnv is a kubeconfig path and a fresh namespace on the envtest server.
+func kubeEnv(t *testing.T) (string, string) {
+	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS unset")
 	}
@@ -73,7 +80,7 @@ func kubeStore(t *testing.T) (storage.StoreConfig, string) {
 	if _, err := kc.CoreV1().Namespaces().Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	return storage.Kube(path, ns), ns
+	return path, ns
 }
 
 // kubeOpts scans every 100ms. The fakes' 5ms scan lists operations faster

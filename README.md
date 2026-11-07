@@ -38,6 +38,8 @@ S3 keys come from `VWS_S3_ACCESS_KEY` and `VWS_S3_SECRET_KEY`, never from flags.
 
 One process may open a given SQLite file.
 
+The Kubernetes store (`storage.Kube`, not offered by `cmd` yet, #141) keeps desired state in ConfigMaps of one namespace, so several replicas can share it. Every replica serves requests; only the holder of the `vws-storage-run` Lease in that namespace drives operations, and a replica that stops cleanly releases it. The service account needs `get`, `list`, `create`, `update` and `delete` on `configmaps` and `get`, `create` and `update` on `leases.coordination.k8s.io` in that namespace.
+
 ## Kubernetes block backend
 
 `internal/backend/kube` serves volumes as PersistentVolumeClaims. `cmd/vws-storage -block-backend=kube` selects it. It implements all of `backend.Block`. Object bytes stay on the fake backend.
