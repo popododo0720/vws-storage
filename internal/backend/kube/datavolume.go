@@ -174,6 +174,8 @@ func (b *Block) createDataVolume(ctx context.Context, id model.VolumeID, spec mo
 		ann[k] = v
 	}
 	dv.SetAnnotations(ann)
+	// CDI copies the DataVolume labels to the claim it makes.
+	dv.SetLabels(idLabels(VolumeIDLabel, id.ID(), id.Project()))
 	cur, err := dvs.Create(ctx, dv, metav1.CreateOptions{})
 	if err == nil {
 		b.mu.Lock()

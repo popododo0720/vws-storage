@@ -225,6 +225,7 @@ func (b *Block) CreateVolume(ctx context.Context, id model.VolumeID, spec model.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName(id),
 			Namespace: b.ns,
+			Labels:    idLabels(VolumeIDLabel, id.ID(), id.Project()),
 			Annotations: map[string]string{
 				VolumeAnnotation:     id.String(),
 				zoneAnnotation:       spec.Zone.String(),
