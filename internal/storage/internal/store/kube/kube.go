@@ -78,8 +78,16 @@ type Options struct {
 	TakeoverAfter time.Duration
 	// TombstoneTTL is how long a removed record's tombstone stays (default 24h).
 	TombstoneTTL time.Duration
-	Now          func() time.Time
-	Log          *slog.Logger
+	// LeaseDuration, RenewDeadline and RetryPeriod drive the vws-storage-run
+	// Lease that Lead campaigns for (defaults 15s, 10s, 2s).
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
+	// Identity names this replica in the Lease (default: hostname and a
+	// random suffix).
+	Identity string
+	Now      func() time.Time
+	Log      *slog.Logger
 }
 
 func (o Options) withDefaults() Options {
@@ -94,6 +102,18 @@ func (o Options) withDefaults() Options {
 	}
 	if o.TombstoneTTL <= 0 {
 		o.TombstoneTTL = 24 * time.Hour
+	}
+	if o.LeaseDuration <= 0 {
+		o.LeaseDuration = 15 * time.Second
+	}
+	if o.RenewDeadline <= 0 {
+		o.RenewDeadline = 10 * time.Second
+	}
+	if o.RetryPeriod <= 0 {
+		o.RetryPeriod = 2 * time.Second
+	}
+	if o.Identity == "" {
+		o.Identity = identity()
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -122,6 +142,9 @@ func Open(ctx context.Context, c kubernetes.Interface, o Options) (*Store, error
 		return nil, fmt.Errorf("kubestore: namespace: %w", model.ErrInvalidArgument)
 	}
 	s := &Store{c: c, o: o.withDefaults()}
+	if err := checkLease(s.o); err != nil {
+		return nil, err
+	}
 	head := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: headName, Labels: map[string]string{labelManagedBy: managedBy}},
 	}
