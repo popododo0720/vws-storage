@@ -19,6 +19,66 @@ func Run(t *testing.T, open OpenFunc) {
 	t.Helper()
 	t.Run("round trip and stale", func(t *testing.T) { roundTrip(t, open) })
 	t.Run("runnable and inflight", func(t *testing.T) { runnable(t, open) })
+	t.Run("import", func(t *testing.T) { importRecords(t, open) })
+}
+
+// importRecords: model.Import keeps a record's version, an imported
+// operation is in flight and runnable, and a second import of a key is stale.
+func importRecords(t *testing.T, open OpenFunc) {
+	ctx := context.Background()
+	st := open(t)
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	admitted := admitVolume(t, now)
+	creating, ok := volumeFrom(t, admitted.Change).AsCreating()
+	if !ok {
+		t.Fatal("not creating")
+	}
+	run, ok := model.AsRunning[model.VolumeCreation](admitted.Op)
+	if !ok {
+		t.Fatal("not running")
+	}
+	created, err := creating.Created(run, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := volumeFrom(t, created)
+	if vol.Meta.Version == 1 {
+		t.Fatal("want a record past its first version")
+	}
+	for _, rec := range []model.Record{vol, admitted.Op} {
+		ch, err := model.Import(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply := func(store.Reader) (model.Change, error) { return ch, nil }
+		if err := st.Update(ctx, apply); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Update(ctx, apply); !errors.Is(err, model.ErrStale) {
+			t.Fatalf("second import of %s: %v, want ErrStale", rec.RecordKey(), err)
+		}
+	}
+	got, err := st.Volume(ctx, vol.ID)
+	if err != nil || !model.SameRecord(got, vol) {
+		t.Fatalf("imported volume %+v %v, want %+v", got, err, vol)
+	}
+	op, err := st.Operation(ctx, admitted.Op.ID)
+	if err != nil || !model.SameRecord(op, admitted.Op) {
+		t.Fatalf("imported operation %+v %v", op, err)
+	}
+	busy, err := st.InFlight(ctx, vol.ID)
+	if err != nil || !busy {
+		t.Fatalf("imported operation in flight %v %v, want true", busy, err)
+	}
+	due, err := st.Runnable(ctx, now.Add(time.Hour), 10)
+	if err != nil || len(due) != 1 || due[0].ID != admitted.Op.ID {
+		t.Fatalf("runnable %v %v, want the imported operation", due, err)
+	}
 }
 
 func roundTrip(t *testing.T, open OpenFunc) {

@@ -41,6 +41,10 @@ func Apply(ctx context.Context, t Table, c model.Change) error {
 			if !model.SameRecord(got, w.Record) {
 				return model.ErrStale
 			}
+		case model.Seed:
+			if err := applySeed(ctx, t, w); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("store: unknown write %T", w)
 		}
@@ -82,6 +86,22 @@ func applyPut(ctx context.Context, t Table, w model.Put) error {
 		return err
 	}
 	if op, ok := w.Next.(model.Operation); ok && op.Work != nil {
+		return t.SetRefs(ctx, op.ID, op.Work.Refs())
+	}
+	return nil
+}
+
+func applySeed(ctx context.Context, t Table, w model.Seed) error {
+	switch _, err := t.Get(ctx, w.Record.RecordKey()); {
+	case err == nil:
+		return model.ErrStale
+	case !errors.Is(err, model.ErrNotFound):
+		return err
+	}
+	if err := t.Put(ctx, w.Record); err != nil {
+		return err
+	}
+	if op, ok := w.Record.(model.Operation); ok && op.Work != nil {
 		return t.SetRefs(ctx, op.ID, op.Work.Refs())
 	}
 	return nil

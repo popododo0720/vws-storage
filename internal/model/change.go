@@ -32,9 +32,24 @@ type Remove struct{ Prev Record }
 // Guard fails the change unless the stored row matches Record.
 type Guard struct{ Record Record }
 
+// Seed inserts Record as it is, its version included, when its key is absent.
+// Only Import writes it.
+type Seed struct{ Record Record }
+
 func (Put) isWrite()    {}
 func (Remove) isWrite() {}
 func (Guard) isWrite()  {}
+func (Seed) isWrite()   {}
+
+// Import copies a record another store holds, unchanged, into a store that
+// does not have its key (#141, the SQLite import). Versions stay, so etags and
+// stale checks carry over.
+func Import(rec Record) (Change, error) {
+	if rec == nil || rec.RecordKey() == nil || rec.RecordKey().String() == "" {
+		return Change{}, fmt.Errorf("%w: record", ErrInvalidArgument)
+	}
+	return writes(Seed{Record: rec}), nil
+}
 
 func putNew(r Record) Write             { return Put{Next: r} }
 func putUpdate(prev, next Record) Write { return Put{Prev: prev, Next: next} }
