@@ -19,6 +19,7 @@ import (
 	"github.com/popododo0720/vws-storage/internal/backend"
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
+	"github.com/popododo0720/vws-storage/internal/storage/internal/store/kube"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store/memory"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store/sqlite"
 )
@@ -56,6 +57,15 @@ func Memory() StoreConfig {
 // SQLite persists to path. One service may open a given file.
 func SQLite(path string) StoreConfig {
 	return StoreConfig{open: func(ctx context.Context) (store.Store, error) { return sqlite.Open(ctx, path) }}
+}
+
+// Kube keeps state in ConfigMaps of namespace, through the kubeconfig at
+// path (empty: in-cluster credentials). Object records are refused until
+// they come from the object backend (#141), so cmd does not offer it yet.
+func Kube(path, namespace string) StoreConfig {
+	return StoreConfig{open: func(ctx context.Context) (store.Store, error) {
+		return kube.Connect(ctx, path, kube.Options{Namespace: namespace})
+	}}
 }
 
 // OperationStatus is an operation plus a locator derived on read.

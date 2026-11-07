@@ -42,6 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/popododo0720/vws-storage/internal/model"
 	"github.com/popododo0720/vws-storage/internal/storage/internal/store"
@@ -138,6 +139,25 @@ func Open(ctx context.Context, c kubernetes.Interface, o Options) (*Store, error
 		return nil, err
 	}
 	return s, nil
+}
+
+// Connect opens the store with a client built from the kubeconfig at path.
+// An empty path uses the in-cluster credentials.
+func Connect(ctx context.Context, path string, o Options) (*Store, error) {
+	rc, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		return nil, fmt.Errorf("kubestore: kubeconfig: %w", err)
+	}
+	// No client-side limit: a call queued in the limiter holds a stale head
+	// read, so concurrent commits lose the head race until they give up.
+	// The API server's priority and fairness throttles instead, and call
+	// retries its 429.
+	rc.QPS = -1
+	c, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		return nil, fmt.Errorf("kubestore: client: %w", err)
+	}
+	return Open(ctx, c, o)
 }
 
 // Close releases nothing; the client belongs to the caller.

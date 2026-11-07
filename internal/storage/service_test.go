@@ -610,7 +610,12 @@ func TestUploadDeadlineFails(t *testing.T) {
 
 func openRunning(t *testing.T, store storage.StoreConfig, blk *fake.Block, obj *fake.Objects) (*storage.Service, func()) {
 	t.Helper()
-	svc, err := storage.Open(context.Background(), opts(store, blk, obj))
+	return startService(t, opts(store, blk, obj))
+}
+
+func startService(t *testing.T, o storage.Options) (*storage.Service, func()) {
+	t.Helper()
+	svc, err := storage.Open(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)
 	}
