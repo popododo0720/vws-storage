@@ -24,3 +24,15 @@ func KubeReplica(path, namespace, identity string) StoreConfig {
 		})
 	}}
 }
+
+// PurgeTombstonesAsOf opens the Kube store as if the clock read time.Now()
+// plus ahead, so Open purges the tombstones older than the TTL by then.
+func PurgeTombstonesAsOf(ctx context.Context, path, namespace string, ahead time.Duration) error {
+	st, err := kube.Connect(ctx, path, kube.Options{
+		Namespace: namespace, Now: func() time.Time { return time.Now().Add(ahead) },
+	})
+	if err != nil {
+		return err
+	}
+	return st.Close()
+}

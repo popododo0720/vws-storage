@@ -50,6 +50,7 @@ import (
 
 const (
 	headName       = "vws-storage-head"
+	importName     = "vws-storage-import"
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	managedBy      = "vws-storage"
 	labelRecord    = "vws.io/record"
@@ -199,10 +200,46 @@ func ConnectReader(ctx context.Context, path string, o Options) (Reader, error) 
 	return s, nil
 }
 
-// Reader is the read side plus Removed.
+// Reader is the read side plus what an import needs to know.
 type Reader interface {
 	store.Reader
 	Removed(ctx context.Context, key model.Key) (bool, error)
+	Imported(ctx context.Context) (bool, error)
+}
+
+// Imported reports whether an import into this namespace finished
+// (MarkImported). The marker has no expiry, unlike a tombstone.
+func (s *Store) Imported(ctx context.Context) (bool, error) {
+	err := s.call(ctx, func(ctx context.Context) error {
+		_, err := s.cms().Get(ctx, importName, metav1.GetOptions{})
+		return apiErr(err)
+	})
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("kubestore: get import marker: %w", err)
+	}
+}
+
+// MarkImported records that an import into this namespace finished. It is
+// store metadata like the head, not a record. A second mark is a no-op.
+func (s *Store) MarkImported(ctx context.Context) error {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name:        importName,
+		Labels:      map[string]string{labelManagedBy: managedBy},
+		Annotations: map[string]string{"vws.io/imported-at": s.o.Now().UTC().Format(time.RFC3339)},
+	}}
+	err := s.call(ctx, func(ctx context.Context) error {
+		_, err := s.cms().Create(ctx, cm, metav1.CreateOptions{})
+		return apiErr(err)
+	})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("kubestore: create import marker: %w", err)
+	}
+	return nil
 }
 
 // Removed reports whether key's record was removed: its tombstone is still

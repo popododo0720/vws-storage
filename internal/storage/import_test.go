@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -390,6 +391,81 @@ func TestImportDoesNotBringBackARemovedRecord(t *testing.T) {
 	}
 	if _, err := svc.Snapshot(context.Background(), snap); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("snapshot after import: %v, want not found", err)
+	}
+}
+
+// The guard outlives the tombstone: past the TTL, a record the store
+// removed after a finished import is still a difference, never re-created.
+func TestImportDoesNotBringBackARecordPastItsTombstone(t *testing.T) {
+	ctx := context.Background()
+	path, ns := kubeEnv(t)
+	if _, err := importInto(t, fixture010, path, ns, storage.ImportWrite); err != nil {
+		t.Fatal(err)
+	}
+	svc, stop := startService(t, kubeOpts(storage.Kube(path, ns), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{})))
+	project, err := model.ParseProject("a123456789012")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := svc.ListSnapshots(ctx, project, model.Region{}, model.PageRequest{Size: 10})
+	if err != nil || len(snaps.Items) != 1 {
+		t.Fatalf("snapshots %v %v", snaps, err)
+	}
+	snap := snaps.Items[0].ID
+	submitDone(t, svc, "del-snap", model.DeleteSnapshotRequest{Snapshot: snap})
+	stop()
+	withTombstone := configMaps(t, ns)
+	if err := storage.PurgeTombstonesAsOf(ctx, path, ns, 48*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	count := configMaps(t, ns)
+	if count != withTombstone-1 {
+		t.Fatalf("purge: %d ConfigMaps, want %d", count, withTombstone-1)
+	}
+	for _, mode := range []storage.ImportMode{storage.ImportDryRun, storage.ImportWrite} {
+		rep, err := importInto(t, fixture010, path, ns, mode)
+		if !errors.Is(err, storage.ErrImportDiffers) || len(rep.Create) != 0 {
+			t.Fatalf("mode %d: created %v, %v; want ErrImportDiffers and nothing", mode, rep.Create, err)
+		}
+		if len(rep.Differences) != 1 || rep.Differences[0] != "removed snapshot "+snap.String() {
+			t.Fatalf("mode %d differences %v", mode, rep.Differences)
+		}
+	}
+	if n := configMaps(t, ns); n != count {
+		t.Fatalf("import wrote: %d ConfigMaps, want %d", n, count)
+	}
+}
+
+// An import cut off before it finished is resumed by running it again: the
+// finished mark is written only after the last record.
+func TestImportCutOffIsResumed(t *testing.T) {
+	ctx := context.Background()
+	path, ns := kubeEnv(t)
+	first, err := importInto(t, fixture010, path, ns, storage.ImportWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Leave the store as a run cut off after its first records: no mark,
+	// and the last records never written.
+	cms := kc.CoreV1().ConfigMaps(ns)
+	list, err := cms.List(ctx, metav1.ListOptions{LabelSelector: "vws.io/record=token"})
+	if err != nil || len(list.Items) == 0 {
+		t.Fatalf("tokens %v %v", list, err)
+	}
+	for _, name := range append([]string{"vws-storage-import"}, list.Items[0].Name, list.Items[1].Name) {
+		if err := cms.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	again, err := importInto(t, fixture010, path, ns, storage.ImportWrite)
+	if err != nil || len(again.Create) != 2 {
+		t.Fatalf("resumed import created %v, %v; want the 2 missing tokens", again.Create, err)
+	}
+	if _, err := importInto(t, fixture010, path, ns, storage.ImportVerify); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Create) != 12 {
+		t.Fatalf("first import created %d, want 12", len(first.Create))
 	}
 }
 

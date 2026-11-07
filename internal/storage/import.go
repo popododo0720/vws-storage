@@ -98,20 +98,31 @@ func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode Import
 		return rep, errors.Join(err, differs(rep))
 	}
 	rep.Create = nil
-	err = importAll(ctx, st, recs, &rep)
-	return rep, errors.Join(err, differs(rep))
+	if err := importAll(ctx, st, recs, &rep); err != nil || len(rep.Differences) > 0 {
+		return rep, errors.Join(err, differs(rep))
+	}
+	return rep, st.MarkImported(ctx)
 }
 
 // compare fills rep from what r holds of recs. ImportDryRun lists an absent
 // record to create; ImportVerify lists it as missing.
-// A tombstone is a record the store removed later, so it is a difference.
+// A record the store removed later is a difference: its tombstone is there,
+// or an import already finished, so every record of the file was written once.
+// The finished mark outlives the tombstones, which Open purges.
 func compare(ctx context.Context, r kube.Reader, recs []model.Record, mode ImportMode, rep *ImportReport) error {
+	done, err := r.Imported(ctx)
+	if err != nil {
+		return err
+	}
 	for _, rec := range recs {
 		cur, err := readRecord(ctx, r, rec.RecordKey())
 		if errors.Is(err, model.ErrNotFound) {
-			removed, rerr := r.Removed(ctx, rec.RecordKey())
-			if rerr != nil {
-				return rerr
+			removed := done
+			if !removed {
+				var rerr error
+				if removed, rerr = r.Removed(ctx, rec.RecordKey()); rerr != nil {
+					return rerr
+				}
 			}
 			if removed {
 				rep.Differences = append(rep.Differences, "removed "+describe(rec))
@@ -133,7 +144,8 @@ func compare(ctx context.Context, r kube.Reader, recs []model.Record, mode Impor
 }
 
 // importAll writes each absent record. A record that changed since compare
-// stops the import, so nothing more of the file lands beside it.
+// stops the import, so nothing more of the file lands beside it; what was
+// written before stays, and the import is not marked finished.
 func importAll(ctx context.Context, st store.Store, recs []model.Record, rep *ImportReport) error {
 	for _, rec := range recs {
 		var created, conflict bool
