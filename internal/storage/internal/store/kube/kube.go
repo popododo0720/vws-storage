@@ -167,6 +167,39 @@ func Open(ctx context.Context, c kubernetes.Interface, o Options) (*Store, error
 // Connect opens the store with a client built from the kubeconfig at path.
 // An empty path uses the in-cluster credentials.
 func Connect(ctx context.Context, path string, o Options) (*Store, error) {
+	c, err := client(path)
+	if err != nil {
+		return nil, err
+	}
+	return Open(ctx, c, o)
+}
+
+// ConnectReader is Connect for reads only. It writes nothing, not even the
+// head, so a namespace the store never used reads as empty. An intent in the
+// head means a commit is not finished, and is refused rather than rolled.
+func ConnectReader(ctx context.Context, path string, o Options) (store.Reader, error) {
+	c, err := client(path)
+	if err != nil {
+		return nil, err
+	}
+	if o.Namespace == "" {
+		return nil, fmt.Errorf("kubestore: namespace: %w", model.ErrInvalidArgument)
+	}
+	s := &Store{c: c, o: o.withDefaults()}
+	head, err := s.head(ctx)
+	switch {
+	case apierrors.IsNotFound(err):
+		return s, nil
+	case err != nil:
+		return nil, err
+	}
+	if _, ok := head.Data[dataIntent]; ok {
+		return nil, fmt.Errorf("kubestore: a commit in %s is not finished: open the store for writing once", o.Namespace)
+	}
+	return s, nil
+}
+
+func client(path string) (kubernetes.Interface, error) {
 	rc, err := clientcmd.BuildConfigFromFlags("", path)
 	if err != nil {
 		return nil, fmt.Errorf("kubestore: kubeconfig: %w", err)
@@ -180,7 +213,7 @@ func Connect(ctx context.Context, path string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubestore: client: %w", err)
 	}
-	return Open(ctx, c, o)
+	return c, nil
 }
 
 // Close releases nothing; the client belongs to the caller.
