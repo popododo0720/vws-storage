@@ -1,5 +1,7 @@
 package kube
 
+import "github.com/popododo0720/vws-storage/internal/model"
+
 const annotationPrefix = "vws.popododo0720.io/"
 
 // The prefix is shared with vws-network, which owns "id" and "project".
@@ -32,3 +34,19 @@ const (
 	dvAttemptAnnotation = annotationPrefix + "dv-attempt"
 	dvFirstAnnotation   = annotationPrefix + "dv-first-created"
 )
+
+// The labels carry the AWS IDs, so a selector finds the PVC, DataVolume or
+// VolumeSnapshot of an ID: kubectl get pvc -l vws.popododo0720.io/volume-id=vol-0a1b.
+// A client may choose an ID, so the same one can exist in two projects; the
+// project label tells them apart. Every resource id fits a label value.
+const (
+	VolumeIDLabel   = annotationPrefix + "volume-id"
+	SnapshotIDLabel = annotationPrefix + "snapshot-id"
+	ProjectIDLabel  = annotationPrefix + "project-id"
+)
+
+// idLabels are the labels of the object behind resource id of project p.
+// idLabel is VolumeIDLabel or SnapshotIDLabel.
+func idLabels(idLabel, id string, p model.Project) map[string]string {
+	return map[string]string{idLabel: id, ProjectIDLabel: p.String()}
+}

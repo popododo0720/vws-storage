@@ -57,6 +57,7 @@ func (b *Block) CreateSnapshot(ctx context.Context, id model.SnapshotID, source 
 			"source":                  map[string]any{"persistentVolumeClaimName": pvcName(source)},
 		},
 	}}
+	vs.SetLabels(idLabels(SnapshotIDLabel, id.ID(), id.Project()))
 	cur, err := snaps.Create(ctx, vs, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		cur, err = snaps.Get(ctx, snapshotName(id), metav1.GetOptions{})
