@@ -317,30 +317,12 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 	if err != nil {
 		return model.Page[OperationStatus]{}, err
 	}
-	var matched []model.Operation
-	for {
-		batch, err := s.st.ListOperations(ctx, store.OperationFilter{Target: q.Target, NonTerminal: q.NonTerminal}, after, n+1)
-		if err != nil {
-			return model.Page[OperationStatus]{}, err
-		}
-		if len(batch) == 0 {
-			break
-		}
-		stop := false
-		for _, op := range batch {
-			after = op.ID
-			if op.ID.Project() != q.Project {
-				continue
-			}
-			matched = append(matched, op)
-			if len(matched) == n+1 {
-				stop = true
-				break
-			}
-		}
-		if stop || len(batch) <= n {
-			break
-		}
+	f := store.OperationFilter{Target: q.Target, NonTerminal: q.NonTerminal}
+	matched, err := s.matchOperations(ctx, f, after, n, func(op model.Operation) bool {
+		return op.ID.Project() == q.Project
+	})
+	if err != nil {
+		return model.Page[OperationStatus]{}, err
 	}
 	ops, next := trim(matched, n, func(op model.Operation) string { return op.ID.String() })
 	items := make([]OperationStatus, 0, len(ops))
@@ -352,6 +334,37 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 		items = append(items, st)
 	}
 	return model.Page[OperationStatus]{Items: items, NextToken: next}, nil
+}
+
+// matchOperations returns up to n+1 operations in id order after the given
+// id that f admits and keep accepts. It reads the store in batches, because
+// keep can reject most of a batch.
+func (s *Service) matchOperations(
+	ctx context.Context, f store.OperationFilter, after model.OperationID, n int, keep func(model.Operation) bool,
+) ([]model.Operation, error) {
+	var matched []model.Operation
+	for {
+		batch, err := s.st.ListOperations(ctx, f, after, n+1)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			return matched, nil
+		}
+		for _, op := range batch {
+			after = op.ID
+			if !keep(op) {
+				continue
+			}
+			matched = append(matched, op)
+			if len(matched) == n+1 {
+				return matched, nil
+			}
+		}
+		if len(batch) <= n {
+			return matched, nil
+		}
+	}
 }
 
 // Volume returns a volume.
