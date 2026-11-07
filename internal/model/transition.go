@@ -137,7 +137,7 @@ func (a AvailableVolume) Expand(st Start, size Bytes) (Admitted, error) {
 	if err := a.v.Modified.admit(st.Now); err != nil {
 		return Admitted{}, err
 	}
-	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size})
+	op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size, From: a.v.Spec.Shape()})
 	ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
 	return Admitted{Change: writes(ws...), Op: op}, nil
 }
@@ -246,7 +246,8 @@ func (a AvailableVolume) Modify(st Start, to VolumeTarget) (Admitted, error) {
 	// Size, type, IOPS and throughput are what EC2 ModifyVolume changes, so
 	// only they count against its limit. Labels are EC2 tags (CreateTags),
 	// which do not.
-	counted := retyped || perf || size != cur.Size
+	from := cur.Shape()
+	counted := from != VolumeShape{Size: size, Type: to.Type, Iops: iops, Throughput: mibs}
 	if counted {
 		if err := a.v.Modified.admit(st.Now); err != nil {
 			return Admitted{}, err
@@ -254,10 +255,11 @@ func (a AvailableVolume) Modify(st Start, to VolumeTarget) (Admitted, error) {
 	}
 	w := VolumeModification{Volume: a.v.ID, Labels: to.Labels, Type: to.Type, Iops: iops, Throughput: mibs}
 	if size > cur.Size {
-		op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size, Then: &w})
+		op := newOp(st, VolumeExpansion{Volume: a.v.ID, Size: size, Then: &w, From: from})
 		ws := withToken(st, []Write{guardRec(a.v), putNew(op)})
 		return Admitted{Change: writes(ws...), Op: op}, nil
 	}
+	w.From = from
 	next := a.v
 	next.Labels = to.Labels
 	next.Spec.Type, next.Spec.Iops, next.Spec.Throughput = to.Type, iops, mibs

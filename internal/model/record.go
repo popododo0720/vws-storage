@@ -230,23 +230,29 @@ type VolumeDeletion struct {
 // when set, is the labels, type and performance an UpdateVolume asked for in
 // the same mask as the size (#87); they are stored in that same write, so the
 // volume never shows one without the other. Nil for a size-only expansion and
-// for operations written before #87.
+// for operations written before #87. From is the volume's shape at admission
+// (#173); it is zero in operations written before. A Then rides on the
+// expansion and has no From of its own.
 type VolumeExpansion struct {
 	Volume VolumeID
 	Size   Bytes
 	Then   *VolumeModification
+	From   VolumeShape
 }
 
 // VolumeModification sets Volume's Labels, Type, Iops and Throughput. It
 // touches no backend object, so it is admitted already succeeded, in the
 // write that stores the new values. Iops and Throughput are the values
-// stored; they are zero in operations written before #87.
+// stored; they are zero in operations written before #87. From is the
+// volume's shape at admission (#173); it is zero in operations written before,
+// and in a modification that rides on an expansion.
 type VolumeModification struct {
 	Volume     VolumeID
 	Labels     Labels
 	Type       VolumeType
 	Iops       int64
 	Throughput int64
+	From       VolumeShape
 }
 
 // SnapshotCreation snapshots Source into Snapshot.

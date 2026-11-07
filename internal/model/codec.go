@@ -225,6 +225,34 @@ type workWire struct {
 	// Expand-volume: the type, labels and performance stored with the size
 	// (VolumeExpansion.Then). Absent in operations written before #87.
 	Then bool `json:"then,omitempty"`
+	// Expand-volume and modify-volume: the shape at admission (#173). Absent in
+	// operations written before, and for the Then of an expansion.
+	From *shapeWire `json:"from,omitempty"`
+}
+
+type shapeWire struct {
+	Size       int64  `json:"size"`
+	Type       string `json:"type"`
+	Iops       int64  `json:"iops,omitempty"`
+	Throughput int64  `json:"throughput_mibps,omitempty"`
+}
+
+func shapeTo(s VolumeShape) *shapeWire {
+	if s.IsZero() {
+		return nil
+	}
+	return &shapeWire{Size: int64(s.Size), Type: s.Type.wireName(), Iops: s.Iops, Throughput: s.Throughput}
+}
+
+func shapeFrom(w *shapeWire) (VolumeShape, error) {
+	if w == nil {
+		return VolumeShape{}, nil
+	}
+	typ, err := ParseVolumeType(w.Type)
+	if err != nil {
+		return VolumeShape{}, err
+	}
+	return VolumeShape{Size: Bytes(w.Size), Type: typ, Iops: w.Iops, Throughput: w.Throughput}, nil
 }
 
 func workTo(w Work) (workWire, error) {
@@ -238,7 +266,7 @@ func workTo(w Work) (workWire, error) {
 	case VolumeDeletion:
 		return workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Zone: w.Zone.String()}, nil
 	case VolumeExpansion:
-		out := workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size)}
+		out := workWire{Kind: w.Kind().String(), Volume: w.Volume.wire(), Size: int64(w.Size), From: shapeTo(w.From)}
 		if m := w.Then; m != nil {
 			out.Then, out.Type, out.Labels = true, m.Type.wireName(), m.Labels.Map()
 			out.Iops, out.Throughput = m.Iops, m.Throughput
@@ -247,7 +275,7 @@ func workTo(w Work) (workWire, error) {
 	case VolumeModification:
 		return workWire{
 			Kind: w.Kind().String(), Volume: w.Volume.wire(), Type: w.Type.wireName(), Labels: w.Labels.Map(),
-			Iops: w.Iops, Throughput: w.Throughput,
+			Iops: w.Iops, Throughput: w.Throughput, From: shapeTo(w.From),
 		}, nil
 	case SnapshotCreation:
 		return workWire{Kind: w.Kind().String(), Snapshot: w.Snapshot.wire(), Volume: w.Source.wire(), Zone: w.Region.String()}, nil
@@ -318,7 +346,11 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := VolumeExpansion{Volume: vol, Size: Bytes(w.Size)}
+		from, err := shapeFrom(w.From)
+		if err != nil {
+			return nil, err
+		}
+		out := VolumeExpansion{Volume: vol, Size: Bytes(w.Size), From: from}
 		if w.Then {
 			m, err := modificationFrom(vol, w)
 			if err != nil {
@@ -332,7 +364,14 @@ func workFrom(w workWire) (Work, error) {
 		if err != nil {
 			return nil, err
 		}
-		return modificationFrom(vol, w)
+		m, err := modificationFrom(vol, w)
+		if err != nil {
+			return nil, err
+		}
+		if m.From, err = shapeFrom(w.From); err != nil {
+			return nil, err
+		}
+		return m, nil
 	case KindCreateSnapshot.String():
 		snap, err := ParseSnapshotID(w.Snapshot)
 		if err != nil {
