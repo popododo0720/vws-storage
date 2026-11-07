@@ -236,3 +236,46 @@ func TestListVolumeModificationsRecordsOriginalAndTarget(t *testing.T) {
 		t.Fatal("garbage page token accepted")
 	}
 }
+
+func TestRecreatedVolumeDoesNotListTheDeletedVolumesModifications(t *testing.T) {
+	db := storage.SQLite(filepath.Join(t.TempDir(), "vws.db"))
+	svc, cancel := openRunning(t, db, fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	defer cancel()
+	ctx := context.Background()
+	project, err := model.ParseProject("a123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := model.ParseVolumeID("data-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := volumeReq(t)
+	req.ID = raw.WithProject(project)
+	id := req.ID
+	steps := []struct {
+		token string
+		req   model.Request
+	}{
+		{"create", req},
+		{"grow", model.ExpandVolumeRequest{Volume: id, Size: 4 * model.GiB}},
+		{"delete", model.DeleteVolumeRequest{Volume: id}},
+		{"recreate", req},
+	}
+	for _, s := range steps {
+		op, err := svc.Submit(ctx, token(t, s.token), s.req)
+		if err != nil {
+			t.Fatalf("%s: %v", s.token, err)
+		}
+		if got := waitDone(t, svc, op.ID); got.Phase() != model.PhaseSucceeded {
+			t.Fatalf("%s: %s %v", s.token, got.Phase(), got.Err())
+		}
+	}
+	page, err := svc.ListVolumeModifications(ctx, id, model.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("recreated volume lists %d modifications of the deleted one: %+v", len(page.Items), page.Items)
+	}
+}

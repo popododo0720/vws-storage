@@ -338,14 +338,15 @@ func (s *Service) ListOperations(ctx context.Context, q OperationQuery, p model.
 
 // ListVolumeModifications lists the size, type, IOPS and throughput changes of
 // vol in operation id order, as ListOperations does; the ids are random, so
-// that is not time order. A volume with no row is ErrNotFound, so the modifications
-// of a deleted volume are not listed. Labels-only and no-op updates are not
+// that is not time order. A volume with no row is ErrNotFound, and a volume created
+// again under a deleted volume's ID lists only its own modifications. Labels-only and no-op updates are not
 // modifications.
 func (s *Service) ListVolumeModifications(
 	ctx context.Context, vol model.VolumeID, p model.PageRequest,
 ) (model.Page[model.VolumeModificationStatus], error) {
 	var none model.Page[model.VolumeModificationStatus]
-	if _, err := s.st.Volume(ctx, vol); err != nil {
+	row, err := s.st.Volume(ctx, vol)
+	if err != nil {
 		return none, err
 	}
 	n, err := model.NormalizePage(p)
@@ -358,7 +359,9 @@ func (s *Service) ListVolumeModifications(
 	}
 	matched, err := s.matchOperations(ctx, store.OperationFilter{Target: vol}, after, n, func(op model.Operation) bool {
 		_, ok := op.Modification()
-		return ok && op.ID.Project() == vol.Project()
+		// A volume ID can be created again after a delete; operations from
+		// before this row was created belong to the deleted volume.
+		return ok && op.ID.Project() == vol.Project() && !op.Meta.CreateTime.Before(row.Meta.CreateTime)
 	})
 	if err != nil {
 		return none, err
