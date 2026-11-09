@@ -80,6 +80,7 @@ func runContext(parent context.Context, args []string) error {
 	healthPeriod := fs.Duration("health-period", 10*time.Second, "time between readiness evaluations")
 	healthTimeout := fs.Duration("health-timeout", 3*time.Second, "time one readiness evaluation may take")
 	objectAddr := fs.String("fake-object-addr", "127.0.0.1:7401", "fake object HTTP address")
+	workers := fs.Int("workers", defaultWorkers, fmt.Sprintf("operations run at once, 1 to %d", maxWorkers))
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
@@ -89,6 +90,9 @@ func runContext(parent context.Context, args []string) error {
 	}
 	projects, err := parseProjects(*projectsFlag)
 	if err != nil {
+		return err
+	}
+	if err := checkWorkers(*workers); err != nil {
 		return err
 	}
 	kubeCfg.VolumeMode = corev1.PersistentVolumeMode(*volumeMode)
@@ -147,7 +151,7 @@ func runContext(parent context.Context, args []string) error {
 		store = storage.SQLite(*db)
 	}
 	svc, err := storage.Open(context.Background(), storage.Options{
-		Store: store, Block: block, Object: objs.object, Signer: objs.signer, Zones: zones,
+		Store: store, Block: block, Object: objs.object, Signer: objs.signer, Zones: zones, Workers: *workers,
 	})
 	if err != nil {
 		stopHTTP()
@@ -285,6 +289,18 @@ func openBlock(name string, cfg kube.Config) (backend.Block, error) {
 	default:
 		return nil, fmt.Errorf("%w: block backend %q", model.ErrInvalidArgument, name)
 	}
+}
+
+const (
+	defaultWorkers = 8
+	maxWorkers     = 256
+)
+
+func checkWorkers(n int) error {
+	if n < 1 || n > maxWorkers {
+		return fmt.Errorf("-workers %d: must be 1 to %d", n, maxWorkers)
+	}
+	return nil
 }
 
 func parseZones(s string) ([]model.Zone, error) {
