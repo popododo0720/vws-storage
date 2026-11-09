@@ -46,6 +46,7 @@ A rule whose enforcer cell is `Judgment` has no check; the author and reviewer u
 | Logs go through `log/slog` and vws-lib `obs`. The standard `log` is not used | `TestArchitectureRules` |
 | This repo keeps no proto and no copy of it. The generated code is the `github.com/popododo0720/vws-proto` module at a release tag (`vX.Y.Z`, no pseudo-version) from the module proxy, with no `replace` | `internal/policycheck` (`TestRepoPolicy`, `TestProtoModuleRules`). Lint excludes `third_party` (the vws-lib copy) |
 | No deployment manifests, logos or NOTICE | `internal/policycheck` |
+| CI installs setup-envtest at an exact tag and `setup-envtest use` names an exact Kubernetes version. Moving a pin is a normal PR (#211) | `TestEnvtestIsPinned`, `TestEnvtestPinRules` |
 | The same token with the same request is the same operation | `Service.Submit`, `TestCreateVolumeIsIdempotent` |
 | The same token with a different request is a conflict | `ErrTokenReused` → gRPC `ABORTED` + `IDEMPOTENCY_CONFLICT` |
 | Restart recovery is not a new path | `TestCreateVolumeResumesAfterCrash` |
