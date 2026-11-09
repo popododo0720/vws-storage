@@ -42,3 +42,14 @@ jobs:
         run: golangci-lint run --timeout=5m ./...
       - name: Format (gofumpt, goimports)
         run: golangci-lint fmt --diff
+
+  # /correct loop guard (vws-deploy#448). It runs here because repo-guard.yml is only the pinned
+  # vws-deploy caller (vws-deploy docs/design/repo-guard-reusable.md).
+  correct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AGENTS.md has the /correct loop, incident form and label (vws-deploy#448)
+        run: scripts/guard.sh correct
+      - name: guard.sh fails on an empty /correct loop section
+        run: scripts/guard_test.sh
