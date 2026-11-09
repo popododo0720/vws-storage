@@ -16,6 +16,7 @@ go run ./cmd/vws-storage
 | `-db` | empty | SQLite file. A relative path is resolved and its parent directory is created. Empty uses memory, which disappears on exit |
 | `-zones` | `vws-1a` | Comma-separated zone names |
 | `-projects` | empty | Comma-separated project ids. Empty accepts any valid project id |
+| `-workers` | `8` | Operations run at once. 1 to 256; any other value fails at startup |
 | `-fake-object-addr` | `127.0.0.1:7401` | HTTP address of the fake object backend |
 | `-object-backend` | `fake` | `fake` or `s3` |
 | `-s3-profile` | `rgw` | `rgw` or `minio`. Both default to path-style addressing and region `us-east-1` |
