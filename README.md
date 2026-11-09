@@ -211,7 +211,7 @@ When `VWS_HEALTH_ADDR` is set, the process also serves HTTP probes on that addre
 | --- | --- |
 | `/healthz` | 200 while the process runs; checks nothing |
 | `/readyz` | 200 when `vws.storage.v1.Ready` is SERVING (the same cached verdict as above), 503 otherwise and once shutdown or SIGTERM starts. Telemetry backends (OTLP collector, Sentry) are never checked |
-| `/metrics` | Only with `OTEL_METRICS_EXPORTER=prometheus` (off by default, 404 otherwise): every `vws.*` metric in Prometheus text format as `vws_*` (`vws_rpc_server_requests_total`, `vws_queue_depth`, ...), in place of OTLP metric push. Start fails when `VWS_HEALTH_ADDR` is empty |
+| `/metrics` | Only with `OTEL_METRICS_EXPORTER=prometheus` (off by default, 404 otherwise): every `vws.*` metric in Prometheus text format as `vws_*` (`vws_rpc_server_requests_total`, `vws_queue_depth`, ...), in place of OTLP metric push. `OTEL_SDK_DISABLED=true` serves no `/metrics` even then. Start fails when `VWS_HEALTH_ADDR` is empty |
 
 ### Environment
 
