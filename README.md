@@ -211,6 +211,7 @@ When `VWS_HEALTH_ADDR` is set, the process also serves HTTP probes on that addre
 | --- | --- |
 | `/healthz` | 200 while the process runs; checks nothing |
 | `/readyz` | 200 when `vws.storage.v1.Ready` is SERVING (the same cached verdict as above), 503 otherwise and once shutdown or SIGTERM starts. Telemetry backends (OTLP collector, Sentry) are never checked |
+| `/metrics` | Only with `OTEL_METRICS_EXPORTER=prometheus` (off by default, 404 otherwise): every `vws.*` metric in Prometheus text format as `vws_*` (`vws_rpc_server_requests_total`, `vws_queue_depth`, ...), in place of OTLP metric push. Start fails when `VWS_HEALTH_ADDR` is empty |
 
 ### Environment
 
@@ -222,7 +223,7 @@ When `VWS_HEALTH_ADDR` is set, the process also serves HTTP probes on that addre
 | `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS` | `grpc` (default) or `http/protobuf`; collector headers as comma-separated `key=value` pairs |
 | `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_RESOURCE_ATTRIBUTES` | standard OpenTelemetry service name, kill switch and resource attributes (`key=value,...`) |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | sampler (default `parentbased_traceidratio`) and its ratio (default `0.1`) |
-| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` or `none`. Default `otlp` when the endpoint is set, otherwise `none` |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` or `none`. Default `otlp` when the endpoint is set, otherwise `none`. `OTEL_METRICS_EXPORTER` also takes `prometheus`, which serves `/metrics` on `VWS_HEALTH_ADDR` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | metric export interval in milliseconds (default `60000`) |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | error reports to Sentry when the DSN is set |
 | `VWS_S3_ACCESS_KEY`, `VWS_S3_SECRET_KEY` | S3 keys for `-object-backend=s3` |

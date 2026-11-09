@@ -44,7 +44,10 @@ func main() {
 	}
 }
 
-func run(args []string) error {
+func run(args []string) error { return runContext(context.Background(), args) }
+
+// runContext serves until parent is done, SIGINT or SIGTERM.
+func runContext(parent context.Context, args []string) error {
 	if len(args) > 0 && args[0] == "import-sqlite" {
 		return runImport(args[1:], os.Stdout)
 	}
@@ -110,7 +113,7 @@ func run(args []string) error {
 			slog.WarnContext(shut, "observability shutdown", slog.String(obs.FieldErr, err.Error()))
 		}
 	}()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logProvisioners(ctx, block)
 	var lc net.ListenConfig
