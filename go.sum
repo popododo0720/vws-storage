@@ -145,8 +145,8 @@ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINE
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/popododo0720/vws-proto v0.5.0 h1:gX2mlQUvwiMSXPIF4LZgm6EVQvyLa1qlfLQ/SdaXTvo=
-github.com/popododo0720/vws-proto v0.5.0/go.mod h1:O814usipaDG4fvUSnW8inWeQbZmnzhS5P3B8akv/01A=
+github.com/popododo0720/vws-proto v0.14.0 h1:dR4JZr45gpEsqcEZ+/D/MVizG2yPomjcIqbMaKoGbtw=
+github.com/popododo0720/vws-proto v0.14.0/go.mod h1:O814usipaDG4fvUSnW8inWeQbZmnzhS5P3B8akv/01A=
 github.com/prometheus/client_golang v1.25.0 h1:cDtW1TcFsMi1RJc8khwCKB4VhzwV04aKqbYtNOXuiK0=
 github.com/prometheus/client_golang v1.25.0/go.mod h1:j2X/4/kaQHLPnmyEU8zjmkndo1T317VpCIQEml8LTKk=
 github.com/prometheus/client_model v0.6.3 h1:O0jaTVAYNxTHYInEPFJt5I3+sN8zqBtVMPTB1qyxiEo=

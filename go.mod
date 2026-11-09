@@ -117,7 +117,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/popododo0720/vws-lib v0.3.0
-	github.com/popododo0720/vws-proto v0.5.0
+	github.com/popododo0720/vws-proto v0.14.0
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
