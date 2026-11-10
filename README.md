@@ -339,3 +339,33 @@ Project comes from each request name. `-projects` restricts which projects this 
 ```sh
 go test -race -count=1 ./...
 ```
+
+## Reload EBS type mappings without a rollout
+
+Set `-kube-volume-types-configmap=vws-volume-types` and
+`-kube-volume-types-namespace=<release-namespace>` with `-block-backend=kube`.
+An empty ConfigMap flag preserves flag-only behavior. An empty namespace flag
+uses `-kube-namespace`, which may differ from the release namespace.
+
+The reader gets the named ConfigMap before serving and every five seconds.
+Each read has a three-second deadline. It uses only named Gets, not list or
+watch, so grant `get` on `configmaps` with
+`resourceNames: [vws-volume-types]` in a Role in the release namespace.
+The storage service account needs a RoleBinding to that Role. No write or
+Secret permission is needed.
+
+Each data key is an EBS type and its value is the existing flag value after
+`TYPE=`, for example `gp3: ceph-block/Block/ceph-block`. A valid object replaces
+all explicit mappings atomically. The standard and gp2 class flags remain the
+fallback when those keys are absent. An empty data map removes all explicit
+mappings. Other unmapped types are refused before anything is created.
+
+A malformed key or value, duplicate alias such as gp2 with ssd, deleted object,
+or failed read keeps the whole last good mapping. At startup the flags are the
+last good mapping. Fixing or recreating the ConfigMap applies on the next read.
+Restarting reads it again. Identical data does not count as a reload.
+
+Structured logs report each applied reload and each rejected read, including
+the invalid key in the error. OpenTelemetry counters
+`vws.storage.volume_types.reloads` and `vws.storage.volume_types.reload_errors`
+count applied changes and failures. Do not put secrets in this ConfigMap.

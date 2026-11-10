@@ -54,6 +54,7 @@ type Block struct {
 	kc            kubernetes.Interface
 	dyn           dynamic.Interface
 	ns            string
+	typesMu       sync.RWMutex
 	classes       Classes
 	types         map[model.VolumeType]Class
 	snapshotClass string
@@ -112,12 +113,20 @@ func (b *Block) WithVolumeMode(m corev1.PersistentVolumeMode) *Block {
 
 // WithClass maps type t to its own Class, replacing what Classes maps it to.
 func (b *Block) WithClass(t model.VolumeType, c Class) *Block {
+	b.typesMu.Lock()
 	b.types[t] = c
+	b.typesMu.Unlock()
 	return b
 }
 
 // classFor is the resolved mapping of t: every field set.
 func (b *Block) classFor(t model.VolumeType) (Class, bool) {
+	b.typesMu.RLock()
+	defer b.typesMu.RUnlock()
+	return b.classForLocked(t)
+}
+
+func (b *Block) classForLocked(t model.VolumeType) (Class, bool) {
 	c, ok := b.types[t]
 	if !ok {
 		sc, mapped := b.classes[t]
@@ -140,9 +149,11 @@ func (b *Block) classFor(t model.VolumeType) (Class, bool) {
 
 // mapped is every served type with its resolved Class.
 func (b *Block) mapped() map[model.VolumeType]Class {
+	b.typesMu.RLock()
+	defer b.typesMu.RUnlock()
 	out := map[model.VolumeType]Class{}
 	for _, t := range model.VolumeTypes() {
-		if c, ok := b.classFor(t); ok {
+		if c, ok := b.classForLocked(t); ok {
 			out[t] = c
 		}
 	}
@@ -163,8 +174,10 @@ func (b *Block) ServeType(t model.VolumeType) error {
 // type change is allowed only when both types map to the same class, mode and
 // snapshot class.
 func (b *Block) Retype(from, to model.VolumeType) error {
-	cf, okf := b.classFor(from)
-	ct, okt := b.classFor(to)
+	b.typesMu.RLock()
+	defer b.typesMu.RUnlock()
+	cf, okf := b.classForLocked(from)
+	ct, okt := b.classForLocked(to)
 	switch {
 	case !okt:
 		return fmt.Errorf("%w: volume type %q", backend.ErrInvalid, to)

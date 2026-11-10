@@ -63,6 +63,10 @@ func runContext(parent context.Context, args []string) error {
 	standardClass := fs.String("kube-class-standard", kube.DefaultClass, "StorageClass for standard volumes")
 	ssdClass := fs.String("kube-class-ssd", kube.DefaultClass,
 		"StorageClass for gp2 volumes, the type pre-#123 ssd volumes read as")
+	typesConfigMap := fs.String("kube-volume-types-configmap", "",
+		"ConfigMap holding live EBS type mappings; empty uses flags only")
+	typesNamespace := fs.String("kube-volume-types-namespace", "",
+		"namespace of the volume types ConfigMap; empty uses -kube-namespace")
 	types := typeFlags{}
 	fs.Var(types, "kube-volume-type", "TYPE=STORAGECLASS[/VOLUMEMODE[/SNAPSHOTCLASS]] maps one EBS volume type "+
 		"(standard, gp2, gp3, io1, io2, st1, sc1); repeat per type. Empty fields take -kube-volume-mode and "+
@@ -119,6 +123,14 @@ func runContext(parent context.Context, args []string) error {
 	}()
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *typesNamespace == "" {
+		*typesNamespace = kubeCfg.Namespace
+	}
+	stopTypes, err := startVolumeTypes(ctx, block, *typesNamespace, *typesConfigMap)
+	if err != nil {
+		return err
+	}
+	defer stopTypes()
 	logProvisioners(ctx, block)
 	var lc net.ListenConfig
 
