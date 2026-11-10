@@ -23,6 +23,22 @@ Writes go through `storage.Service`: `Submit` for client requests, `Run` for pro
 
 Do not add a write path outside `Service`. Do not update the store from the server or a backend. Failures live in the `Operation`. The one exception is a volume whose creation failed permanently: that volume stays `Failed` (ERROR) with a reason (#83).
 
+## SQLite import lifecycle
+
+`vws-storage import-sqlite` is a separate offline command, not server startup work.
+Stop the source SQLite service and keep the destination service stopped until it
+succeeds. `cmd/vws-storage/main.go` routes it to `runImport` before opening a
+listener, and `storage.ImportSQLite` creates an import-only service without
+calling `Run`. Do not run the command beside a serving process.
+
+`Service.Import` holds the lifecycle mutex through its write. The first `Submit`
+or `Run` permanently ends that service instance's import phase, including after
+`Run` stops. A Kubernetes store with the durable `vws-storage-import` marker
+accepts no more imported records. Repeating the command compares records and
+writes nothing. A changed or removed record remains a reported difference.
+An interrupted command has no marker and can be retried. Equal records are
+skipped and absent records retain their original versions.
+
 ## Rules
 
 A rule whose enforcer cell is `Judgment` has no check; the author and reviewer uphold it. Every other enforcer cell is a test, lint or CI step that fails when the rule breaks. `internal/archtest` `TestAgentsRuleTable` checks the table format and the test names in the enforcer cells, and leaves the number of `Judgment` rows in the CI log.

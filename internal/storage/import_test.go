@@ -510,7 +510,12 @@ func TestServiceImportWritesOnlyAbsentKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	obj := fake.NewObjects(fake.ObjectOptions{})
+	dst, err := storage.Open(ctx, opts(storage.Memory(), fake.NewBlock(), obj))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dst.Close() })
 	if created, err := dst.Import(ctx, vol); err != nil || !created {
 		t.Fatalf("first import created %v, %v", created, err)
 	}
@@ -557,4 +562,131 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestServiceImportRefusesAfterServing(t *testing.T) {
+	ctx := context.Background()
+	src, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	made := submitDone(t, src, "source", volumeReq(t))
+	vol, err := src.Volume(ctx, made.Target().(model.VolumeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range []string{"submit", "run", "stopped"} {
+		t.Run(start, func(t *testing.T) {
+			obj := fake.NewObjects(fake.ObjectOptions{})
+			dst, err := storage.Open(ctx, opts(storage.Memory(), fake.NewBlock(), obj))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { dst.Close() })
+			if start == "submit" {
+				if _, err := dst.Submit(ctx, token(t, "admitted"), volumeReq(t)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				runCtx, cancel := context.WithCancel(ctx)
+				done := make(chan error, 1)
+				go func() { done <- dst.Run(runCtx) }()
+				deadline := time.Now().Add(3 * time.Second)
+				for dst.Healthy(ctx) != nil {
+					if time.Now().After(deadline) {
+						cancel()
+						<-done
+						t.Fatal("Run did not start")
+					}
+					time.Sleep(time.Millisecond)
+				}
+				if start == "stopped" {
+					cancel()
+					if err := <-done; err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					t.Cleanup(func() { cancel(); <-done })
+				}
+			}
+			if created, err := dst.Import(ctx, vol); err == nil || created {
+				t.Fatalf("import after %s = %v, %v; want refusal", start, created, err)
+			}
+			if _, err := dst.Volume(ctx, vol.ID); !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("refused import changed store: %v", err)
+			}
+		})
+	}
+}
+
+func TestServiceImportResumesAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	src, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	records := make([]model.Volume, 0, 2)
+	for _, name := range []string{"first", "second"} {
+		op := submitDone(t, src, name, volumeReq(t))
+		vol, err := src.Volume(ctx, op.Target().(model.VolumeID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, vol)
+	}
+	file := filepath.Join(t.TempDir(), "partial.db")
+	open := func() *storage.Service {
+		t.Helper()
+		obj := fake.NewObjects(fake.ObjectOptions{})
+		svc, err := storage.Open(ctx, opts(storage.SQLite(file), fake.NewBlock(), obj))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	dst := open()
+	if created, err := dst.Import(ctx, records[0]); err != nil || !created {
+		t.Fatalf("partial import = %v, %v", created, err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dst = open()
+	t.Cleanup(func() { dst.Close() })
+	for i, rec := range records {
+		if created, err := dst.Import(ctx, rec); err != nil || created != (i == 1) {
+			t.Fatalf("resumed record %d = %v, %v", i, created, err)
+		}
+		if got, err := dst.Volume(ctx, rec.ID); err != nil || !reflect.DeepEqual(got, rec) {
+			t.Fatalf("resumed record = %+v, %v; want %+v", got, err, rec)
+		}
+	}
+	volumes, err := dst.ListVolumes(ctx, model.Project{}, model.Zone{}, model.PageRequest{})
+	if err != nil || len(volumes.Items) != 2 {
+		t.Fatalf("resumed list = %+v, %v", volumes, err)
+	}
+}
+
+func TestServiceImportIntoMarkedKubeStoreIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	path, ns := kubeEnv(t)
+	if _, err := importInto(t, fixture010, path, ns, storage.ImportWrite); err != nil {
+		t.Fatal(err)
+	}
+	src, _ := openRunning(t, storage.Memory(), fake.NewBlock(), fake.NewObjects(fake.ObjectOptions{}))
+	op := submitDone(t, src, "new-volume", volumeReq(t))
+	vol, err := src.Volume(ctx, op.Target().(model.VolumeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := fake.NewObjects(fake.ObjectOptions{})
+	dst, err := storage.Open(ctx, kubeOpts(storage.Kube(path, ns), fake.NewBlock(), obj))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dst.Close() })
+	before := configMaps(t, ns)
+	if created, err := dst.Import(ctx, vol); err != nil || created {
+		t.Fatalf("marked import = %v, %v", created, err)
+	}
+	if _, err := dst.Volume(ctx, vol.ID); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("marked import added a row: %v", err)
+	}
+	if n := configMaps(t, ns); n != before {
+		t.Fatalf("marked import changed ConfigMaps: %d, want %d", n, before)
+	}
 }

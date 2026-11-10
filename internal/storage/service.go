@@ -104,6 +104,7 @@ type Service struct {
 
 	mu      sync.Mutex
 	running bool
+	serving bool
 }
 
 // Open opens the store. Operations do not progress until Run.
@@ -170,6 +171,9 @@ func (s *Service) Close() error { return s.st.Close() }
 // operation. The same token and a different request return ErrTokenReused.
 // A rejected precondition stores nothing.
 func (s *Service) Submit(ctx context.Context, tok model.ClientToken, req model.Request) (OperationStatus, error) {
+	s.mu.Lock()
+	s.serving = true
+	s.mu.Unlock()
 	if tok.IsZero() {
 		return OperationStatus{}, fmt.Errorf("%w: client token", model.ErrInvalidArgument)
 	}

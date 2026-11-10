@@ -55,7 +55,9 @@ var ErrImportObjects = errors.New(
 // writes nothing, and one it holds otherwise is a difference. Nothing is
 // written when any record differs, when the file has object records or a
 // record too large for the store, or in ImportDryRun and ImportVerify. The
-// file itself is not changed.
+// file itself is not changed. Run this separate command before starting the
+// serving process; it never starts Run or a listener. A completed store is
+// compared but never receives more imported records.
 func ImportSQLite(ctx context.Context, from string, to ImportTarget, mode ImportMode) (ImportReport, error) {
 	recs, err := sqlite.Export(ctx, from)
 	if err != nil {
@@ -168,7 +170,23 @@ func importAll(ctx context.Context, svc *Service, recs []model.Record, rep *Impo
 // Import writes rec, unchanged and with its version, when the store lacks its
 // key (#141, the SQLite import). An equal stored record writes nothing and
 // reports false. A different one is ErrImportDiffers and is never overwritten.
+// Import refuses once Submit or Run has started, even after Run returns.
+// A Kubernetes store already marked imported is a no-op.
 func (s *Service) Import(ctx context.Context, rec model.Record) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serving {
+		return false, errors.New("storage: import refused after Submit or Run started")
+	}
+	if r, ok := s.st.(kube.Reader); ok {
+		done, err := r.Imported(ctx)
+		if err != nil {
+			return false, err
+		}
+		if done {
+			return false, nil
+		}
+	}
 	if rec == nil || rec.RecordKey() == nil {
 		return false, fmt.Errorf("%w: record", model.ErrInvalidArgument)
 	}

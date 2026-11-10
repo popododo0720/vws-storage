@@ -25,6 +25,7 @@ func (s *Service) Run(ctx context.Context) error {
 		return errors.New("storage: run already started")
 	}
 	s.running = true
+	s.serving = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
